@@ -116,9 +116,15 @@ function readRawContextProvider(context) {
  * outer structural value. React 18 and 19 retain the primary/secondary renderer defaults as own
  * data properties; an unknown future shape fails open to the normal registration validation.
  */
-function hasNonNullishContextDefault(context) {
+function hasUsableNonNullishContextDefault(context, requirementShapes) {
   const primaryValue = readOwnDataProperty(context, '_currentValue');
   const secondaryValue = readOwnDataProperty(context, '_currentValue2');
+  for (const value of [primaryValue, secondaryValue]) {
+    if (value === null || value === undefined) continue;
+    for (const shape of requirementShapes) {
+      if (completePreviewContextRequirement(value, shape).changed) return false;
+    }
+  }
   return primaryValue !== null && primaryValue !== undefined ||
     secondaryValue !== null && secondaryValue !== undefined;
 }
@@ -345,6 +351,60 @@ function mergeFallbackShape(destination, source) {
   return true;
 }
 
+/** Completes a Context default with only the exact structural paths proven by consumers. */
+function completePreviewContextRequirement(value, shape, budget = { nodes: 0 }, active = new WeakMap(), depth = 0) {
+  if (depth > MAX_FALLBACK_DEPTH || budget.nodes >= MAX_FALLBACK_NODES) {
+    return { changed: false, value };
+  }
+  budget.nodes += 1;
+  if (shape.kind === 'callable') {
+    return typeof value === 'function'
+      ? { changed: false, value }
+      : { changed: true, value: materializeFallbackShape(shape) };
+  }
+  if (shape.kind === 'collection' || isArrayMethodShape(shape)) {
+    return Array.isArray(value)
+      ? { changed: false, value }
+      : { changed: true, value: Object.freeze([]) };
+  }
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+    return { changed: true, value: materializeFallbackShape(shape) };
+  }
+  const activeCompletion = active.get(value);
+  if (activeCompletion?.shape === shape) return { changed: false, value };
+  const completed = {};
+  active.set(value, { shape });
+  let changed = false;
+  let keys;
+  try {
+    keys = Object.keys(value);
+    for (const propertyName of keys) {
+      if (!isSafePropertyName(propertyName)) continue;
+      const descriptor = Object.getOwnPropertyDescriptor(value, propertyName);
+      if (descriptor !== undefined && Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        completed[propertyName] = descriptor.value;
+      }
+    }
+    for (const [propertyName, childShape] of shape.children) {
+      const current = readOwnDataProperty(value, propertyName);
+      const child = completePreviewContextRequirement(
+        current,
+        childShape,
+        budget,
+        active,
+        depth + 1,
+      );
+      completed[propertyName] = child.value;
+      changed ||= child.changed;
+    }
+  } catch {
+    active.delete(value);
+    return { changed: false, value };
+  }
+  active.delete(value);
+  return changed ? { changed: true, value: Object.freeze(completed) } : { changed: false, value };
+}
+
 /**
  * Detects structural array evidence emitted when project code calls a built-in array method.
  *
@@ -477,7 +537,7 @@ function readProviderInventory() {
       pendingHookCount += 1;
       continue;
     }
-    if (hasNonNullishContextDefault(context)) {
+    if (hasUsableNonNullishContextDefault(context, hookRequirements.values())) {
       defaultedContexts.add(context);
       continue;
     }
@@ -495,6 +555,11 @@ function readProviderInventory() {
         break;
       }
     }
+    const authoredDefault = readOwnDataProperty(context, '_currentValue');
+    if (mergedShape !== undefined && authoredDefault !== null && authoredDefault !== undefined) {
+      const completion = completePreviewContextRequirement(authoredDefault, mergedShape);
+      if (completion.changed) mergedShape.completedValue = completion.value;
+    }
   }
 
   const providers = [];
@@ -503,7 +568,7 @@ function readProviderInventory() {
     if (Provider !== undefined && shape.kind === 'object') {
       let value;
       try {
-        value = materializeFallbackShape(shape);
+        value = shape.completedValue ?? materializeFallbackShape(shape);
         const bridge = globalThis[PREVIEW_TARGET_RENDER_CHAIN_BRIDGE];
         if (typeof bridge === 'function') bridge({ kind: 'specialized-context-resolver', outcome: 'materialized', thunkText: Function.prototype.toString.call(materializeFallbackShape).slice(0, 320) });
       } catch { continue; }

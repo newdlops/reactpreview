@@ -21,6 +21,17 @@ export interface ReactContextFallbackReplacement {
   readonly start: number;
 }
 
+/** Import-aware bounded type evidence supplied by the active Page Inspector compiler. */
+export interface ReactContextResolvedTypeFallback {
+  /** Side-effect-free value expression inferred from the authored Context type. */
+  readonly expression: string;
+}
+
+/** Resolves a Context type only when the local syntax-only serializer cannot complete it. */
+export type ResolveReactContextTypeFallback = (
+  typeNode: ts.TypeNode,
+) => ReactContextResolvedTypeFallback | undefined;
+
 /** React import names that can be proven to refer to `createContext` without module resolution. */
 interface ReactImportBindings {
   /** Named imports such as `createContext` or `createContext as makeContext`. */
@@ -62,6 +73,7 @@ interface NeutralValueContext {
 export function createReactContextFallbackReplacements(
   sourcePath: string,
   sourceText: string,
+  resolveTypeFallback?: ResolveReactContextTypeFallback,
 ): readonly ReactContextFallbackReplacement[] {
   if (!isProjectTypeScriptSource(sourcePath)) {
     return [];
@@ -99,7 +111,13 @@ export function createReactContextFallbackReplacements(
       ts.isCallExpression(node) &&
       node.questionDotToken === undefined
     ) {
-      const replacement = createCallReplacement(node, sourceFile, bindings, localTypes);
+      const replacement = createCallReplacement(
+        node,
+        sourceFile,
+        bindings,
+        localTypes,
+        resolveTypeFallback,
+      );
       if (replacement !== undefined) {
         replacements.push(replacement);
       }
@@ -117,6 +135,7 @@ function createCallReplacement(
   sourceFile: ts.SourceFile,
   bindings: ReactImportBindings,
   localTypes: ReadonlyMap<string, LocalTypeDeclaration>,
+  resolveTypeFallback: ResolveReactContextTypeFallback | undefined,
 ): ReactContextFallbackReplacement | undefined {
   if (
     call.arguments.length !== 1 ||
@@ -132,11 +151,15 @@ function createCallReplacement(
     return undefined;
   }
 
-  const neutralValue = createNeutralValue(contextType, 0, {
+  const localNeutralValue = createNeutralValue(contextType, 0, {
     activeTypeNames: new Set(),
     budget: { propertyCount: 0 },
     localTypes,
   });
+  const neutralValue =
+    localNeutralValue === undefined || localNeutralValue === 'undefined'
+      ? resolveTypeFallback?.(contextType)?.expression
+      : localNeutralValue;
   if (
     neutralValue === undefined ||
     neutralValue === 'undefined' ||

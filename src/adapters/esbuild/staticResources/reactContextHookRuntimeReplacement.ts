@@ -23,6 +23,8 @@ export interface ReactContextHookRuntimeReplacementOptions {
   readonly line: number;
   /** Unchanged authored hook-call expression, including type arguments. */
   readonly originalCall: string;
+  /** Exact scalar paths that must replace an invalid non-nullish generated value. */
+  readonly renderGuardPaths?: readonly string[];
   /** Operation-proven paths represented by the generated Context fallback. */
   readonly requiredPaths: readonly string[];
   /** Absolute project source path retained only in the local webview diagnostic. */
@@ -63,6 +65,9 @@ export function createReactContextHookRuntimeReplacement(
       .slice(0, 24),
     line: options.line,
     moduleSpecifier: 'project Context hook',
+    ...(options.renderGuardPaths === undefined || options.renderGuardPaths.length === 0
+      ? {}
+      : { renderGuardPaths: options.renderGuardPaths }),
     requiredPaths: options.requiredPaths,
     sourcePath: normalizedSourcePath,
   };

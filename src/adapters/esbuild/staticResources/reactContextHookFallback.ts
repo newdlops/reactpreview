@@ -13,6 +13,7 @@ import { createPreviewRuntimeCallableFallbackExpression } from './previewRuntime
 import { inferPreviewRuntimeHookMembershipItemFallback } from './previewRuntimeHookMembershipItem';
 import { createPreviewGeneratedListExpression } from './previewRuntimeHookUsageTree';
 import { inferPreviewRuntimeHookAssignmentGuardPassFallback } from './previewRuntimeHookGuardValue';
+import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHookLocalScalarDemand';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 import {
   collectLocalFunctionSummaries,
@@ -25,6 +26,7 @@ import { createReactContextHookRuntimeReplacement } from './reactContextHookRunt
 import type {
   PreviewRuntimeHookImportedHelperItemFallback,
   ResolvePreviewRuntimeHookImportedHelperItemFallback,
+  ResolvePreviewRuntimeHookImportedHelperParameterFallback,
 } from './previewRuntimeHookAliasUsage';
 import { inferPreviewRuntimeArrayItemFallback } from './previewRuntimeHookInstrumentation';
 
@@ -114,6 +116,8 @@ interface HookFallbackPlan {
   scopeCount: number;
   /** Whether JavaScript proves a non-nullish root is required. */
   required: boolean;
+  /** Exact scalar paths required to avoid an authored exhaustive throw. */
+  readonly renderGuardPaths: Set<string>;
   /** Root plain-object shape serialized only after all evidence is collected. */
   readonly shape: FallbackShape;
   /** Unique materialized paths used to enforce the inference budget. */
@@ -165,6 +169,7 @@ export function createReactContextHookFallbackTransform(
   sourcePath: string,
   sourceText: string,
   resolveImportedCollectionCallbackItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
+  resolveImportedHelperParameter?: ResolvePreviewRuntimeHookImportedHelperParameterFallback,
 ): ReactContextHookFallbackTransform {
   if (!isProjectRuntimeSource(sourcePath) || !sourceText.includes('Context')) {
     return EMPTY_TRANSFORM;
@@ -214,6 +219,7 @@ export function createReactContextHookFallbackTransform(
       localReturnFunctions,
       isGlobalObjectShadowed(sourceFile),
       resolveImportedCollectionCallbackItem,
+      resolveImportedHelperParameter,
     );
     if (!plan.invalid && plan.required && wouldBreakOptionalShortCircuit(plan)) {
       plan.invalid = true;
@@ -253,6 +259,7 @@ export function createReactContextHookFallbackTransform(
         hookName: hookExpression,
         line: location.line + 1,
         originalCall,
+        renderGuardPaths: [...plan.renderGuardPaths],
         requiredPaths: collectFallbackRequiredPaths(plan.shape),
         sourcePath,
         start,
@@ -458,6 +465,7 @@ function createFallbackPlan(candidate: HookCandidate): HookFallbackPlan {
     invalid: false,
     optionalBasePaths: new Map(),
     required: false,
+    renderGuardPaths: new Set(),
     scopeCount: 0,
     shape: { children: new Map(), kind: 'object' },
     shapePaths: new Set(),
@@ -478,6 +486,8 @@ function analyzeCandidateScope(
   globalObjectShadowed: boolean,
   resolveImportedCollectionCallbackItem:
     ResolvePreviewRuntimeHookImportedHelperItemFallback | undefined,
+  resolveImportedHelperParameter:
+    ResolvePreviewRuntimeHookImportedHelperParameterFallback | undefined,
 ): void {
   plan.scopeCount += 1;
   if (plan.scopeCount > MAX_SCOPES_PER_CANDIDATE || plan.invalid) {
@@ -500,6 +510,7 @@ function analyzeCandidateScope(
     localReturnFunctions,
     globalObjectShadowed,
     resolveImportedCollectionCallbackItem,
+    resolveImportedHelperParameter,
   );
   for (const nestedFunction of collectDirectNestedFunctions(scope)) {
     analyzeCandidateScope(
@@ -510,6 +521,7 @@ function analyzeCandidateScope(
       localReturnFunctions,
       globalObjectShadowed,
       resolveImportedCollectionCallbackItem,
+      resolveImportedHelperParameter,
     );
   }
 }
@@ -630,12 +642,13 @@ function inspectScopeOperations(
   globalObjectShadowed: boolean,
   resolveImportedCollectionCallbackItem:
     ResolvePreviewRuntimeHookImportedHelperItemFallback | undefined,
+  resolveImportedHelperParameter:
+    ResolvePreviewRuntimeHookImportedHelperParameterFallback | undefined,
 ): void {
   visitDirectScopeNodes(scope, (node) => {
     if (plan.invalid) return;
     if (ts.isIdentifier(node)) {
       inspectBoundScalarIdentifier(node, bindings, plan);
-      if (plan.invalid) return;
     }
     if (
       ts.isElementAccessExpression(node) &&
@@ -661,6 +674,7 @@ function inspectScopeOperations(
         localReturnFunctions,
         globalObjectShadowed,
         resolveImportedCollectionCallbackItem,
+        resolveImportedHelperParameter,
       );
     }
   });
@@ -677,21 +691,27 @@ function inspectBoundScalarIdentifier(
   if (!isRuntimeValueIdentifierReference(identifier)) return;
   for (const valuePath of resolved.paths) {
     if (valuePath.length === 0) continue;
+    const localScalar = inferPreviewRuntimeHookLocalScalarFallback(
+      identifier,
+      identifier.getSourceFile(),
+    );
+    const guardedScalar = localScalar?.renderGuard === true ? localScalar : undefined;
     const semantic = inferPreviewRuntimeSemanticFallback(valuePath.at(-1) ?? identifier.text);
-    if (
-      semantic === undefined ||
-      !['boolean', 'null', 'number', 'string'].includes(semantic.kind)
-    ) {
-      continue;
-    }
+    const scalarExpression =
+      guardedScalar?.expression ??
+      (semantic !== undefined && ['boolean', 'null', 'number', 'string'].includes(semantic.kind)
+        ? semantic.expression
+        : undefined);
+    if (scalarExpression === undefined) continue;
     plan.required = true;
     if (
       !addProperObjectPrefixes(valuePath, plan) ||
-      !addScalarLeaf(valuePath, semantic.expression, plan)
+      !addScalarLeaf(valuePath, scalarExpression, plan)
     ) {
       plan.invalid = true;
       return;
     }
+    if (guardedScalar !== undefined) plan.renderGuardPaths.add(valuePath.join('.'));
   }
 }
 
@@ -799,6 +819,8 @@ function inspectCallExpression(
   globalObjectShadowed: boolean,
   resolveImportedCollectionCallbackItem:
     ResolvePreviewRuntimeHookImportedHelperItemFallback | undefined,
+  resolveImportedHelperParameter:
+    ResolvePreviewRuntimeHookImportedHelperParameterFallback | undefined,
 ): void {
   if (call.questionDotToken !== undefined && isRootedAtCandidate(call.expression, bindings, plan)) {
     if (!recordOptionalBase(call.expression, bindings, plan, localReturnFunctions)) {
@@ -921,6 +943,14 @@ function inspectCallExpression(
       }
     }
   }
+  inspectImportedHelperParameterDemand(
+    call,
+    bindings,
+    plan,
+    localReturnFunctions,
+    resolveImportedHelperParameter,
+  );
+  if (plan.invalid) return;
   for (const argument of call.arguments) {
     const resolved = readHookBoundValue(
       argument,
@@ -935,6 +965,68 @@ function inspectCallExpression(
       ) {
         plan.invalid = true;
         return;
+      }
+    }
+  }
+}
+
+/** Carries a hook-derived argument into the operation-proven shape of an imported helper. */
+function inspectImportedHelperParameterDemand(
+  call: ts.CallExpression,
+  bindings: ReadonlyMap<string, HookBoundValue>,
+  plan: HookFallbackPlan,
+  localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
+  resolveImportedHelperParameter:
+    ResolvePreviewRuntimeHookImportedHelperParameterFallback | undefined,
+): void {
+  if (resolveImportedHelperParameter === undefined || call.questionDotToken !== undefined) return;
+  const callee = unwrapExpression(call.expression);
+  if (!ts.isIdentifier(callee)) return;
+  for (const [parameterIndex, argument] of call.arguments.entries()) {
+    if (ts.isSpreadElement(argument)) continue;
+    const resolved = readHookBoundValue(
+      argument,
+      bindings,
+      plan.candidate.call,
+      localReturnFunctions,
+    );
+    if (resolved === undefined) continue;
+    const fallback = resolveImportedHelperParameter(callee.text, parameterIndex);
+    if (fallback?.nestedUsages === undefined || fallback.nestedUsages.length === 0) continue;
+    plan.required = true;
+    for (const basePath of resolved.paths) {
+      for (const usage of fallback.nestedUsages) {
+        const valuePath = [...basePath, ...usage.names];
+        const item =
+          usage.collectionItemExpression === undefined
+            ? undefined
+            : {
+                expression: usage.collectionItemExpression,
+                ...(usage.collectionItemRequiredPaths === undefined
+                  ? {}
+                  : { requiredPaths: usage.collectionItemRequiredPaths }),
+              };
+        const valid =
+          usage.collectionProperty !== undefined
+            ? addProperObjectPrefixes(valuePath, plan) && addCollectionLeaf(valuePath, plan, item)
+            : usage.called
+              ? addProperObjectPrefixes(valuePath, plan) && addCallableLeaf(valuePath, plan)
+              : usage.valueExpression !== undefined
+                ? addProperObjectPrefixes(valuePath, plan) &&
+                  addScalarLeaf(valuePath, usage.valueExpression, plan)
+                : usage.stringProperty !== undefined
+                  ? addProperObjectPrefixes(valuePath, plan) &&
+                    addScalarLeaf(
+                      valuePath,
+                      inferPreviewRuntimeSemanticFallback(valuePath.at(-1) ?? '')?.expression ??
+                        '""',
+                      plan,
+                    )
+                  : addObjectContainer(valuePath, plan);
+        if (!valid) {
+          plan.invalid = true;
+          return;
+        }
       }
     }
   }

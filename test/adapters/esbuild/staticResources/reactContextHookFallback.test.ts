@@ -136,6 +136,34 @@ describe('createReactContextHookFallbackTransform', () => {
     );
   });
 
+  /** Replaces a generic Context scalar only when every unmatched switch path reaches a throw. */
+  it('carries a helper switch value that avoids an exhaustive fallthrough', () => {
+    const source = [
+      `import { useWorkflowContext } from './workflow-context';`,
+      'function getStageIndex(stage, alternateBranch) {',
+      '  if (alternateBranch) {',
+      '    switch (stage) { case "extended": return 1; case "shared": return 2; }',
+      '  } else {',
+      '    switch (stage) { case "basic": return 1; case "shared": return 2; }',
+      '  }',
+      '  throw new Error("unreachable");',
+      '}',
+      'export function Steps() {',
+      '  const { workflow: { stage, alternateBranch } } = useWorkflowContext();',
+      '  return <span>{getStageIndex(stage, alternateBranch)}</span>;',
+      '}',
+    ].join('\n');
+
+    const transform = createReactContextHookFallbackTransform('/workspace/steps.tsx', source);
+
+    expect(transform.declarations).toEqual([
+      'const __reactPreviewContextHookFallback0 = Object.freeze({ "workflow": Object.freeze({ "stage": "basic" }) });',
+    ]);
+    expect(transform.replacements[0]?.replacement).toContain(
+      '"renderGuardPaths":["workflow.stage"]',
+    );
+  });
+
   /**
    * Reproduces an application permission hook where required Context destructuring and optional
    * application values coexist. Optional descendants must not discard the already-proven root
@@ -212,6 +240,51 @@ describe('createReactContextHookFallbackTransform', () => {
     expect(transform.declarations).toEqual([
       'const __reactPreviewContextHookFallback0 = Object.freeze({ "formikProps": Object.freeze({ "errors": Object.freeze({}) }), "options": Object.freeze({}) });',
     ]);
+  });
+
+  /** Carries an imported helper's nested Array demand into a Context-hook fallback. */
+  it('infers a Context value consumed inside a direct imported helper', () => {
+    const source = [
+      `import { useIaEmailSendFormContext } from './form-context';`,
+      `import { getSelectedPartners } from './email-utils';`,
+      'export function PreviewSection() {',
+      '  const { formikProps } = useIaEmailSendFormContext();',
+      '  const selectedPartners = getSelectedPartners(formikProps.values);',
+      '  return <main>{selectedPartners.length}</main>;',
+      '}',
+    ].join('\n');
+
+    const transform = createReactContextHookFallbackTransform(
+      '/workspace/preview-section.tsx',
+      source,
+      undefined,
+      (localName, parameterIndex) =>
+        localName === 'getSelectedPartners' && parameterIndex === 0
+          ? {
+              expression: 'Object.freeze({ "recipients": Object.freeze([{ "selected": false }]) })',
+              kind: 'object',
+              nestedUsages: [
+                {
+                  called: false,
+                  collectionItemExpression: 'Object.freeze({ "selected": false })',
+                  collectionItemRequiredPaths: ['selected'],
+                  collectionProperty: 'filter',
+                  names: ['recipients'],
+                },
+              ],
+              requiredPaths: ['recipients.map()', 'recipients[].selected'],
+            }
+          : undefined,
+    );
+
+    expect(transform.replacements).toHaveLength(1);
+    expect(transform.declarations[0]).toContain(
+      '"values": Object.freeze({ "recipients": ((__createPreviewItem)',
+    );
+    expect(transform.declarations[0]).toContain('Object.freeze({ "selected": false })');
+    expect(transform.replacements[0]?.replacement).toContain(
+      'formikProps.values.recipients.[].selected',
+    );
   });
 
   /** Executes generated JavaScript to prove real values win and fallback identities stay frozen. */

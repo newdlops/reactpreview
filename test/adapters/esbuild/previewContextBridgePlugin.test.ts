@@ -196,6 +196,47 @@ describe('createPreviewContextBridgePlugin', () => {
     }
   });
 
+  /** Completes a truthy placeholder default whose required nested carrier is still absent. */
+  it('supplements an incomplete non-nullish Context default', async () => {
+    const projectRoot = await createTemporaryProject('context-incomplete-default-');
+    try {
+      await installFakeReactPackage(projectRoot);
+      const context = await executeContextBridgeFixture(
+        projectRoot,
+        [
+          "import { createContext } from 'react';",
+          "import { createContextPreviewElement, registerPreviewContextIdentity, registerPreviewContextRequirement, readPreviewRuntimeStatus } from 'react-preview:context';",
+          'const existingDefault = Object.freeze({ formikProps: undefined, authored: true });',
+          'const FormContext = createContext(existingDefault);',
+          'function useFormContext() {}',
+          'registerPreviewContextIdentity(useFormContext, FormContext);',
+          'registerPreviewContextRequirement(',
+          '  useFormContext,',
+          '  Object.freeze({ formikProps: Object.freeze({ values: Object.freeze({ recipients: Object.freeze([]) }) }) }),',
+          ');',
+          "const child = { marker: 'TARGET' };",
+          'const boundary = createContextPreviewElement(child);',
+          'const rendered = boundary.type(boundary.props);',
+          'globalThis.__contextBridgeResult = {',
+          '  authoredSiblingPreserved: rendered.props.value.authored === true,',
+          '  contextProviderIdentity: rendered.type === FormContext.Provider,',
+          '  recipientsIsArray: Array.isArray(rendered.props.value.formikProps.values.recipients),',
+          '  status: readPreviewRuntimeStatus(),',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__contextBridgeResult).toEqual({
+        authoredSiblingPreserved: true,
+        contextProviderIdentity: true,
+        recipientsIsArray: true,
+        status: 'active: 1 static project Context provider(s) with demand-shaped neutral values',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Keeps valid Contexts active while omitting only a Context with an object/callable conflict. */
   it('fails closed per exact Context identity when merged fallback kinds conflict', async () => {
     const projectRoot = await createTemporaryProject('context-conflict-');

@@ -148,6 +148,25 @@ describe('createPreviewAutomaticPropsRuntimeSource', () => {
     expect(context.result).toEqual({ firstDocumentId: 0, isArray: true, length: 3 });
   });
 
+  /** Keeps primitive string selections visible and uniquely keyed without changing exact enums. */
+  it('labels generated primitive string rows from their public collection name', () => {
+    const context: { result?: Record<string, unknown> } = {};
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        "const shape = { kind: 'object', properties: { projects: { kind: 'array', items: { kind: 'string' } }, statuses: { kind: 'array', items: { exactValue: true, kind: 'string', value: 'READY' } } } };",
+        'const value = createPreviewPropsFromLayers(shape);',
+        'globalThis.result = { projects: value.projects, statuses: value.statuses };',
+      ].join('\n'),
+      context,
+    );
+
+    expect(context.result).toEqual({
+      projects: ['project', 'project 2', 'project 3'],
+      statuses: ['READY', 'READY', 'READY'],
+    });
+  });
+
   /** Keeps an already materialized list when later prop layers start without another shape. */
   it('preserves generated list props through the final resolver and override merge', () => {
     const context: { result?: Record<string, unknown> } = {};

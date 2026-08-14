@@ -136,6 +136,16 @@ function markPreviewInspectorGeneratedValue(value, state = { nodes: 0 }, depth =
   return value;
 }
 
+/** Reports whether this exact container came from an extension-owned Auto value. */
+function isPreviewInspectorMarkedGeneratedValue(value) {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return false;
+  try {
+    return previewInspectorGeneratedValueRegistry?.has(value) === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Detects the extension's neutral empty-record result without reading project-owned properties. */
 function isPreviewInspectorGeneratedEmptyPlainRecord(value) {
   if (!isPreviewInspectorGeneratedPlainRecord(value)) return false;
@@ -269,12 +279,15 @@ function hasPreviewInspectorGeneratedCollectionRequirement(state, path) {
 
 /** Reports whether a compiler path proves an object read below the currently merged value. */
 function hasPreviewInspectorGeneratedDescendantRequirement(state, path) {
-  if (!Array.isArray(state.requiredPaths) || path.length === 0) return false;
-  const prefix = normalizePreviewInspectorGeneratedRequirementPath(path.join('.')) + '.';
-  return state.requiredPaths.some((requiredPath) =>
-    typeof requiredPath === 'string' &&
-    normalizePreviewInspectorGeneratedRequirementPath(requiredPath).startsWith(prefix),
-  );
+  if (!Array.isArray(state.requiredPaths)) return false;
+  const prefix = normalizePreviewInspectorGeneratedRequirementPath(path.join('.'));
+  return state.requiredPaths.some((requiredPath) => {
+    if (typeof requiredPath !== 'string') return false;
+    const normalized = normalizePreviewInspectorGeneratedRequirementPath(requiredPath);
+    return prefix.length === 0
+      ? normalized.length > 0 && normalized !== '<root>'
+      : normalized.startsWith(prefix + '.');
+  });
 }
 
 /** Reports whether compiler usage names the currently merged value as one exact required leaf. */
@@ -488,13 +501,16 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
   if (
     authoredIsArray &&
     isPreviewInspectorGeneratedPlainRecord(generated) &&
-    hasPreviewInspectorGeneratedDescendantRequirement(state, path)
+    hasPreviewInspectorGeneratedDescendantRequirement(state, path) &&
+    (path.length > 0 || isPreviewInspectorMarkedGeneratedValue(authored))
   ) {
     /*
      * Schema-less GraphQL inference may read a plural-looking object wrapper (for example
      * initialValues) as a collection. A direct project read below that same value proves the
      * wrapper is an object. Preserve the first selection-shaped item when available, complete it
-     * with the compiler fallback, and remove only the contradicted Array container.
+     * with the compiler fallback, and remove only the contradicted Array container. At the root,
+     * this repair is admitted only for a marked Auto value: genuine project-owned Arrays remain
+     * authoritative even when a later generator proposes an object.
      */
     const authoredItem = readPreviewInspectorGeneratedOwnValue(authored, '0');
     const completedItem =

@@ -148,8 +148,29 @@ function doPreviewAutomaticValueKindsConflict(inferredValue, authoredValue) {
   return typeof inferredValue !== typeof authoredValue;
 }
 
+/** Produces one concise display label from a statically named primitive collection. */
+function createPreviewAutomaticCollectionItemLabel(fieldName) {
+  let value = typeof fieldName === 'string' ? fieldName.trim() : '';
+  if (value.length === 0) return '';
+  if (/ies$/iu.test(value)) value = value.slice(0, -3) + 'y';
+  else if (/(?:ches|shes|xes|zes|ses)$/iu.test(value)) value = value.slice(0, -2);
+  else if (/s$/iu.test(value) && !/(?:ss|us)$/iu.test(value)) value = value.slice(0, -1);
+  return value.length <= 32 ? value : value.slice(0, 31) + '…';
+}
+
+/** Gives non-enum primitive string rows stable, visible, and unique list identities. */
+function materializePreviewAutomaticStringListItem(node, value, fieldName, itemIndex) {
+  if (
+    node?.kind !== 'string' || node.exactValue === true ||
+    typeof value !== 'string' || typeof itemIndex !== 'number'
+  ) return value;
+  const base = value.length > 0 ? value : createPreviewAutomaticCollectionItemLabel(fieldName);
+  if (base.length === 0 || itemIndex === 0) return base;
+  return base + ' ' + String(itemIndex + 1);
+}
+
 /** Materializes one validated shape node under fixed depth and aggregate node budgets. */
-function materializePreviewAutomaticPropNode(node, budget, depth) {
+function materializePreviewAutomaticPropNode(node, budget, depth, fieldName = '') {
   if (
     node === null || typeof node !== 'object' || Array.isArray(node) ||
     depth > PREVIEW_AUTOMATIC_PROP_MAX_DEPTH || budget.nodes >= PREVIEW_AUTOMATIC_PROP_MAX_NODES
@@ -160,8 +181,13 @@ function materializePreviewAutomaticPropNode(node, budget, depth) {
       // A sample list is admitted only when static type evidence supplied an element contract.
       // Unknown arrays stay empty so automatic props cannot invent application collection semantics.
       if (node.items === undefined) return [];
-      const items = createPreviewGeneratedList(() =>
-        materializePreviewAutomaticPropNode(node.items, budget, depth + 1),
+      const items = createPreviewGeneratedList((itemIndex) =>
+        materializePreviewAutomaticStringListItem(
+          node.items,
+          materializePreviewAutomaticPropNode(node.items, budget, depth + 1, fieldName),
+          fieldName,
+          itemIndex,
+        ),
       );
       return items.filter((item) => item !== undefined);
     }
@@ -182,7 +208,7 @@ function materializePreviewAutomaticPropNode(node, budget, depth) {
       const properties = isPreviewAutomaticPropRecord(node.properties) ? node.properties : {};
       for (const [name, childNode] of readPreviewAutomaticPropEntries(properties)) {
         if (blockedPreviewAutomaticPropNames.has(name)) continue;
-        const child = materializePreviewAutomaticPropNode(childNode, budget, depth + 1);
+        const child = materializePreviewAutomaticPropNode(childNode, budget, depth + 1, name);
         if (child !== undefined) result[name] = child;
       }
       return result;

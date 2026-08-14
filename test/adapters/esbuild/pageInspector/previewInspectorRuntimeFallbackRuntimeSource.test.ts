@@ -129,6 +129,26 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.api.read()).toEqual([]);
   });
 
+  /** Replaces only an exact invalid discriminator that would enter an exhaustive throw. */
+  it('applies a compiler-proven Context render guard over a non-nullish generated scalar', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      renderGuardPaths: ['workflow.stage'],
+      requiredPaths: ['workflow.stage'],
+    };
+    const authored = { workflow: { retained: 'application', stage: 'stage' } };
+    const fallback = { workflow: { stage: 'basic' } };
+
+    expect(fixture.api.resolve(() => authored, () => fallback, metadata)).toEqual({
+      workflow: { retained: 'application', stage: 'basic' },
+    });
+    expect(fixture.api.read()[0]).toMatchObject({
+      generatedPaths: ['workflow.stage'],
+      reason: 'partial',
+    });
+  });
+
   /** Keeps a compiler-proven optional sentinel without exposing a meaningless user decision. */
   it('auto-resolves optional-only nullish hook results by preserving the authored sentinel', () => {
     const fixture = createRuntimeFallbackFixture(true);

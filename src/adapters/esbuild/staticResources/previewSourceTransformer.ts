@@ -23,11 +23,13 @@ import {
   type PreviewRouterRequirement,
 } from '../previewRouterRequirement';
 import { collectPreviewFormikRequirement } from '../previewFormikRequirement';
+import { collectPreviewYarnLibuiRequirement } from '../previewYarnLibuiRequirement';
 import { collectPreviewDragDropRequirement } from '../previewDragDropRequirement';
 import {
   PREVIEW_DRAG_DROP_SPECIFIER,
   PREVIEW_FORMIK_SPECIFIER,
   PREVIEW_REDUX_SPECIFIER,
+  PREVIEW_YARN_LIBUI_SPECIFIER,
 } from '../previewPluginProtocol';
 import { createPreviewThemeSourceInstrumentation } from './previewThemeSourceInstrumentation';
 import {
@@ -61,6 +63,7 @@ import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
 import { canPassThroughPreviewDependency } from './previewDependencyPassThroughPolicy';
 import { createPreviewReactJsxNamespaceCompatibilityImport } from './previewReactJsxNamespaceCompatibility';
 import { createPreviewReactDomPortalContainerReplacements } from './previewReactDomPortalInstrumentation';
+import { createPreviewAgGridModuleRegistration } from './previewAgGridModuleRegistration';
 import { deferPreviewDormantOverlayImports } from './previewDormantOverlayDeferral';
 import { createPreviewStaticRenderAssetTransform } from './previewStaticRenderAssets';
 import {
@@ -70,10 +73,11 @@ import {
   matchesDynamicTemplateCandidate,
 } from './previewDynamicModuleResolution';
 import type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
+import { PREVIEW_IMPORT_META_GLOB_MAX_MATCH_REFERENCES } from './previewImportMetaGlobInventory';
 export { PreviewSourceTransformError } from './previewSourceReplacement';
 export type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
 const MAX_BUILD_EXPANSIONS = 128;
-const MAX_BUILD_MATCH_REFERENCES = 1024;
+const MAX_BUILD_MATCH_REFERENCES = PREVIEW_IMPORT_META_GLOB_MAX_MATCH_REFERENCES;
 const MAX_BUILD_SCANNED_ENTRIES = 16_384;
 const MAX_BUILD_WATCH_DIRECTORIES = 128;
 const INSTALLED_DEPENDENCY_DIRECTORY_NAMES = new Set(['.pnpm', '.yarn', 'node_modules']);
@@ -212,6 +216,18 @@ export class PreviewSourceTransformer {
         generatedImports.push(reactJsxNamespaceImport);
       }
       if (
+        this.options.instrumentRuntimeHookFallbacks === true &&
+        sourceText.includes('ag-grid-react')
+      ) {
+        generatedImports.push(
+          ...createPreviewAgGridModuleRegistration(
+            analysis.getSourceFile(),
+            this.options.agGridModulePackage ?? 'community',
+            allocate,
+          ),
+        );
+      }
+      if (
         this.options.implicitPackageGlobalResolver !== undefined &&
         (this.options.implicitPackageGlobalCandidateNames?.length ?? 0) > 0
       ) {
@@ -241,6 +257,16 @@ export class PreviewSourceTransformer {
           );
         }
       }
+      if (sourceText.includes('@yarnpkg/libui')) {
+        const libuiRequirement = collectPreviewYarnLibuiRequirement(sourcePath, sourceText);
+        if (libuiRequirement.consumesMinistore || libuiRequirement.ownsMinistore) {
+          const registrationBinding = bindings.next('yarnLibuiRequirement');
+          generatedImports.push(
+            `import { registerPreviewYarnLibuiRequirement as ${registrationBinding} } from ${JSON.stringify(PREVIEW_YARN_LIBUI_SPECIFIER)};`,
+            `${registrationBinding}(${JSON.stringify(libuiRequirement)});`,
+          );
+        }
+      }
       if (sourceText.includes('react-beautiful-dnd')) {
         const dragDropRequirement = collectPreviewDragDropRequirement(sourcePath, sourceText);
         if (
@@ -255,8 +281,19 @@ export class PreviewSourceTransformer {
           );
         }
       }
+      const contextTypeDemand = this.runtimeHookChildPropDemands;
       if (sourceText.includes('createContext')) {
-        replacements.push(...createReactContextFallbackReplacements(sourcePath, sourceText));
+        replacements.push(
+          ...createReactContextFallbackReplacements(
+            sourcePath,
+            sourceText,
+            contextTypeDemand?.inferLocalTypeFallback.bind(
+              contextTypeDemand,
+              sourcePath,
+              sourceText,
+            ),
+          ),
+        );
       }
       replacements.push(...framework.createFrameworkReplacements(sourcePath, sourceText));
       if (sourceText.includes('Context')) {
@@ -264,11 +301,15 @@ export class PreviewSourceTransformer {
           sourceText.includes('createContext') && sourceText.includes('useContext')
             ? collectReactContextIdentityPairs(sourcePath, sourceText)
             : { pairs: [], truncated: false };
-        const contextTypeDemand = this.runtimeHookChildPropDemands;
         const contextHookFallback = createReactContextHookFallbackTransform(
           sourcePath,
           sourceText,
           contextTypeDemand?.inferImportedCollectionCallbackItemFallback.bind(
+            contextTypeDemand,
+            sourcePath,
+            sourceText,
+          ),
+          contextTypeDemand?.inferImportedHelperParameterFallback.bind(
             contextTypeDemand,
             sourcePath,
             sourceText,

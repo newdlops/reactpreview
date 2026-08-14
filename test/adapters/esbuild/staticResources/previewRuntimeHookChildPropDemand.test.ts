@@ -194,7 +194,7 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     );
 
     expect(transformed).toContain('"state": Object.freeze({ "formikValues": Object.freeze({');
-    expect(transformed).toContain('"step": 0');
+    expect(transformed).toContain('"step": 1');
     expect(transformed).toContain('state.formikValues.step');
     expect(transformed).toContain('state.formikValues.agendaSelection');
   });
@@ -568,6 +568,48 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     expect(transformed).toContain('data.companyFeeds[].ir.round');
   });
 
+  /** Infers nested collection demand from an untyped imported helper's whole object parameter. */
+  it('resolves an imported helper parameter consumed below a Context form value', () => {
+    const parentPath = '/workspace/IaEmailPreviewSection.tsx';
+    const helperPath = '/workspace/email-utils.ts';
+    const parentSource = [
+      `import { getSelectedPartners } from './email-utils';`,
+      'export const PreviewSection = ({ formikProps }) => {',
+      '  const selectedPartners = getSelectedPartners(formikProps.values);',
+      '  return <main>{selectedPartners.length}</main>;',
+      '};',
+    ].join('\n');
+    const helperSource = [
+      'export const getSelectedPartners = (values) =>',
+      '  values.recipients.filter(({ selected }) => selected);',
+    ].join('\n');
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => (sourcePath === helperPath ? helperSource : undefined),
+      resolveModule: (moduleSpecifier, consumerPath) =>
+        consumerPath === parentPath && moduleSpecifier === './email-utils' ? helperPath : undefined,
+      workspaceRoot: '/workspace',
+    });
+
+    const fallback = builder.inferImportedHelperParameterFallback(
+      parentPath,
+      parentSource,
+      'getSelectedPartners',
+      0,
+    );
+
+    expect(fallback).toMatchObject({
+      kind: 'object',
+      requiredPaths: ['recipients.map()'],
+    });
+    expect(fallback?.nestedUsages).toEqual([
+      {
+        called: false,
+        collectionProperty: 'map',
+        names: ['recipients'],
+      },
+    ]);
+  });
+
   /** Keeps an untyped helper's directly rendered collection item scalar across the import edge. */
   it('propagates a rendered scalar collection through an imported helper', () => {
     const parentPath = '/workspace/MeetingFormSteps.tsx';
@@ -672,6 +714,31 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     expect(transformed).toContain(
       '"requiredPaths":["requestUpload","bulkUploadOpen","deleteTarget","editTarget","uploadTarget"]',
     );
+  });
+
+  /** Keeps a query collection an Array after its loading/error discriminator changes later. */
+  it('infers table rows through a conditional collection fallback', () => {
+    const source = [
+      `import { useRecords } from './use-records';`,
+      'export function SummaryTable() {',
+      '  const { data, status } = useRecords();',
+      '  return <Table',
+      '    data={data && status !== "loading" ? (data as Record[]) : []}',
+      '    getID={(row) => row.id}',
+      '    columns={[{ key: "name" }, { key: "createdAt" }]}',
+      '  />;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/SummaryTable.tsx', source),
+    );
+
+    expect(transformed).toContain('"data": ((__createPreviewItem)');
+    expect(transformed).toContain('data.[].id');
+    expect(transformed).toContain('data.[].name');
+    expect(transformed).toContain('data.[].createdAt');
   });
 });
 

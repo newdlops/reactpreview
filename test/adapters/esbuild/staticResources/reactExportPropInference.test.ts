@@ -162,9 +162,12 @@ describe('collectReactExportPropInference', () => {
 
   it('infers a nested prop collection forwarded into a same-file helper', () => {
     const source = [
-      'const sortedIssues = issues => issues.filter(issue => issue.status === "OPEN")',
+      'type Issue =',
+      '  | { id: string; listPosition: number; status: "BACKLOG"; title: string }',
+      '  | { id: string; listPosition: number; status: "OPEN"; title: string };',
+      'const sortedIssues = (issues: Issue[]) => issues.filter(issue => issue.status === "OPEN")',
       '  .sort((left, right) => left.listPosition - right.listPosition);',
-      'export function List({ project }) {',
+      'export function List({ project }: { project: { issues: Issue[] } }) {',
       '  return sortedIssues(project.issues).map(issue => <span key={issue.id}>{issue.title}</span>);',
       '}',
     ].join('\n');
@@ -179,7 +182,7 @@ describe('collectReactExportPropInference', () => {
           items: {
             kind: 'object',
             properties: {
-              status: { kind: 'string' },
+              status: { exactValue: true, kind: 'string', value: 'OPEN' },
             },
           },
         },

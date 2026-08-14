@@ -14,8 +14,10 @@ import {
 } from './previewRuntimeHookLocalHelperItem';
 import { isReactComponentTypeSyntax } from './reactComponentTypeSyntax';
 import {
+  inferReactOverlayStateVisibility,
   inferReactOverlayVisibilityProp,
   isReactOverlayComponentName,
+  type ReactOverlayStateVisibilityValue,
 } from './reactOverlayVisibilityInference';
 import { inferReactOverlayVisibilityTypePath } from './reactOverlayVisibilityTypeInference';
 import { inferReactOverlayVisibilityNeutralValue } from './reactOverlayVisibilityNeutralValue';
@@ -24,6 +26,7 @@ const MAX_COMPONENT_EXPORTS = 32;
 const MAX_LOCAL_COMPONENT_RESOLUTION_DEPTH = 12;
 const MAX_INFERRED_DEPTH = 10;
 const MAX_INFERRED_NODES = 192;
+const MIN_USAGE_NODE_RESERVE = 32;
 const MAX_IMPORTED_TYPE_MODULES = 12;
 const MAX_IMPORTED_TYPE_BYTES = 2 * 1024 * 1024;
 const MAX_STATIC_REGISTRY_HINTS = 16;
@@ -157,6 +160,8 @@ interface MutableShapeNode {
   children: Map<string, MutableShapeNode>;
   /** Retains authored literal/control-flow evidence across compatible shape merges. */
   exactValue?: true;
+  /** Lets operation-proven literals outrank a type union's arbitrary first materialized member. */
+  exactValueSource?: PreviewInferredPropProvenance['source'];
   /** Element contract for an Array node, retained only when its syntax is statically resolvable. */
   items?: MutableShapeNode;
   /** Direct iterable destructuring proves that an otherwise scalar-typed Array needs one sample. */
@@ -216,6 +221,8 @@ interface InferenceState {
   readonly localComponents: ReadonlyMap<string, LocalComponentDeclaration>;
   readonly localComponentDemandDepth: number;
   readonly localTypes: ReadonlyMap<string, LocalObjectType>;
+  /** Current phase ceiling; large type unions reserve capacity for operation-proven leaves. */
+  nodeLimit: number;
   nodeCount: number;
   /** Source-proven registry keys that replace generic name-derived discriminator text. */
   readonly registryDiscriminantHints: ReadonlyMap<string, PreviewStaticRegistryKey>;
@@ -275,6 +282,14 @@ export function collectReactExportPropInference(
       options.childPropDemands,
       registryDiscriminantHints,
       identityCollectionHelperParameters,
+      ts.isMethodDeclaration(component.functionLike)
+        ? undefined
+        : inferReactOverlayStateVisibility(
+            component.functionLike,
+            component.exportName,
+            sourcePath,
+            options.resolveImport,
+          ),
     );
     if (inference !== undefined && inference.provenance.length > 0) {
       results[component.exportName] = inference;
@@ -329,6 +344,14 @@ export function collectReactLocalComponentPropInference(
       options.childPropDemands,
       registryDiscriminantHints,
       identityCollectionHelperParameters,
+      ts.isMethodDeclaration(candidate.functionLike)
+        ? undefined
+        : inferReactOverlayStateVisibility(
+            candidate.functionLike,
+            componentName,
+            sourcePath,
+            options.resolveImport,
+          ),
     );
     if (inference !== undefined && inference.provenance.length > 0) {
       results[componentName] = inference;
@@ -1020,6 +1043,7 @@ function inferComponentProps(
   childPropDemands?: PreviewChildPropDemandCatalog,
   registryDiscriminantHints: ReadonlyMap<string, PreviewStaticRegistryKey> = new Map(),
   identityCollectionHelperParameters: ReadonlyMap<string, ReadonlySet<number>> = new Map(),
+  overlayStateVisibility?: ReactOverlayStateVisibilityValue,
 ): PreviewInferredExportProps | undefined {
   const { functionLike } = component;
   const parameter = functionLike.parameters[0];
@@ -1040,6 +1064,7 @@ function inferComponentProps(
     localComponents,
     localComponentDemandDepth,
     localTypes,
+    nodeLimit: MAX_INFERRED_NODES,
     nodeCount: 1,
     registryDiscriminantHints,
     root,
@@ -1050,13 +1075,18 @@ function inferComponentProps(
   }
   if (parameter !== undefined) {
     collectParameterBindings(parameter.name, [], state.aliases);
-    addTypedParameterRequirements(
-      parameter,
-      component.contextualPropsType,
-      localTypes,
-      state,
-      sourceFile,
-    );
+    state.nodeLimit = MAX_INFERRED_NODES - MIN_USAGE_NODE_RESERVE;
+    try {
+      addTypedParameterRequirements(
+        parameter,
+        component.contextualPropsType,
+        localTypes,
+        state,
+        sourceFile,
+      );
+    } finally {
+      state.nodeLimit = MAX_INFERRED_NODES;
+    }
   }
   collectLocalPropAliases(functionLike, state);
   collectLocalHelperForwardedPropRequirements(functionLike, state);
@@ -1068,7 +1098,7 @@ function inferComponentProps(
   if (followLocalJsxPropForwarding) {
     collectLocalJsxForwardedPropRequirements(functionLike, state);
   }
-  addOverlayVisibilityRequirement(component, localTypes, state, sourceFile);
+  addOverlayVisibilityRequirement(component, localTypes, state, sourceFile, overlayStateVisibility);
   if (state.root.children.size === 0) {
     return undefined;
   }
@@ -1166,7 +1196,10 @@ function collectKeyedCollectionHelperRequirements(
           const item = createMutableNode('object', 'usage');
           const property = createMutableNode(semantic?.kind ?? 'string', 'usage');
           if (semantic?.value !== undefined) property.value = semantic.value;
-          if (semantic?.exactValue === true) property.exactValue = true;
+          if (semantic?.exactValue === true) {
+            property.exactValue = true;
+            property.exactValueSource = 'usage';
+          }
           item.children.set(key, property);
           requirePath(state, collectionPath, 'array', 'usage');
           setArrayItemRequirement(state, collectionPath, item);
@@ -1248,6 +1281,7 @@ export function inferReactFunctionParameterUsageShape(
     localComponents: collectLocalComponentDeclarations(functionLike.getSourceFile()),
     localComponentDemandDepth: 0,
     localTypes: collectLocalObjectTypes(functionLike.getSourceFile()),
+    nodeLimit: MAX_INFERRED_NODES,
     nodeCount: 1,
     registryDiscriminantHints: collectStaticRegistryDiscriminantHints(
       functionLike.getSourceFile(),
@@ -1273,6 +1307,7 @@ function addOverlayVisibilityRequirement(
   localTypes: ReadonlyMap<string, LocalObjectType>,
   state: InferenceState,
   sourceFile: ts.SourceFile,
+  overlayStateVisibility: ReactOverlayStateVisibilityValue | undefined,
 ): void {
   const functionLike = component.functionLike;
   if (component.classComponentProps === true || ts.isMethodDeclaration(functionLike)) return;
@@ -1290,6 +1325,27 @@ function addOverlayVisibilityRequirement(
   if (visibilityPath !== undefined) {
     requirePath(state, visibilityPath, 'boolean', 'usage', true, true);
   }
+  if (overlayStateVisibility !== undefined) {
+    requirePath(
+      state,
+      [overlayStateVisibility.propName],
+      overlayStateVisibility.kind,
+      'usage',
+      overlayStateVisibility.value,
+      true,
+    );
+    const renderedContent = overlayStateVisibility.renderedContent;
+    if (renderedContent !== undefined) {
+      const existing = readMutablePathNode(state, [renderedContent.propName]);
+      if (existing?.kind === 'null' && existing.exactValue !== true) {
+        existing.kind = 'string';
+        existing.source = 'usage';
+        existing.value = renderedContent.value;
+      } else {
+        requirePath(state, [renderedContent.propName], 'string', 'usage', renderedContent.value);
+      }
+    }
+  }
 }
 
 /** Maps destructured/local prop bindings to their external root property paths. */
@@ -1302,8 +1358,14 @@ function collectParameterBindings(
     aliases.set(bindingName.text, { path: parentPath });
     return;
   }
+  const objectBinding = ts.isObjectBindingPattern(bindingName);
   for (const element of bindingName.elements) {
-    if (ts.isOmittedExpression(element) || element.initializer !== undefined) continue;
+    if (ts.isOmittedExpression(element)) continue;
+    if (objectBinding && element.dotDotDotToken !== undefined && ts.isIdentifier(element.name)) {
+      aliases.set(element.name.text, { path: parentPath });
+      continue;
+    }
+    if (element.initializer !== undefined) continue;
     const propertyName = readBindingPropertyName(element);
     if (propertyName === undefined || BLOCKED_PROPERTY_NAMES.has(propertyName)) continue;
     collectParameterBindings(element.name, [...parentPath, propertyName], aliases);
@@ -1907,7 +1969,7 @@ function createTypeShape(
 ): MutableShapeNode | undefined {
   // The detached item root consumes one level of the caller's already-used aggregate corridor;
   // it must not restart at an apparent top-level `value` path for nested collection evidence.
-  if (state.nodeCount >= MAX_INFERRED_NODES) return undefined;
+  if (state.nodeCount >= state.nodeLimit) return undefined;
   const selectedTypeNode = selectPreviewCollectionItemType(typeNode, localTypes);
   const root = createMutableNode('object', 'type');
   const previousRoot = state.root;
@@ -1967,8 +2029,16 @@ function mergeMutableShapeRequirement(target: MutableShapeNode, source: MutableS
   if (source.itemConsumed === true) target.itemConsumed = true;
   if (source.renderedValue === true) target.renderedValue = true;
   if (source.source === 'type') target.source = 'type';
-  if (source.value !== undefined) target.value = source.value;
-  if (source.exactValue === true) target.exactValue = true;
+  if (source.value !== undefined && target.exactValueSource !== 'usage') {
+    target.value = source.value;
+  }
+  if (
+    source.exactValue === true &&
+    (target.exactValueSource !== 'usage' || source.source === 'usage')
+  ) {
+    target.exactValue = true;
+    target.exactValueSource = source.source;
+  }
   for (const [name, child] of source.children) {
     const existing = target.children.get(name);
     if (existing === undefined) target.children.set(name, child);
@@ -1992,7 +2062,7 @@ function mergeMutableShapeAtPath(
     if (BLOCKED_PROPERTY_NAMES.has(propertyName)) return;
     let child = current.children.get(propertyName);
     if (child === undefined) {
-      if (state.nodeCount >= MAX_INFERRED_NODES) return;
+      if (state.nodeCount >= state.nodeLimit) return;
       state.nodeCount += 1;
       child = createMutableNode('object', 'usage');
       current.children.set(propertyName, child);
@@ -2603,7 +2673,7 @@ function mergeFrozenShapeAtPath(
     if (BLOCKED_PROPERTY_NAMES.has(propertyName)) return;
     if (current.kind === 'array' && /^(?:0|[1-9]\d*)$/u.test(propertyName)) {
       if (current.items === undefined) {
-        if (state.nodeCount >= MAX_INFERRED_NODES) return;
+        if (state.nodeCount >= state.nodeLimit) return;
         state.nodeCount += 1;
         current.items = createMutableNode('object', 'usage');
       }
@@ -2613,7 +2683,7 @@ function mergeFrozenShapeAtPath(
     if (current.kind !== 'object') return;
     let child = current.children.get(propertyName);
     if (child === undefined) {
-      if (state.nodeCount >= MAX_INFERRED_NODES) return;
+      if (state.nodeCount >= state.nodeLimit) return;
       state.nodeCount += 1;
       child = createMutableNode('object', 'usage');
       current.children.set(propertyName, child);
@@ -2628,11 +2698,14 @@ function thawPreviewInferredShape(
   shape: PreviewInferredPropShape,
   state: InferenceState,
 ): MutableShapeNode | undefined {
-  if (state.nodeCount >= MAX_INFERRED_NODES) return undefined;
+  if (state.nodeCount >= state.nodeLimit) return undefined;
   state.nodeCount += 1;
   const node = createMutableNode(shape.kind, 'usage');
   if (shape.value !== undefined) node.value = shape.value;
-  if (shape.exactValue === true) node.exactValue = true;
+  if (shape.exactValue === true) {
+    node.exactValue = true;
+    node.exactValueSource = 'usage';
+  }
   if (shape.items !== undefined) {
     const items = thawPreviewInferredShape(shape.items, state);
     if (items !== undefined) node.items = items;
@@ -2667,6 +2740,7 @@ function inferFunctionBindingRequirement(
     localComponents: parentState.localComponents,
     localComponentDemandDepth: parentState.localComponentDemandDepth,
     localTypes: parentState.localTypes,
+    nodeLimit: parentState.nodeLimit,
     nodeCount: parentState.nodeCount,
     registryDiscriminantHints: parentState.registryDiscriminantHints,
     root,
@@ -2731,7 +2805,9 @@ function collectEqualityDiscriminantRequirements(
           path_ !== undefined &&
           path_.length > 0 &&
           !isShadowedPathRoot(candidate.expression, state) &&
-          !hasPreviewInferredPropExplicitValue(state, path_)
+          (!hasPreviewInferredPropExplicitValue(state, path_) ||
+            (state.collectionDemandDepth > 0 &&
+              !hasPreviewInferredPropUsageExactValue(state, path_)))
         ) {
           requirePath(
             state,
@@ -2776,7 +2852,9 @@ function collectSwitchDiscriminantRequirements(
         path_ !== undefined &&
         path_.length > 0 &&
         !isShadowedPathRoot(node.expression, state) &&
-        !hasPreviewInferredPropExplicitValue(state, path_) &&
+        (!hasPreviewInferredPropExplicitValue(state, path_) ||
+          (state.collectionDemandDepth > 0 &&
+            !hasPreviewInferredPropUsageExactValue(state, path_))) &&
         caseValues !== undefined
       ) {
         const value = caseValues[0];
@@ -3207,6 +3285,20 @@ function hasPreviewInferredPropExplicitValue(
   return current.value !== undefined;
 }
 
+/** Reports an authored operation literal already selected for this detached collection item. */
+function hasPreviewInferredPropUsageExactValue(
+  state: InferenceState,
+  path_: readonly string[],
+): boolean {
+  let current = state.root;
+  for (const propertyName of path_) {
+    const child = current.children.get(propertyName);
+    if (child === undefined) return false;
+    current = child;
+  }
+  return current.exactValue === true && current.exactValueSource === 'usage';
+}
+
 /**
  * Reports whether one prop-derived value reaches JSX output. Semantic keys may seed that leaf while
  * syntax-only wrappers are skipped without following calls or changing unrelated control flow.
@@ -3267,7 +3359,7 @@ function requirePath(
     if (BLOCKED_PROPERTY_NAMES.has(propertyName)) return;
     let child = current.children.get(propertyName);
     if (child === undefined) {
-      if (state.nodeCount >= MAX_INFERRED_NODES) return;
+      if (state.nodeCount >= state.nodeLimit) return;
       child = createMutableNode(index === path_.length - 1 ? kind : 'object', source);
       current.children.set(propertyName, child);
       state.nodeCount += 1;
@@ -3291,8 +3383,15 @@ function mergeNodeKind(
 ): void {
   if (node.kind === kind) {
     if (source === 'type') node.source = 'type';
-    if (value !== undefined) node.value = value;
-    if (exactValue === true) node.exactValue = true;
+    if (exactValue === true) {
+      if (node.exactValueSource !== 'usage' || source === 'usage') {
+        if (value !== undefined) node.value = value;
+        node.exactValue = true;
+        node.exactValueSource = source;
+      }
+    } else if (value !== undefined && node.exactValue !== true) {
+      node.value = value;
+    }
     return;
   }
   if (node.kind === 'object' && node.children.size === 0) {
@@ -3300,7 +3399,10 @@ function mergeNodeKind(
     node.source = source;
     if (value === undefined) delete node.value;
     else node.value = value;
-    if (exactValue === true) node.exactValue = true;
+    if (exactValue === true) {
+      node.exactValue = true;
+      node.exactValueSource = source;
+    }
   }
 }
 

@@ -19,6 +19,7 @@ import {
   createPreviewRuntimeSemanticString,
   inferPreviewRuntimeSemanticFallback,
 } from './previewRuntimeHookSemantics';
+import { collectPreviewRuntimeHookConditionComparisons } from './previewRuntimeHookConditionComparison';
 
 /** Maximum helper-call distance inspected from the component that owns a hook binding. */
 const MAX_LOCAL_CALL_DEPTH = 3;
@@ -83,6 +84,8 @@ interface AnalysisState {
   readonly functions: ReadonlyMap<string, LocalFunction>;
   /** Equality values that should not be chosen when another authored domain value exists. */
   readonly forbiddenKeys: Set<string>;
+  /** Whether one scalar must replace an existing hook value to continue past an early return. */
+  renderGuardRequired: boolean;
   /** Incrementing authored-order marker shared across recursive helper visits. */
   nextOrder: number;
   /** Source file that owns every admitted helper and emitted expression. */
@@ -119,6 +122,7 @@ export function inferPreviewRuntimeHookLocalScalarFallback(
     forbiddenKeys: new Set(),
     functions: catalog.functions,
     nextOrder: 0,
+    renderGuardRequired: false,
     sourceFile,
     typeAliases: catalog.typeAliases,
     visited: new Set(),
@@ -259,7 +263,21 @@ function visitReachableNode(
   if (state.candidates.length >= MAX_CANDIDATES) return;
   if (node !== scope && isPreviewRuntimeFunction(node)) return;
   if (ts.isIfStatement(node)) {
-    collectComparisonCandidate(node.expression, trackedName, aliases, state);
+    const renderGuard =
+      node.elseStatement === undefined && statementAlwaysExits(node.thenStatement);
+    for (const comparison of collectPreviewRuntimeHookConditionComparisons(
+      node.expression,
+      renderGuard,
+    )) {
+      collectComparisonCandidate(
+        comparison.expression,
+        trackedName,
+        aliases,
+        state,
+        renderGuard,
+        comparison.desiredValue,
+      );
+    }
     const condition = evaluateBooleanExpression(node.expression, knownValues, aliases);
     if (condition === true) {
       visitReachableNode(
@@ -316,21 +334,23 @@ function visitReachableNode(
     return;
   }
   if (ts.isSwitchStatement(node) && isTrackedExpression(node.expression, trackedName, aliases)) {
-    const closedSwitch = node.caseBlock.clauses.some(
-      (clause) => ts.isDefaultClause(clause) && clause.statements.some(statementAlwaysThrows),
-    );
+    const closedSwitch =
+      node.caseBlock.clauses.some(
+        (clause) => ts.isDefaultClause(clause) && clause.statements.some(statementAlwaysThrows),
+      ) || switchMissReachesTerminalThrow(node, scope);
     for (const clause of node.caseBlock.clauses) {
       if (ts.isCaseClause(clause)) {
         const literal = readStaticScalarExpression(clause.expression, state.sourceFile);
+        const acceptedBeforeThrow = closedSwitch && clause.statements.some(statementAlwaysExits);
         if (literal !== undefined) {
           addScalarCandidate(state, {
             expression: literal.expression,
             key: scalarKey(literal.value),
-            label: closedSwitch
+            label: acceptedBeforeThrow
               ? 'generated accepted literal before exhaustive switch throw'
               : 'generated literal from reachable local helper switch',
-            rank: closedSwitch ? 300 : 220,
-            ...(closedSwitch ? { renderGuard: true as const } : {}),
+            rank: acceptedBeforeThrow ? 300 : 220,
+            ...(acceptedBeforeThrow ? { renderGuard: true as const } : {}),
           });
         }
       }
@@ -349,6 +369,36 @@ function visitReachableNode(
   ts.forEachChild(node, (child) => {
     visitReachableNode(child, scope, trackedName, aliases, knownValues, depth, state);
   });
+}
+
+/** Proves that an unmatched nested switch falls through directly to a function-tail throw. */
+function switchMissReachesTerminalThrow(
+  statement: ts.SwitchStatement,
+  scope: PreviewRuntimeFunction,
+): boolean {
+  const body = scope.body;
+  if (body === undefined || !ts.isBlock(body)) return false;
+  const terminal = body.statements.at(-1);
+  if (terminal === undefined || !statementAlwaysThrows(terminal)) return false;
+  let current: ts.Node = statement;
+  while (current.parent !== body) {
+    const parent = current.parent;
+    if (ts.isBlock(parent)) {
+      if (parent.statements.at(-1) !== current) return false;
+      current = parent;
+      continue;
+    }
+    if (
+      ts.isIfStatement(parent) &&
+      (parent.thenStatement === current || parent.elseStatement === current)
+    ) {
+      current = parent;
+      continue;
+    }
+    return false;
+  }
+  const topLevelIndex = body.statements.indexOf(current as ts.Statement);
+  return topLevelIndex === body.statements.length - 2;
 }
 
 /**
@@ -437,6 +487,8 @@ function collectComparisonCandidate(
   trackedName: string,
   aliases: ReadonlySet<string>,
   state: AnalysisState,
+  renderGuard = false,
+  desiredComparisonValue = false,
 ): void {
   const unwrapped = unwrapPreviewRuntimeExpression(expression);
   if (!ts.isBinaryExpression(unwrapped) || !isEqualityOperator(unwrapped.operatorToken.kind))
@@ -447,19 +499,28 @@ function collectComparisonCandidate(
   const inequality =
     unwrapped.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
     unwrapped.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
-  if (!inequality && literal !== undefined) state.forbiddenKeys.add(scalarKey(literal.value));
+  const useComparedValue = inequality !== desiredComparisonValue;
+  if (!useComparedValue && literal !== undefined) {
+    state.forbiddenKeys.add(scalarKey(literal.value));
+  }
+  if (renderGuard) state.renderGuardRequired = true;
   addScalarCandidate(state, {
-    expression: createPreviewComparisonFalseExpression(
-      createPreviewRuntimeSemanticString(trackedName),
-      compared,
-      unwrapped.operatorToken.kind,
-      state.sourceFile,
-    ),
-    ...(inequality && literal !== undefined ? { key: scalarKey(literal.value) } : {}),
-    label: inequality
-      ? 'generated value accepted by reachable local inequality guard'
-      : 'generated comparison-safe value',
-    rank: inequality ? 260 : 70,
+    expression: useComparedValue
+      ? compared.getText(state.sourceFile)
+      : createPreviewComparisonFalseExpression(
+          createPreviewRuntimeSemanticString(trackedName),
+          compared,
+          ts.SyntaxKind.EqualsEqualsEqualsToken,
+          state.sourceFile,
+        ),
+    ...(useComparedValue && literal !== undefined ? { key: scalarKey(literal.value) } : {}),
+    label: renderGuard
+      ? 'generated scalar to continue past an early return'
+      : inequality
+        ? 'generated value accepted by reachable local inequality guard'
+        : 'generated comparison-safe value',
+    rank: useComparedValue ? 260 : 70,
+    ...(renderGuard ? { renderGuard: true as const } : {}),
   });
 }
 
@@ -511,7 +572,9 @@ function selectScalarCandidate(
     : {
         expression: selected.expression,
         label: selected.label,
-        ...(selected.renderGuard === true ? { renderGuard: true as const } : {}),
+        ...(state.renderGuardRequired || selected.renderGuard === true
+          ? { renderGuard: true as const }
+          : {}),
       };
 }
 

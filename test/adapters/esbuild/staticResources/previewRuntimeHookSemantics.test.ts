@@ -40,4 +40,18 @@ describe('inferPreviewRuntimeSemanticFallback', () => {
       value: false,
     });
   });
+
+  /** Keeps one-based Wizard components on their first authored step instead of hiding all steps. */
+  it('starts an inferred wizard step at one', () => {
+    expect(inferPreviewRuntimeSemanticFallback('step')).toMatchObject({
+      expression: '1',
+      kind: 'number',
+      value: 1,
+    });
+    expect(inferPreviewRuntimeSemanticFallback('stepCount')).toMatchObject({
+      expression: '0',
+      kind: 'number',
+      value: 0,
+    });
+  });
 });

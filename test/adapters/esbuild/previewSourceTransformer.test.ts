@@ -22,6 +22,21 @@ afterEach(async () => {
 });
 
 describe('PreviewSourceTransformer', () => {
+  /** Registers exact libui hook demand so the entry can restore renderForm's public boundary. */
+  it('registers a reached Yarn libui ministore consumer', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'ProjectApp.tsx');
+    const sourceText = [
+      "import { useMinistore as useStore } from '@yarnpkg/libui/sources/hooks/useMinistore';",
+      'export function ProjectApp() { useStore(); return <main />; }',
+    ].join('\n');
+
+    const transformed = await createTransformer(workspaceRoot).transform(sourcePath, sourceText);
+
+    expect(transformed.contents).toContain('from "react-preview:yarn-libui";');
+    expect(transformed.contents).toContain('{"consumesMinistore":true,"ownsMinistore":false}');
+  });
+
   /** Instruments JSX conditions only for Page Inspector compilation, never for Export Gallery. */
   it('gates conditional branch controls behind the inspector transformer option', async () => {
     const workspaceRoot = await createTemporaryWorkspace();
@@ -359,6 +374,38 @@ describe('PreviewSourceTransformer', () => {
     expect(transformed.contents).toContain('registerPreviewContextRequirement');
   });
 
+  /** Keeps a closed helper-switch literal when Context and general hook analyzers overlap. */
+  it('retains an exhaustive Context switch guard through replacement arbitration', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'Steps.tsx');
+    const sourceText = [
+      `import { useWorkflowContext } from './workflow-context';`,
+      'function getStageIndex(stage, alternateBranch) {',
+      '  if (alternateBranch) {',
+      '    switch (stage) { case "extended": return 1; case "shared": return 2; }',
+      '  } else {',
+      '    switch (stage) { case "basic": return 1; case "shared": return 2; }',
+      '  }',
+      '  throw new Error("unreachable");',
+      '}',
+      'export function Steps() {',
+      '  const { workflow: { stage, alternateBranch } } = useWorkflowContext();',
+      '  return <span>{getStageIndex(stage, alternateBranch)}</span>;',
+      '}',
+    ].join('\n');
+    const transformer = new PreviewSourceTransformer({
+      instrumentRuntimeHookFallbacks: true,
+      projectRoot: workspaceRoot,
+      workspaceRoot,
+    });
+
+    const transformed = await transformer.transform(sourcePath, sourceText);
+
+    expect(transformed.contents.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(1);
+    expect(transformed.contents).toContain('"workflow": Object.freeze({ "stage": "basic" })');
+    expect(transformed.contents).toContain('"renderGuardPaths":["workflow.stage"]');
+  });
+
   /** Falls back to the general hook analyzer when Context identity inference cannot follow a helper. */
   it('isolates a Context fragment carrier passed through an unknown project helper', async () => {
     const workspaceRoot = await createTemporaryWorkspace();
@@ -451,6 +498,33 @@ describe('PreviewSourceTransformer', () => {
     expect(transformed.contents).toContain('() => (COMPANY_FRAGMENT)');
     expect(transformed.contents).toContain('"requiredPaths":["name"]');
     expect(transformed.contents).toContain('"ownerName":"Modal"');
+  });
+
+  /** Carries destructured Array operations and their synchronous item reads into Auto data. */
+  it('preserves fragment collection contracts after a destructured alias', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'OwnerMenubar.tsx');
+    const sourceText = [
+      `import { getFragmentData } from './graphql-codegen/fragment-masking';`,
+      `import { OWNER_MENUBAR_FRAGMENT } from './owner-menubar-fragment';`,
+      'export function OwnerMenubar({ company }) {',
+      '  const { warnings: companyWarnings } = getFragmentData(OWNER_MENUBAR_FRAGMENT, company);',
+      '  const hasWarnings = companyWarnings.some(({ isStaffOnly }) => !isStaffOnly);',
+      '  return hasWarnings ? <strong>Warning</strong> : null;',
+      '}',
+    ].join('\n');
+    const transformer = new PreviewSourceTransformer({
+      instrumentRuntimeHookFallbacks: true,
+      projectRoot: workspaceRoot,
+      workspaceRoot,
+    });
+
+    const transformed = await transformer.transform(sourcePath, sourceText);
+
+    expect(transformed.contents).toContain('.resolveGraphqlFragment(');
+    expect(transformed.contents).toContain(
+      '"requiredPaths":["warnings","warnings.some()","warnings[].isStaffOnly"]',
+    );
   });
 
   /** Preserves a bounded resource macro when it is nested inside a general hook call. */

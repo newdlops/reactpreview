@@ -26,7 +26,10 @@ import {
   isPreviewRuntimeHookMutableRefJsxValue,
   isPreviewRuntimeHookRenderedJsxValue,
 } from './previewRuntimeHookDirectUsage';
-import { inferPreviewRuntimeHookGuardPassFallback } from './previewRuntimeHookGuardValue';
+import {
+  inferPreviewRuntimeHookExpressionThrowGuardPassFallback,
+  inferPreviewRuntimeHookGuardPassFallback,
+} from './previewRuntimeHookGuardValue';
 import {
   readPreviewRuntimeHookAliasUsagePaths,
   type ResolvePreviewRuntimeHookImportedHelperItemFallback,
@@ -89,6 +92,7 @@ const INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
 const MAX_HOOKS_PER_MODULE = 96;
 const MAX_METADATA_TEXT_LENGTH = 180;
 const CUSTOM_HOOK_PATTERN = /^use[A-Z0-9_$][A-Za-z0-9_$]*$/u;
+const STORE_HOOK_PATTERN = /^use[A-Z0-9_$][A-Za-z0-9_$]*Store$/u;
 const LAZY_QUERY_HOOK_PATTERN = /^use(?:[A-Z0-9_$][A-Za-z0-9_$]*)?LazyQuery$/u;
 const QUERY_PARAM_MODULE = 'use-query-params';
 const REACT_CONTEXT_HOOK = 'useContext';
@@ -451,7 +455,11 @@ function readRuntimeHookBinding(
   }
   if (ts.isPropertyAccessExpression(unwrapped) && ts.isIdentifier(unwrapped.expression)) {
     const directFacade = inventory.direct.get(unwrapped.expression.text);
-    if (directFacade !== undefined && DATA_HOOK_FACADE_METHODS.has(unwrapped.name.text)) {
+    if (
+      directFacade !== undefined &&
+      (DATA_HOOK_FACADE_METHODS.has(unwrapped.name.text) ||
+        (unwrapped.name.text === 'getState' && STORE_HOOK_PATTERN.test(directFacade.hookName)))
+    ) {
       return {
         hookName: directFacade.hookName + '.' + unwrapped.name.text,
         moduleSpecifier: directFacade.moduleSpecifier,
@@ -1025,6 +1033,24 @@ function createIdentifierUsageFallback(
           isPreviewRuntimeHookStringUsageProperty(collectionProperty) &&
           inferPreviewRuntimeSemanticFallback(usagePath.names.at(-2) ?? identifier.text)?.label !==
             'generated object';
+        const guardPass =
+          !terminalCalled && !collection && !stringReceiver
+            ? inferPreviewRuntimeHookExpressionThrowGuardPassFallback(node)
+            : undefined;
+        const guardSemantic = inferPreviewRuntimeSemanticFallback(
+          usagePath.names.at(-1) ?? identifier.text,
+        );
+        const guardValueExpression =
+          guardPass === undefined
+            ? undefined
+            : guardPass.kind === 'boolean' && guardSemantic?.kind !== 'boolean'
+              ? guardSemantic?.expression
+              : guardPass.expression;
+        const valueExpression = terminalMutableRef
+          ? '({ current: null })'
+          : terminalEmptyRenderable
+            ? 'null'
+            : (guardValueExpression ?? renderedExpression);
         if (
           !usagePath.optional &&
           collection &&
@@ -1059,17 +1085,10 @@ function createIdentifierUsageFallback(
               (collection && !spreadCollection) || stringReceiver
                 ? usagePath.names.slice(0, -1)
                 : usagePath.names,
+            ...(guardPass === undefined ? {} : { renderGuard: true as const }),
             ...(stringReceiver ? { stringProperty: collectionProperty ?? '' } : {}),
-            ...(terminalMutableRef ? { valueExpression: '({ current: null })' } : {}),
-            ...(terminalEmptyRenderable ? { valueExpression: 'null' } : {}),
-            /*
-             * Rendering `rows.length` consumes the scalar result of an Array property read; it
-             * does not turn the `rows` receiver into a number. Keep the collection constraint on
-             * the receiver so a later map/filter call cannot inherit the rendered `0` expression.
-             */
-            ...(renderedExpression === undefined || terminalEmptyRenderable || collection
-              ? {}
-              : { valueExpression: renderedExpression }),
+            /* Rendering `rows.length` consumes a scalar result, not a numeric rows receiver. */
+            ...(valueExpression === undefined || collection ? {} : { valueExpression }),
           });
         }
       }

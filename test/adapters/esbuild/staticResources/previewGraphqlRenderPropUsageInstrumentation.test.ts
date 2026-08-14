@@ -235,4 +235,68 @@ describe('preview GraphQL render-prop usage instrumentation', () => {
       '"data.registrationFee.feesByAgenda.[].feesByRegistry.[].taxType","value":"heavy_tax"',
     );
   });
+
+  it('carries a filtered table row discriminator from a styled child into GraphQL data', () => {
+    const pagePath = '/workspace/DirectorPage.tsx';
+    const panelPath = '/workspace/DirectorCompensationChangeLogPanel.tsx';
+    const pageSource = [
+      `import { DirectorCompensationChangeLogPanel } from './DirectorCompensationChangeLogPanel';`,
+      'const QUERY = {};',
+      '<QueryRenderer query={QUERY}>',
+      '  {({ data: { director } }) => (',
+      '    <div>',
+      ...Array.from({ length: 32 }, (_, index) => `    <Irrelevant${index} />`),
+      '    <DirectorCompensationChangeLogPanel events={director.userActivities as any} />',
+      '    </div>',
+      '  )}',
+      '</QueryRenderer>;',
+    ].join('\n');
+    const panelSource = [
+      'export const DirectorCompensationChangeLogPanel = styled(',
+      '  ({ events }) => {',
+      '    const [targetEvents, setTargetEvents] = useState([]);',
+      '    useEffect(() => {',
+      '      setTargetEvents(events.filter(',
+      '        ({ eventType }) => eventType === "directorcompensationdecisionevent",',
+      '      ));',
+      '    }, [events]);',
+      '    if (!targetEvents.length) return <></>;',
+      '    return <AgDataTable dataList={targetEvents} />;',
+      '  },',
+      ')``;',
+    ].join('\n');
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => (sourcePath === panelPath ? panelSource : undefined),
+      resolveModule: (moduleSpecifier, consumerPath) =>
+        consumerPath === pagePath && moduleSpecifier === './DirectorCompensationChangeLogPanel'
+          ? panelPath
+          : undefined,
+      workspaceRoot: '/workspace',
+    });
+
+    const catalog = builder.collect(pagePath, pageSource, { includeOptionalTypes: true });
+    const replacements = createPreviewGraphqlRenderPropUsageReplacements(
+      pagePath,
+      pageSource,
+      catalog,
+    );
+
+    expect(catalog.get('DirectorCompensationChangeLogPanel')?.get('events')).toMatchObject({
+      items: {
+        properties: {
+          eventType: {
+            exactValue: true,
+            kind: 'string',
+            value: 'directorcompensationdecisionevent',
+          },
+        },
+      },
+      kind: 'array',
+    });
+    expect(replacements).toHaveLength(1);
+    expect(replacements[0]?.replacement).toContain('"data.director.userActivities.[]"');
+    expect(replacements[0]?.replacement).toContain(
+      '"data.director.userActivities.[].eventType","value":"directorcompensationdecisionevent"',
+    );
+  });
 });

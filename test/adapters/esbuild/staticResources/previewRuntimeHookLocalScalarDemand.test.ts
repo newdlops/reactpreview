@@ -31,6 +31,7 @@ describe('preview runtime local scalar demand', () => {
     expect(transformed).toContain('"stage": "basic"');
     expect(transformed).toContain('"alternateBranch": false');
     expect(transformed).toContain('"fallbackLabel":"generated object fields"');
+    expect(transformed).toContain('"renderGuardPaths":["workflow.stage"]');
     expect(transformed).toContain('"requiredPaths":["workflow.stage","workflow.alternateBranch"]');
   });
 
@@ -104,6 +105,41 @@ describe('preview runtime local scalar demand', () => {
     ].join('\n');
 
     expect(applyReplacements(source)).toContain('() => (Object.freeze({}))');
+  });
+
+  /** Replaces an already-present loading discriminator after sibling data is generated. */
+  it('marks a scalar equality inside a compound early return as a render guard', () => {
+    const source = [
+      `import { useRows } from './row-hook';`,
+      'export function TablePage() {',
+      '  const { data, status } = useRows();',
+      '  if (data === undefined || status === "loading") return <Loading />;',
+      '  return <Table data={data} />;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyReplacements(source);
+
+    expect(transformed).toContain('"status": "PREVIEW"');
+    expect(transformed).toContain('"renderGuardPaths":["status"]');
+    expect(transformed).toContain('"requiredPaths":["data","status"]');
+  });
+
+  /** Inverts only a direct negated equality, preserving a closed authored scalar domain. */
+  it('selects the accepted scalar behind a negated early return', () => {
+    const source = [
+      `import { usePhase } from './phase-hook';`,
+      'export function ReadyPanel() {',
+      '  const phase = usePhase();',
+      '  if (!(phase === "ready")) return <Loading />;',
+      '  return <Panel />;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyReplacements(source);
+
+    expect(transformed).toContain('() => ("ready")');
+    expect(transformed).toContain('"renderGuardPaths":["<root>"]');
   });
 });
 

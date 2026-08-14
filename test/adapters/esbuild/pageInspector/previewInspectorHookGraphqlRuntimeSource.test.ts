@@ -1,5 +1,6 @@
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { createPreviewInspectorGeneratedValueRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorGeneratedValueRuntimeSource';
 import { createPreviewInspectorHookGraphqlRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorHookGraphqlRuntimeSource';
 
 describe('Preview Inspector GraphQL render-prop runtime', () => {
@@ -168,11 +169,7 @@ function createRuntime(): {
         vcUserRelations: Array.isArray(relation) ? relation : [relation ?? {}],
       };
     };
-    const completePreviewInspectorGeneratedValue = (current, overlay) => {
-      const merge = (left, right) => Array.isArray(right) ? right.map((item, index) => merge(left?.[index], item)) :
-        right && typeof right === 'object' ? Object.fromEntries(Object.keys({ ...left, ...right }).map((key) => [key, merge(left?.[key], right[key])])) : right;
-      return { changed: true, value: merge(current, overlay) };
-    };
+    ${createPreviewInspectorGeneratedValueRuntimeSource()}
     ${createPreviewInspectorHookGraphqlRuntimeSource()}
     globalThis.__runtime = {
       associate: registerPreviewInspectorGraphqlFixedRenderer,

@@ -35,6 +35,7 @@ import {
   mergePreviewRuntimeHookCollectionItemExpressions,
 } from './previewRuntimeHookUsageTree';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
+import { isPreviewRuntimeHookJsxCollectionCarrier } from './previewRuntimeHookJsxCollectionCarrier';
 
 const MAX_COMPONENT_IMPORTS = 32;
 const MAX_PROP_DEMANDS = 32;
@@ -173,9 +174,10 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     if (hasParseDiagnostics(sourceFile)) return new Map();
     const transitiveDepth = options.transitiveDepth ?? 0;
     const imports = collectImportedComponentBindings(sourceFile);
-    const usedComponents = new Set(
-      collectUsedJsxComponentBindings(sourceFile, collectHookResultBindings(sourceFile)),
-    );
+    const usedComponents = new Set([
+      ...collectInlineRenderPropConsumerBindings(sourceFile),
+      ...collectUsedJsxComponentBindings(sourceFile, collectHookResultBindings(sourceFile)),
+    ]);
     // Render-prop data is not a hook binding, but its imported child is still an operation-proven
     // consumer. Keep the catalog bounded and syntax-only for that adjacent use as well.
     collectAllUsedJsxComponentBindings(sourceFile, usedComponents);
@@ -278,6 +280,35 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     });
   }
 
+  /** Infers every operation-proven field read by one direct imported helper parameter. */
+  public inferImportedHelperParameterFallback(
+    sourcePath: string,
+    sourceText: string,
+    localName: string,
+    parameterIndex: number,
+  ): PreviewRuntimeHookLocalTypeFallback | undefined {
+    const parameter = this.typeDemands.inferImportedFunctionParameter(
+      sourcePath,
+      sourceText,
+      localName,
+      parameterIndex,
+    );
+    if (parameter === undefined) return undefined;
+    const nestedUsages: PreviewRuntimeHookChildPropUsage[] = [];
+    appendShapeUsages(parameter, [], [], nestedUsages, 0);
+    return Object.freeze({
+      expression: serializePreviewRuntimeHookChildShape(parameter, 'value'),
+      kind: parameter.kind,
+      label: 'generated value from imported helper parameter',
+      ...(nestedUsages.length === 0
+        ? {}
+        : {
+            nestedUsages: Object.freeze(nestedUsages.map((usage) => Object.freeze({ ...usage }))),
+          }),
+      requiredPaths: Object.freeze(collectPreviewRuntimeHookChildShapePaths(parameter)),
+    });
+  }
+
   /**
    * Infers one named property supplied through an object argument to a direct imported helper.
    *
@@ -312,9 +343,7 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
       ...(nestedUsages.length === 0
         ? {}
         : {
-            nestedUsages: Object.freeze(
-              nestedUsages.map((usage) => Object.freeze({ ...usage })),
-            ),
+            nestedUsages: Object.freeze(nestedUsages.map((usage) => Object.freeze({ ...usage }))),
           }),
       requiredPaths: Object.freeze(collectPreviewRuntimeHookChildShapePaths(property)),
     });
@@ -389,6 +418,54 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
       !path.isAbsolute(relative)
     );
   }
+}
+
+/** Prioritizes JSX children that directly receive one inline render callback's data binding. */
+function collectInlineRenderPropConsumerBindings(sourceFile: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      names.size < MAX_COMPONENT_IMPORTS &&
+      (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+      isInlineJsxRenderCallback(node)
+    ) {
+      const bindings = new Set<string>();
+      for (const parameter of node.parameters) appendBindingNames(parameter.name, bindings);
+      const visitBody = (candidate: ts.Node): void => {
+        if (names.size >= MAX_COMPONENT_IMPORTS) return;
+        if (
+          (ts.isJsxOpeningElement(candidate) || ts.isJsxSelfClosingElement(candidate)) &&
+          ts.isIdentifier(candidate.tagName) &&
+          isPascalCase(candidate.tagName.text) &&
+          candidate.attributes.properties.some(
+            (attribute) =>
+              ts.isJsxAttribute(attribute) &&
+              attribute.initializer !== undefined &&
+              ts.isJsxExpression(attribute.initializer) &&
+              attribute.initializer.expression !== undefined &&
+              readHookResultRootName(attribute.initializer.expression, bindings) !== undefined,
+          )
+        ) {
+          names.add(candidate.tagName.text);
+        }
+        ts.forEachChild(candidate, visitBody);
+      };
+      visitBody(node.body);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return names;
+}
+
+/** Recognizes a function supplied as one JSX element's child, `render`, or `children` prop. */
+function isInlineJsxRenderCallback(callback: ts.ArrowFunction | ts.FunctionExpression): boolean {
+  const expression = callback.parent;
+  if (!ts.isJsxExpression(expression)) return false;
+  const owner = expression.parent;
+  if (ts.isJsxElement(owner)) return true;
+  if (!ts.isJsxAttribute(owner) || !ts.isIdentifier(owner.name)) return false;
+  return owner.name.text === 'children' || owner.name.text === 'render';
 }
 
 /** Adds bounded imported JSX consumers used by static render-prop callbacks. */
@@ -614,8 +691,7 @@ export function inferPreviewRuntimeHookJsxCollectionItemFallback(
         return (
           propName !== undefined &&
           JSX_COLLECTION_PROP_NAMES.has(propName) &&
-          ts.isIdentifier(value) &&
-          value.text === identifier.text
+          isPreviewRuntimeHookJsxCollectionCarrier(value, identifier.text)
         );
       });
       if (collectionAttribute !== undefined) {
@@ -893,11 +969,11 @@ function appendShapeUsages(
   usages: PreviewRuntimeHookChildPropUsage[],
   depth: number,
 ): void {
-  const pending: Array<{
+  const pending: {
     readonly depth: number;
     readonly relativePath: readonly string[];
     readonly shape: PreviewInferredPropShape;
-  }> = [{ depth, relativePath, shape }];
+  }[] = [{ depth, relativePath, shape }];
   for (let index = 0; index < pending.length && usages.length < MAX_PROP_DEMANDS; index += 1) {
     const current = pending[index];
     if (current === undefined || current.depth > MAX_PROP_DEPTH) continue;

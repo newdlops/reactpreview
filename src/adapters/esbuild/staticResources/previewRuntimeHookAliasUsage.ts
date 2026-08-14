@@ -137,6 +137,12 @@ export type ResolvePreviewRuntimeHookImportedHelperItemFallback = (
   parameterIndex: number,
 ) => PreviewRuntimeHookImportedHelperItemFallback | undefined;
 
+/** Resolves the complete shape consumed by one exact direct-import helper parameter. */
+export type ResolvePreviewRuntimeHookImportedHelperParameterFallback = (
+  localName: string,
+  parameterIndex: number,
+) => PreviewRuntimeHookImportedHelperItemFallback | undefined;
+
 /** Resolves one exact property of an object parameter accepted by a direct imported helper. */
 export type ResolvePreviewRuntimeHookImportedHelperPropertyFallback = (
   localName: string,
@@ -170,6 +176,7 @@ export function readPreviewRuntimeHookAliasUsagePaths(
   resolveImportedHelperProperty?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
   resolveImportedCollectionCallbackItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
   externallyProvenCollectionPaths?: ReadonlySet<string>,
+  includeRootUsages = false,
 ): readonly PreviewRuntimeHookAliasUsagePath[] {
   const declarations = collectOwnerConstDeclarations(owner);
   const bindingCounts = countBindingNames(declarations);
@@ -184,7 +191,8 @@ export function readPreviewRuntimeHookAliasUsagePaths(
     aliases.size <= 1 &&
     resolveImportedHelperItem === undefined &&
     resolveImportedHelperProperty === undefined &&
-    resolveImportedCollectionCallbackItem === undefined
+    resolveImportedCollectionCallbackItem === undefined &&
+    !includeRootUsages
   ) {
     return [];
   }
@@ -203,7 +211,7 @@ export function readPreviewRuntimeHookAliasUsagePaths(
     }
     if (
       ts.isIdentifier(node) &&
-      node.text !== identifier.text &&
+      (includeRootUsages || node.text !== identifier.text) &&
       ts.isCallExpression(node.parent) &&
       node.parent.expression === node
     ) {
@@ -221,7 +229,7 @@ export function readPreviewRuntimeHookAliasUsagePaths(
     }
     if (ts.isPropertyAccessExpression(node) && !ts.isPropertyAccessExpression(node.parent)) {
       const access = readAliasAccess(node, aliases);
-      if (access !== undefined && access.aliasName !== identifier.text) {
+      if (access !== undefined && (includeRootUsages || access.aliasName !== identifier.text)) {
         for (const names of access.names) {
           const usage = normalizeAliasUsage(
             node,

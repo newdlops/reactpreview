@@ -8,6 +8,8 @@ import type { PreviewLocalTargetExportInstrumentation } from './previewLocalTarg
 
 /** Immutable transformer configuration for one compilation request. */
 export interface PreviewSourceTransformerOptions {
+  /** Installed AG Grid all-module package restored only when reached source imports ag-grid-react. */
+  readonly agGridModulePackage?: 'community' | 'enterprise';
   /** Compiler-proven Page Execution surfaces that must retain the complete transform pipeline. */
   readonly criticalSurfaceSourcePaths?: readonly string[];
   /** Removes proven false-state overlays from fast builds behind visible provisional markers. */

@@ -666,10 +666,10 @@ function readPath(
   bindings: ReadonlyMap<string, readonly string[]>,
 ): readonly string[] | undefined {
   const result: string[] = [];
-  let current = expression;
+  let current = unwrapExpression(expression);
   while (ts.isPropertyAccessExpression(current)) {
     result.unshift(current.name.text);
-    current = current.expression;
+    current = unwrapExpression(current.expression);
   }
   const root = ts.isIdentifier(current) ? bindings.get(current.text) : undefined;
   return root === undefined ? undefined : [...root, ...result];

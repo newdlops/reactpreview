@@ -11,7 +11,10 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
-import { readPreviewRuntimeHookAliasUsagePaths } from './previewRuntimeHookAliasUsage';
+import {
+  readPreviewRuntimeHookAliasUsagePaths,
+  type PreviewRuntimeHookAliasUsagePath,
+} from './previewRuntimeHookAliasUsage';
 import {
   findNearestPreviewRuntimeFunction,
   hasPreviewRuntimeParseDiagnostics,
@@ -300,7 +303,7 @@ function readPreviewGraphqlFragmentExpressionPath(
     const owner = readPreviewGraphqlFragmentExpressionPath(value.expression, bindings);
     return owner === undefined ? undefined : [...owner, value.name.text];
   }
-  if (ts.isElementAccessExpression(value) && value.argumentExpression !== undefined) {
+  if (ts.isElementAccessExpression(value)) {
     const argument = unwrapPreviewRuntimeExpression(value.argumentExpression);
     const propertyName =
       ts.isStringLiteral(argument) || ts.isNumericLiteral(argument) ? argument.text : undefined;
@@ -528,6 +531,7 @@ function readPreviewGraphqlFragmentLiteral(
   return undefined;
 }
 
+/** Reports whether two statically resolved fragment paths identify the same value. */
 function samePreviewGraphqlFragmentPath(
   left: readonly string[],
   right: readonly string[],
@@ -542,18 +546,161 @@ function collectPreviewGraphqlFragmentRequiredPaths(call: ts.CallExpression): re
   if (ts.isVariableDeclaration(parent) && parent.initializer === expression) {
     const directPaths = collectBindingPaths(parent.name);
     const owner = findNearestPreviewRuntimeFunction(parent);
-    const aliasPaths =
-      owner !== undefined && ts.isIdentifier(parent.name)
-        ? createPreviewRuntimeHookUsageTreeFallback(
-            readPreviewRuntimeHookAliasUsagePaths(parent.name, owner),
-          ).requiredPaths
-        : [];
-    return Object.freeze([...new Set([...directPaths, ...aliasPaths])].slice(0, 64));
+    const operationPaths =
+      owner === undefined
+        ? []
+        : createPreviewRuntimeHookUsageTreeFallback(
+            collectPreviewGraphqlFragmentBindingIdentifiers(parent.name).flatMap(
+              ({ identifier, path: bindingPath }) =>
+                readPreviewRuntimeHookAliasUsagePaths(
+                  identifier,
+                  owner,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  true,
+                )
+                  .map((usage): PreviewRuntimeHookAliasUsagePath =>
+                    Object.freeze({
+                      ...usage,
+                      names: Object.freeze([...bindingPath, ...usage.names]),
+                    }),
+                  )
+                  .filter((usage) => usage.names.length <= MAX_FRAGMENT_LITERAL_PATH_DEPTH),
+            ),
+          ).requiredPaths;
+    const callbackItemPaths =
+      owner === undefined
+        ? []
+        : collectPreviewGraphqlFragmentCollectionCallbackRequiredPaths(parent, owner);
+    return Object.freeze(
+      [...new Set([...directPaths, ...operationPaths, ...callbackItemPaths])].slice(0, 64),
+    );
   }
   if (ts.isPropertyAccessExpression(parent) && parent.expression === expression) {
     return [parent.name.text];
   }
   return [];
+}
+
+/** One destructured identifier and its path relative to the generated fragment value. */
+interface PreviewGraphqlFragmentBindingIdentifier {
+  readonly identifier: ts.Identifier;
+  readonly path: readonly string[];
+}
+
+/** Retains every identifier leaf so its direct operations can be prefixed after destructuring. */
+function collectPreviewGraphqlFragmentBindingIdentifiers(
+  binding: ts.BindingName,
+  prefix: readonly string[] = [],
+): readonly PreviewGraphqlFragmentBindingIdentifier[] {
+  if (ts.isIdentifier(binding)) return [{ identifier: binding, path: Object.freeze([...prefix]) }];
+  return binding.elements.flatMap((element, index) => {
+    if (ts.isOmittedExpression(element) || element.dotDotDotToken !== undefined) return [];
+    const propertyName = ts.isObjectBindingPattern(binding)
+      ? readBindingPropertyName(element)
+      : String(index);
+    return propertyName === undefined || BLOCKED_FRAGMENT_PROPERTY_NAMES.has(propertyName)
+      ? []
+      : collectPreviewGraphqlFragmentBindingIdentifiers(element.name, [...prefix, propertyName]);
+  });
+}
+
+/**
+ * Carries collection callback item reads back into the fragment's generated-value contract.
+ *
+ * A receiver requirement such as `warnings.some()` proves only that `warnings` is an Array. Auto
+ * values intentionally materialize one row for visible page context, so the row must also satisfy
+ * synchronous callback reads such as `({ isStaffOnly }) => !isStaffOnly` before it enters project
+ * code. Nested callbacks remain bounded to exact Array operations and static property paths.
+ */
+function collectPreviewGraphqlFragmentCollectionCallbackRequiredPaths(
+  declaration: ts.VariableDeclaration,
+  owner: PreviewRuntimeFunction,
+): readonly string[] {
+  const bindings = new Map<string, readonly string[]>();
+  appendPreviewGraphqlFragmentBindingPaths(declaration.name, [], bindings);
+  propagatePreviewGraphqlFragmentOwnerBindings(owner, bindings);
+  const requiredPaths = new Set<string>();
+  visitPreviewGraphqlFragmentCollectionItemUsage(owner, owner, bindings, requiredPaths);
+  return Object.freeze([...requiredPaths].slice(0, 64));
+}
+
+/** Enters only callbacks whose receiver is statically rooted at the fragment result. */
+function visitPreviewGraphqlFragmentCollectionItemUsage(
+  node: ts.Node,
+  scope: PreviewRuntimeFunction,
+  bindings: ReadonlyMap<string, readonly string[]>,
+  requiredPaths: Set<string>,
+): void {
+  if (requiredPaths.size >= 64 || (node !== scope && isPreviewRuntimeFunction(node))) return;
+  if (ts.isPropertyAccessExpression(node) && !ts.isPropertyAccessExpression(node.parent)) {
+    const path = readPreviewGraphqlFragmentExpressionPath(node, bindings);
+    if (path?.includes('[]') === true) {
+      const called = ts.isCallExpression(node.parent) && node.parent.expression === node;
+      requiredPaths.add(formatPreviewGraphqlFragmentRequiredPath(path, called));
+    }
+  }
+  if (ts.isCallExpression(node) && node.questionDotToken === undefined) {
+    const callee = unwrapPreviewRuntimeExpression(node.expression);
+    const itemParameterIndex =
+      ts.isPropertyAccessExpression(callee) && callee.questionDotToken === undefined
+        ? COLLECTION_CALLBACK_ITEM_PARAMETER.get(callee.name.text)
+        : undefined;
+    const collectionPath =
+      itemParameterIndex === undefined || !ts.isPropertyAccessExpression(callee)
+        ? undefined
+        : readPreviewGraphqlFragmentExpressionPath(callee.expression, bindings);
+    const callbackExpression = node.arguments[0];
+    const callback =
+      callbackExpression === undefined
+        ? undefined
+        : unwrapPreviewRuntimeExpression(callbackExpression);
+    if (
+      itemParameterIndex !== undefined &&
+      collectionPath !== undefined &&
+      callback !== undefined &&
+      (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
+    ) {
+      const parameter = callback.parameters[itemParameterIndex];
+      if (parameter !== undefined && parameter.dotDotDotToken === undefined) {
+        const itemPrefix = [...collectionPath, '[]'];
+        const callbackBindings = new Map(bindings);
+        appendPreviewGraphqlFragmentBindingPaths(parameter.name, itemPrefix, callbackBindings);
+        for (const binding of collectPreviewGraphqlFragmentBindingIdentifiers(
+          parameter.name,
+          itemPrefix,
+        )) {
+          if (binding.path.length > itemPrefix.length) {
+            requiredPaths.add(formatPreviewGraphqlFragmentRequiredPath(binding.path, false));
+          }
+        }
+        visitPreviewGraphqlFragmentCollectionItemUsage(
+          callback.body,
+          callback,
+          callbackBindings,
+          requiredPaths,
+        );
+      }
+    }
+  }
+  ts.forEachChild(node, (child) => {
+    visitPreviewGraphqlFragmentCollectionItemUsage(child, scope, bindings, requiredPaths);
+  });
+}
+
+/** Formats the internal `[]` segment with the same syntax consumed by runtime completion. */
+function formatPreviewGraphqlFragmentRequiredPath(
+  path: readonly string[],
+  called: boolean,
+): string {
+  const formatted = path.reduce(
+    (result, segment) =>
+      segment === '[]' ? `${result}[]` : result.length === 0 ? segment : `${result}.${segment}`,
+    '',
+  );
+  return formatted + (called ? '()' : '');
 }
 
 /** Recursively converts one binding pattern into stable dot/index paths. */

@@ -98,6 +98,14 @@ export function inferPreviewRuntimeSemanticFallback(
       value,
     };
   }
+  if (normalized === 'step') {
+    return {
+      expression: '1',
+      kind: 'number',
+      label: 'generated first wizard step',
+      value: 1,
+    };
+  }
   if (
     /^(?:count|total|index|length|size|amount|rate|percent|number|num|den|numerator|denominator|price|unitPrice|shares|quantity|seconds|milliseconds|durationMs|timestamp)(?=[A-Z0-9_$]|$)/u.test(
       semanticName,

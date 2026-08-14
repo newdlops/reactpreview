@@ -66,6 +66,30 @@ export function inferPreviewRuntimeHookExpressionGuardPassFallback(
 }
 
 /**
+ * Infers the Boolean required to avoid an authored throw guard for one exact property read.
+ *
+ * Unlike the general page-reveal guard inference above, this is intentionally limited to throws.
+ * It is used for synchronous store snapshots whose empty sentinel represents an uninitialized
+ * process-global store. A normal `return null` access or workflow guard must keep its authored
+ * Boolean semantics.
+ */
+export function inferPreviewRuntimeHookExpressionThrowGuardPassFallback(
+  expression: ts.Expression,
+): PreviewRuntimeSemanticFallback | undefined {
+  const owner = findNearestPreviewRuntimeFunction(expression);
+  if (owner === undefined) return undefined;
+  const sourceFile = expression.getSourceFile();
+  const expressionText = expression.getText(sourceFile);
+  const booleanValue = inferGuardPassBoolean(
+    owner,
+    (candidate) =>
+      candidate.kind === expression.kind && candidate.getText(sourceFile) === expressionText,
+    statementAlwaysThrows,
+  );
+  return booleanValue === undefined ? undefined : createBooleanGuardFallback(booleanValue);
+}
+
+/**
  * Infers the closed scalar required after one context-call result is assigned to a stable target.
  *
  * This deliberately accepts only `identifier` and non-computed property targets rooted in a
@@ -205,12 +229,13 @@ function sameStaticPath(left: readonly string[], right: readonly string[]): bool
 function inferGuardPassBoolean(
   owner: ReturnType<typeof findNearestPreviewRuntimeFunction> & {},
   matchesExpression: (expression: ts.Expression) => boolean,
+  acceptsExit: (statement: ts.Statement) => boolean = statementAlwaysExits,
 ): boolean | undefined {
   const demandedValues = new Set<boolean>();
   const visit = (node: ts.Node): void => {
     if (node !== owner && isPreviewRuntimeFunction(node)) return;
     if (ts.isIfStatement(node)) {
-      if (statementAlwaysExits(node.thenStatement) && node.elseStatement === undefined) {
+      if (acceptsExit(node.thenStatement) && node.elseStatement === undefined) {
         const passValue = readConditionTrackedValue(
           node.expression,
           matchesExpression,
@@ -219,8 +244,8 @@ function inferGuardPassBoolean(
         if (passValue !== undefined) demandedValues.add(passValue);
       } else if (
         node.elseStatement !== undefined &&
-        statementAlwaysExits(node.elseStatement) &&
-        !statementAlwaysExits(node.thenStatement)
+        acceptsExit(node.elseStatement) &&
+        !acceptsExit(node.thenStatement)
       ) {
         const passValue = readConditionTrackedValue(
           node.expression,
@@ -473,5 +498,20 @@ function statementAlwaysExits(statement: ts.Statement): boolean {
     statement.elseStatement !== undefined &&
     statementAlwaysExits(statement.thenStatement) &&
     statementAlwaysExits(statement.elseStatement)
+  );
+}
+
+/** Proves that one branch terminates specifically by throwing instead of choosing rendered UI. */
+function statementAlwaysThrows(statement: ts.Statement): boolean {
+  if (ts.isThrowStatement(statement)) return true;
+  if (ts.isBlock(statement)) {
+    const last = statement.statements.at(-1);
+    return last !== undefined && statementAlwaysThrows(last);
+  }
+  return (
+    ts.isIfStatement(statement) &&
+    statement.elseStatement !== undefined &&
+    statementAlwaysThrows(statement.thenStatement) &&
+    statementAlwaysThrows(statement.elseStatement)
   );
 }

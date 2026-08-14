@@ -84,6 +84,30 @@ describe('preview legacy CommonJS globals', () => {
     expect(runtimeGlobal).toMatchObject({ __legacyResult: 'ready', txt: '' });
   });
 
+  /** Reads large reached packages and does not confuse a sibling function's local declaration. */
+  it('recovers a large-package free write shadowed only in an unrelated function', async () => {
+    const largeSource = [
+      'function unrelated() { _a = {}; var _a; return _a; }',
+      '(function run(binding) {',
+      '  _a = binding(binding);',
+      '  module.exports = _a.value;',
+      '})(function binding() { return { value: "ready" }; });',
+      `/* ${'padding'.repeat(90_000)} */`,
+    ].join('\n');
+    expect(Buffer.byteLength(largeSource, 'utf8')).toBeGreaterThan(512 * 1024);
+    const plan = await discoverPreviewLegacyCommonJsGlobals({
+      currentGlobalNames: [],
+      metafile: createMetafile([LEGACY_PACKAGE_PATH]),
+      readSource: (_sourcePath, maximumBytes) =>
+        Promise.resolve(
+          Buffer.byteLength(largeSource, 'utf8') <= maximumBytes ? largeSource : undefined,
+        ),
+      request: createRequest(),
+    });
+
+    expect(plan).toEqual({ changed: true, globalNames: ['_a'] });
+  });
+
   /** Keeps declarations, read-only globals, and explicitly strict package defects untouched. */
   it('does not rewrite declared, read-only, or strict identifiers', async () => {
     const sources = new Map<string, string>([

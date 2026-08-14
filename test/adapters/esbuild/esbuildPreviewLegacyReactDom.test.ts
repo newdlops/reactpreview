@@ -134,6 +134,21 @@ describe('EsbuildPreviewCompiler legacy ReactDOM compatibility', () => {
       await rm(temporaryDirectory, { force: true, recursive: true });
     }
   });
+
+  /** Uses exact verified lock evidence when PnP exposes only declaration paths to static analysis. */
+  it('selects a client root from an exact modern lock version after static PnP resolution is inconclusive', () => {
+    const resolver = { resolve: () => undefined };
+
+    expect(selectPreviewReactDomRootKind(resolver, '/workspace/Preview.tsx', '18.2.0')).toBe(
+      'client',
+    );
+    expect(selectPreviewReactDomRootKind(resolver, '/workspace/Preview.tsx', '17.0.2')).toBe(
+      'legacy',
+    );
+    expect(selectPreviewReactDomRootKind(resolver, '/workspace/Preview.tsx', 'latest')).toBe(
+      'legacy',
+    );
+  });
 });
 
 /** Decodes the generated entry and lazy chunks so assertions cover the complete preview graph. */

@@ -12,7 +12,8 @@ import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
 
 const MAX_LEGACY_COMMON_JS_GLOBALS = 32;
 const MAX_LEGACY_COMMON_JS_SOURCES = 512;
-const MAX_LEGACY_COMMON_JS_SOURCE_BYTES = 512 * 1024;
+const MAX_LEGACY_COMMON_JS_SOURCE_BYTES = 1024 * 1024;
+const MAX_LEGACY_COMMON_JS_TOTAL_SOURCE_BYTES = 16 * 1024 * 1024;
 const JAVASCRIPT_SOURCE_PATTERN = /\.(?:cjs|js)$/iu;
 const JAVASCRIPT_IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/u;
 const MINIFIED_JAVASCRIPT_PATTERN = /\.min\.js$/iu;
@@ -109,6 +110,7 @@ export async function discoverPreviewLegacyCommonJsGlobals(
       .filter((sourcePath): sourcePath is string => sourcePath !== undefined),
   );
   const globalNames = new Set<string>();
+  let analyzedBytes = 0;
   for (let offset = 0; offset < sourcePaths.length; offset += 24) {
     const pathBatch = sourcePaths.slice(offset, offset + 24);
     const sourceBatch = await Promise.all(
@@ -119,13 +121,20 @@ export async function discoverPreviewLegacyCommonJsGlobals(
     );
     for (const { sourcePath, sourceText } of sourceBatch) {
       if (sourceText === undefined) continue;
+      const sourceBytes = Buffer.byteLength(sourceText, 'utf8');
+      if (analyzedBytes + sourceBytes > MAX_LEGACY_COMMON_JS_TOTAL_SOURCE_BYTES) break;
+      analyzedBytes += sourceBytes;
       for (const globalName of collectLegacyCommonJsGlobalWrites(sourcePath, sourceText)) {
         globalNames.add(globalName);
         if (globalNames.size >= MAX_LEGACY_COMMON_JS_GLOBALS) break;
       }
       if (globalNames.size >= MAX_LEGACY_COMMON_JS_GLOBALS) break;
     }
-    if (globalNames.size >= MAX_LEGACY_COMMON_JS_GLOBALS) break;
+    if (
+      globalNames.size >= MAX_LEGACY_COMMON_JS_GLOBALS ||
+      analyzedBytes >= MAX_LEGACY_COMMON_JS_TOTAL_SOURCE_BYTES
+    )
+      break;
   }
   const normalizedNames = normalizeLegacyCommonJsGlobalNames([...globalNames]);
   return Object.freeze({
@@ -194,7 +203,7 @@ function collectLegacyCommonJsGlobalWrites(
     return [];
   }
 
-  const declaredNames = collectDeclaredNames(sourceFile);
+  const declaredNamesByScope = collectDeclaredNamesByScope(sourceFile);
   const globalWrites = new Set<string>();
   const visit = (node: ts.Node): void => {
     if (
@@ -202,18 +211,18 @@ function collectLegacyCommonJsGlobalWrites(
       node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
       node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
     ) {
-      collectAssignmentTargetNames(node.left, node, declaredNames, globalWrites);
+      collectAssignmentTargetNames(node.left, node, declaredNamesByScope, globalWrites);
     } else if (
       (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
       (node.operator === ts.SyntaxKind.PlusPlusToken ||
         node.operator === ts.SyntaxKind.MinusMinusToken)
     ) {
-      collectAssignmentTargetNames(node.operand, node, declaredNames, globalWrites);
+      collectAssignmentTargetNames(node.operand, node, declaredNamesByScope, globalWrites);
     } else if (
       (ts.isForInStatement(node) || ts.isForOfStatement(node)) &&
       !ts.isVariableDeclarationList(node.initializer)
     ) {
-      collectAssignmentTargetNames(node.initializer, node, declaredNames, globalWrites);
+      collectAssignmentTargetNames(node.initializer, node, declaredNamesByScope, globalWrites);
     }
     ts.forEachChild(node, visit);
   };
@@ -221,37 +230,74 @@ function collectLegacyCommonJsGlobalWrites(
   return normalizeLegacyCommonJsGlobalNames([...globalWrites]);
 }
 
-/** Collects all explicit bindings conservatively; an uncertain shadow prevents automatic rewriting. */
-function collectDeclaredNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
-  const declaredNames = new Set<string>();
+/** Indexes declarations by their actual function or lexical scope. */
+function collectDeclaredNamesByScope(
+  sourceFile: ts.SourceFile,
+): ReadonlyMap<ts.Node, ReadonlySet<string>> {
+  const mutableNamesByScope = new Map<ts.Node, Set<string>>();
+  const addBinding = (scope: ts.Node, bindingName: ts.BindingName): void => {
+    let names = mutableNamesByScope.get(scope);
+    if (names === undefined) {
+      names = new Set<string>();
+      mutableNamesByScope.set(scope, names);
+    }
+    collectBindingName(bindingName, names);
+  };
   const visit = (node: ts.Node): void => {
-    if (
-      ts.isVariableDeclaration(node) ||
-      ts.isParameter(node) ||
-      ts.isBindingElement(node) ||
-      ts.isCatchClause(node)
-    ) {
-      const bindingName = ts.isCatchClause(node) ? node.variableDeclaration?.name : node.name;
-      if (bindingName !== undefined) collectBindingName(bindingName, declaredNames);
+    if (ts.isVariableDeclaration(node)) {
+      const declarationList = ts.isVariableDeclarationList(node.parent) ? node.parent : undefined;
+      const scope = ts.isCatchClause(node.parent)
+        ? node.parent
+        : declarationList !== undefined && (declarationList.flags & ts.NodeFlags.BlockScoped) !== 0
+          ? findLexicalDeclarationScope(node)
+          : findFunctionDeclarationScope(node);
+      addBinding(scope, node.name);
+    } else if (ts.isParameter(node)) {
+      addBinding(findFunctionDeclarationScope(node), node.name);
+    } else if (ts.isCatchClause(node) && node.variableDeclaration !== undefined) {
+      addBinding(node, node.variableDeclaration.name);
     } else if (
       (ts.isFunctionDeclaration(node) ||
-        ts.isFunctionExpression(node) ||
         ts.isClassDeclaration(node) ||
-        ts.isClassExpression(node) ||
         ts.isEnumDeclaration(node) ||
         ts.isImportEqualsDeclaration(node)) &&
       node.name !== undefined
     ) {
-      declaredNames.add(node.name.text);
+      addBinding(findLexicalDeclarationScope(node), node.name);
+    } else if (
+      (ts.isFunctionExpression(node) || ts.isClassExpression(node)) &&
+      node.name !== undefined
+    ) {
+      addBinding(node, node.name);
     } else if (ts.isImportClause(node) && node.name !== undefined) {
-      declaredNames.add(node.name.text);
+      addBinding(sourceFile, node.name);
     } else if (ts.isNamespaceImport(node) || ts.isImportSpecifier(node)) {
-      declaredNames.add(node.name.text);
+      addBinding(sourceFile, node.name);
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return declaredNames;
+  return mutableNamesByScope;
+}
+
+/** Returns the function or source scope that owns a `var`/parameter binding. */
+function findFunctionDeclarationScope(node: ts.Node): ts.Node {
+  for (let current = node.parent; ; current = current.parent) {
+    if (ts.isFunctionLike(current) || ts.isSourceFile(current)) return current;
+  }
+}
+
+/** Returns the nearest block-like scope that owns a lexical declaration. */
+function findLexicalDeclarationScope(node: ts.Node): ts.Node {
+  for (let current = node.parent; ; current = current.parent) {
+    if (
+      ts.isBlock(current) ||
+      ts.isCaseBlock(current) ||
+      ts.isModuleBlock(current) ||
+      ts.isSourceFile(current)
+    )
+      return current;
+  }
 }
 
 /** Expands array/object binding patterns into their actual local identifier declarations. */
@@ -269,14 +315,18 @@ function collectBindingName(bindingName: ts.BindingName, names: Set<string>): vo
 function collectAssignmentTargetNames(
   target: ts.Expression,
   writeNode: ts.Node,
-  declaredNames: ReadonlySet<string>,
+  declaredNamesByScope: ReadonlyMap<ts.Node, ReadonlySet<string>>,
   globalWrites: Set<string>,
 ): void {
   if (isNodeInStrictScope(writeNode)) return;
   const unwrappedTarget = unwrapAssignmentTarget(target);
   if (ts.isIdentifier(unwrappedTarget)) {
     const name = unwrappedTarget.text;
-    if (!declaredNames.has(name) && !KNOWN_RUNTIME_BINDINGS.has(name)) globalWrites.add(name);
+    if (
+      !isDeclaredAtWrite(name, writeNode, declaredNamesByScope) &&
+      !KNOWN_RUNTIME_BINDINGS.has(name)
+    )
+      globalWrites.add(name);
     return;
   }
   if (ts.isArrayLiteralExpression(unwrappedTarget)) {
@@ -285,7 +335,7 @@ function collectAssignmentTargetNames(
         collectAssignmentTargetNames(
           ts.isSpreadElement(element) ? element.expression : element,
           writeNode,
-          declaredNames,
+          declaredNamesByScope,
           globalWrites,
         );
       }
@@ -295,12 +345,34 @@ function collectAssignmentTargetNames(
   if (!ts.isObjectLiteralExpression(unwrappedTarget)) return;
   for (const property of unwrappedTarget.properties) {
     if (ts.isShorthandPropertyAssignment(property)) {
-      collectAssignmentTargetNames(property.name, writeNode, declaredNames, globalWrites);
+      collectAssignmentTargetNames(property.name, writeNode, declaredNamesByScope, globalWrites);
     } else if (ts.isPropertyAssignment(property)) {
-      collectAssignmentTargetNames(property.initializer, writeNode, declaredNames, globalWrites);
+      collectAssignmentTargetNames(
+        property.initializer,
+        writeNode,
+        declaredNamesByScope,
+        globalWrites,
+      );
     } else if (ts.isSpreadAssignment(property)) {
-      collectAssignmentTargetNames(property.expression, writeNode, declaredNames, globalWrites);
+      collectAssignmentTargetNames(
+        property.expression,
+        writeNode,
+        declaredNamesByScope,
+        globalWrites,
+      );
     }
+  }
+}
+
+/** Resolves one assignment target through only its lexical ancestor scopes. */
+function isDeclaredAtWrite(
+  name: string,
+  writeNode: ts.Node,
+  declaredNamesByScope: ReadonlyMap<ts.Node, ReadonlySet<string>>,
+): boolean {
+  for (let current = writeNode; ; current = current.parent) {
+    if (declaredNamesByScope.get(current)?.has(name) === true) return true;
+    if (ts.isSourceFile(current)) return false;
   }
 }
 

@@ -46,11 +46,13 @@ export interface PreviewReactDomRootRuntimeSourceOptions {
  *
  * @param resolver Project-configured resolver shared with static graph discovery.
  * @param consumerPath Absolute component path that determines the owning package installation.
- * @returns Client-root mode when the subpath resolves, or legacy mode otherwise.
+ * @param lockedRuntimeVersion Exact revalidated Yarn version used only when resolution is inconclusive.
+ * @returns Client-root mode when runtime or lock evidence proves ReactDOM 18+, or legacy otherwise.
  */
 export function selectPreviewReactDomRootKind(
   resolver: Pick<PreviewStaticModuleResolver, 'resolve'>,
   consumerPath: string,
+  lockedRuntimeVersion?: string,
 ): PreviewReactDomRootKind {
   const manifestPath = resolver.resolve('react-dom/package.json', consumerPath);
   const runtimeManifest = readReactDomRuntimeManifest(manifestPath);
@@ -59,10 +61,24 @@ export function selectPreviewReactDomRootKind(
   }
 
   const resolvedClientPath = resolver.resolve('react-dom/client', consumerPath);
-  return resolvedClientPath !== undefined &&
+  if (
+    resolvedClientPath !== undefined &&
     !TYPESCRIPT_DECLARATION_PATTERN.test(resolvedClientPath)
-    ? 'client'
-    : 'legacy';
+  ) {
+    return 'client';
+  }
+  return stableMajorVersion(lockedRuntimeVersion) >= 18 ? 'client' : 'legacy';
+}
+
+/** Parses only a complete stable package version supplied by verified lockfile evidence. */
+function stableMajorVersion(version: string | undefined): number {
+  if (
+    version === undefined ||
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u.test(version)
+  ) {
+    return Number.NaN;
+  }
+  return Number.parseInt(version.split('.', 1)[0] ?? '', 10);
 }
 
 /**

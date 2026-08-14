@@ -27,6 +27,7 @@ const NATIVE_HOOK_MODULES = new Set([
 ]);
 
 const CUSTOM_HOOK_NAME_PATTERN = /^use[A-Z0-9_$][A-Za-z0-9_$]*$/u;
+const STORE_HOOK_NAME_PATTERN = /^use[A-Z0-9_$][A-Za-z0-9_$]*Store$/u;
 const IMPORT_DECLARATION_PATTERN =
   /\bimport\s+(?:type\s+)?([\s\S]{1,480}?)\s+from\s+(['"])([^'"]+)\2/gu;
 const STATIC_RENDER_ASSET_PATTERN =
@@ -89,7 +90,12 @@ function hasImportedRuntimeHookCall(sourceText: string): boolean {
     if (NATIVE_HOOK_MODULES.has(moduleSpecifier)) continue;
 
     for (const bindingName of readImportedHookBindingNames(clause)) {
-      if (hasDirectHookCall(sourceText, bindingName)) return true;
+      if (
+        hasDirectHookCall(sourceText, bindingName) ||
+        (STORE_HOOK_NAME_PATTERN.test(bindingName) && hasStoreSnapshotCall(sourceText, bindingName))
+      ) {
+        return true;
+      }
     }
     const namespaceName = /\*\s+as\s+([A-Za-z_$][\w$]*)/u.exec(clause)?.[1];
     if (
@@ -132,6 +138,14 @@ function readImportedHookBindingNames(clause: string): readonly string[] {
 function hasDirectHookCall(sourceText: string, bindingName: string): boolean {
   return new RegExp(
     `\\b${escapeRegularExpression(bindingName)}\\s*(?:<[^;(){}]{0,240}>)?\\s*\\(`,
+    'u',
+  ).test(sourceText);
+}
+
+/** Matches the side-effect-free synchronous snapshot reader exposed by Zustand-style hook stores. */
+function hasStoreSnapshotCall(sourceText: string, bindingName: string): boolean {
+  return new RegExp(
+    `\\b${escapeRegularExpression(bindingName)}\\s*\\.\\s*getState\\s*\\(`,
     'u',
   ).test(sourceText);
 }

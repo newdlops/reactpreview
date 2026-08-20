@@ -548,9 +548,10 @@ function createVirtualPageRecipe(
 /**
  * Recovers a route-promoted content checkpoint's exact boundary without publishing a stale root
  * index on the derived browser candidate. A promoted leaf intentionally drops `rootStepIndex`, but
- * its unique source can still occur on the same immutable render path. Treating that missing index
- * as zero misclassifies target-side descendants as outer shells and nests the complete page inside
- * its own content slot.
+ * its route identity can still locate the implementation on the same immutable render path, even
+ * when a barrel owns the public route export and the implementation module also contains local
+ * page components. Treating that missing index as zero misclassifies target-side descendants as
+ * outer shells and nests the complete page inside its own content slot.
  */
 function resolveVirtualPageRecipeStepIndex(
   candidate: PreviewInspectorPageCandidate,
@@ -559,17 +560,55 @@ function resolveVirtualPageRecipeStepIndex(
   if (candidate.rootStepIndex !== undefined) return candidate.rootStepIndex;
   const normalizedRootPath = path.normalize(candidate.root.sourcePath);
   const routeLocation = readPreviewInspectorGenericRouteLocation(candidate.routeLocation);
-  if (
-    routeLocation?.componentSourcePath === undefined ||
-    path.normalize(routeLocation.componentSourcePath) !== normalizedRootPath ||
-    (routeLocation.componentExportName ?? 'default') !== candidate.root.exportName
-  ) {
-    return undefined;
-  }
+  if (routeLocation === undefined || renderPath === undefined) return undefined;
   const matchingIndexes = (renderPath?.steps ?? []).flatMap((step, index) =>
     path.normalize(step.sourcePath) === normalizedRootPath ? [index] : [],
   );
-  return matchingIndexes.length === 1 ? matchingIndexes[0] : undefined;
+  const routeIdentityNames = new Set(
+    [routeLocation.componentName, routeLocation.componentExportName].filter(
+      (value): value is string => typeof value === 'string' && value.length > 0,
+    ),
+  );
+  const matchesRouteIdentity = (step: (typeof renderPath.steps)[number]): boolean =>
+    routeIdentityNames.has(step.label) ||
+    (step.invocation?.calleeName !== undefined &&
+      routeIdentityNames.has(step.invocation.calleeName));
+  const routeComponentSourcePaths = new Set(
+    [routeLocation.componentSourcePath, ...(routeLocation.componentSourcePaths ?? [])]
+      .filter((value): value is string => typeof value === 'string' && value.length > 0)
+      .map((value) => path.normalize(value)),
+  );
+  const rootIsPublishedRouteSurface = routeComponentSourcePaths.has(normalizedRootPath);
+  const routeBarrelIdentityProven = renderPath.steps.some(
+    (step) =>
+      routeComponentSourcePaths.has(path.normalize(step.sourcePath)) &&
+      matchesRouteIdentity(step),
+  );
+  const routeComponentIndexes = matchingIndexes.filter((index) => {
+    const step = renderPath?.steps[index];
+    return step !== undefined && matchesRouteIdentity(step);
+  });
+  if (
+    routeComponentIndexes.length === 1 &&
+    (rootIsPublishedRouteSurface || routeBarrelIdentityProven)
+  ) {
+    return routeComponentIndexes[0];
+  }
+  if (rootIsPublishedRouteSurface && candidate.root.exportName !== 'default') {
+    const exportIndexes = matchingIndexes.filter((index) => {
+      const step = renderPath?.steps[index];
+      return (
+        step?.label === candidate.root.exportName ||
+        step?.invocation?.calleeName === candidate.root.exportName
+      );
+    });
+    if (exportIndexes.length === 1) return exportIndexes[0];
+  }
+  return rootIsPublishedRouteSurface &&
+    (routeLocation.componentExportName ?? 'default') === candidate.root.exportName &&
+    matchingIndexes.length === 1
+    ? matchingIndexes[0]
+    : undefined;
 }
 
 /**

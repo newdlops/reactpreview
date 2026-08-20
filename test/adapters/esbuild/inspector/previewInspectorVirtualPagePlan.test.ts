@@ -199,6 +199,19 @@ describe('PreviewInspectorVirtualPagePlan', () => {
           sourcePath: issueListPath,
           wrapperNames: [],
         },
+        {
+          certainty: 'confirmed',
+          invocation: {
+            calleeName: 'DashboardPageContent',
+            mode: 'jsx',
+            sourcePath: PAGE_PATH,
+          },
+          kind: 'component-render',
+          label: 'DashboardPageContent',
+          occurrenceStart: 18,
+          sourcePath: PAGE_PATH,
+          wrapperNames: ['DashboardFrame'],
+        },
         readRenderPathStep(1),
         readRenderPathStep(2),
       ],
@@ -209,7 +222,7 @@ describe('PreviewInspectorVirtualPagePlan', () => {
       renderPath,
       root: { exportName: 'App', sourcePath: APP_PATH },
       rootOwnsRouter: true,
-      rootStepIndex: 3,
+      rootStepIndex: 4,
       routeLocation: {
         componentExportName: 'DashboardPage',
         componentName: 'DashboardPage',
@@ -260,6 +273,123 @@ describe('PreviewInspectorVirtualPagePlan', () => {
         root: { exportName: 'App', sourcePath: APP_PATH },
       },
     ]);
+  });
+
+  it('recovers a promoted implementation boundary through its route barrel identity', () => {
+    const barrelPath = '/workspace/pages/dashboard/index.ts';
+    const issueListPath = '/workspace/project/IssueList.tsx';
+    const renderPath: PreviewRenderChainCandidate = {
+      ...RENDER_PATH,
+      id: 'route-barrel-to-page-implementation',
+      steps: [
+        readRenderPathStep(0),
+        {
+          certainty: 'confirmed',
+          invocation: { calleeName: 'IssueList', mode: 'jsx', sourcePath: PAGE_PATH },
+          kind: 'component-render',
+          label: 'IssueList',
+          occurrenceStart: 15,
+          sourcePath: issueListPath,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed',
+          invocation: {
+            calleeName: 'DashboardPageContent',
+            mode: 'jsx',
+            sourcePath: PAGE_PATH,
+          },
+          kind: 'component-render',
+          label: 'DashboardPageContent',
+          occurrenceStart: 18,
+          sourcePath: PAGE_PATH,
+          wrapperNames: ['DashboardFrame'],
+        },
+        {
+          certainty: 'confirmed',
+          kind: 'react-lazy',
+          label: 'DashboardPage',
+          occurrenceStart: 20,
+          sourcePath: PAGE_PATH,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed',
+          kind: 'route-branch',
+          label: 'DashboardPage',
+          occurrenceStart: 25,
+          sourcePath: barrelPath,
+          wrapperNames: [],
+        },
+        readRenderPathStep(2),
+      ],
+    };
+    const routeLocation = {
+      componentExportName: 'DashboardPage',
+      componentName: 'DashboardPage',
+      componentSourcePath: barrelPath,
+      componentSourcePaths: [barrelPath],
+      dependencyPaths: [APP_PATH, PAGE_PATH, barrelPath],
+      evidenceKind: 'route-catalog' as const,
+      pathname: '/project',
+      pattern: '/project',
+      routeMounts: [],
+      sourcePath: APP_PATH,
+    };
+    const application = createCandidate({
+      complete: true,
+      id: 'barrel-application',
+      renderPath,
+      root: { exportName: 'App', sourcePath: APP_PATH },
+      rootOwnsRouter: true,
+      rootStepIndex: 5,
+      routeLocation,
+      stopReason: 'root-reached',
+    });
+    const { rootStepIndex: omittedRootStepIndex, ...implementationBase } = createCandidate({
+      id: 'barrel-implementation',
+      renderPath,
+      root: { exportName: 'default', sourcePath: PAGE_PATH },
+      routeLocation,
+    });
+    void omittedRootStepIndex;
+    const implementation = implementationBase as PreviewInspectorPageCandidate;
+
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates(
+      [application, implementation],
+      1,
+      [
+        {
+          exportName: 'IssueListFrame',
+          importerPath: issueListPath,
+          importKind: 'static',
+          localEdges: [],
+          moduleSpecifier: './IssueListFrame',
+          occurrenceStart: 40,
+          relation: 'wrapper',
+          renderedLocalName: 'IssueListFrame',
+          renderBoundaryStart: 20,
+          selectedChildPath: TARGET_PATH,
+          sourcePath: '/workspace/project/IssueListFrame.tsx',
+        },
+      ],
+    );
+
+    expect(virtualPage?.contentCandidate.root).toEqual({
+      exportName: 'default',
+      sourcePath: PAGE_PATH,
+    });
+    expect(virtualPage?.recipe.omittedOuterPath.map((step) => step.label)).toEqual([
+      'Application',
+      'DashboardPage',
+    ]);
+    expect(virtualPage?.recipe.shells).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          root: expect.objectContaining({ exportName: 'IssueListFrame' }),
+        }),
+      ]),
+    );
   });
 
   /**

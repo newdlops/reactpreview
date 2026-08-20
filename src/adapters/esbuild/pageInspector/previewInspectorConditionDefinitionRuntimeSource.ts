@@ -208,6 +208,12 @@ function isPreviewInspectorKnownRenderCondition(conditionId) {
 function readPreviewInspectorApplicableConditionOverrides(
   conditionId, authoredValue, metadata, manualOverride, outcomeOverride, autoOverride,
 ) {
+  if (metadata?.requiresAuthoredState === true) {
+    const manualChanged = previewInspectorSession.renderConditionOverrides.delete(conditionId);
+    previewInspectorSession.renderConditionAutoOverrides.delete(conditionId);
+    if (manualChanged) schedulePreviewInspectorRenderOutcomeReconciliationPersistence();
+    return { autoOverride: undefined, manualOverride: undefined, outcomeOverride: undefined };
+  }
   const apply = (override) => {
     const unsafeTruthyData = override === true && !authoredValue &&
       typeof authoredValue !== 'boolean' && metadata?.kind !== 'overlay-visibility' &&
@@ -228,9 +234,10 @@ function readPreviewInspectorApplicableConditionOverrides(
 
 /** Allows target-guided true only for Boolean or compiler-proven overlay visibility conditions. */
 function canPreviewInspectorTargetGuideCondition(record, enabled) {
-  return enabled !== true || record?.authoredEnabled !== false ||
+  return record?.requiresAuthoredState !== true &&
+    (enabled !== true || record?.authoredEnabled !== false ||
     record?.authoredValueKind === 'boolean' || record?.kind === 'overlay-visibility' ||
-    record?.role === 'overlay';
+    record?.role === 'overlay');
 }
 `;
 }

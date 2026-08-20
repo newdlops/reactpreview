@@ -407,9 +407,9 @@ describe('Preview Inspector condition runtime source', () => {
     expect(
       harness.observeChoice('agenda-choice', 'summary', 'summary-key', 'financialStatements'),
     ).toBe('financialStatements');
-    expect(
-      harness.observeChoice('agenda-choice', 'ceo', 'ceo-key', 'ceoAddressChange'),
-    ).toBe('ceoAddressChange');
+    expect(harness.observeChoice('agenda-choice', 'ceo', 'ceo-key', 'ceoAddressChange')).toBe(
+      'ceoAddressChange',
+    );
 
     expect(harness.resolveChoice('agenda-choice', 'financialStatements', metadata)).toBe(
       'ceoAddressChange',
@@ -547,6 +547,34 @@ describe('Preview Inspector condition runtime source', () => {
     expect(harness.readConditions()[0]).toMatchObject({
       autoOverride: undefined,
       override: undefined,
+    });
+  });
+
+  /** Never substitutes a Boolean for state that the continuation passes into a child component. */
+  it('keeps an authored-state gate read-only for automatic and manual branch controls', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn());
+    const metadata = {
+      expression: '<SignupPage> gate: !target',
+      fallbackBranch: 'truthy',
+      falsyLabel: 'continue <SignupPage>',
+      kind: 'early-return',
+      ownerName: 'SignupPage',
+      requiresAuthoredState: true,
+      sourcePath: '/workspace/SignupPage.tsx',
+      targetBranch: 'falsy',
+      truthyLabel: '<SelectionStep>',
+    };
+
+    harness.session.activeTargetReachabilityKey = 'signup-page:SignupForm';
+    expect(harness.resolveCondition('signup-target-gate', true, metadata)).toBe(true);
+    expect(harness.setAutoCondition('signup-target-gate', false)).toBe(false);
+    harness.setCondition('signup-target-gate', false);
+    expect(harness.resolveCondition('signup-target-gate', true, metadata)).toBe(true);
+    expect(harness.readConditions()[0]).toMatchObject({
+      autoOverride: undefined,
+      effectiveEnabled: true,
+      override: undefined,
+      requiresAuthoredState: true,
     });
   });
 

@@ -22,6 +22,7 @@ export function createPreviewInspectorTargetReachabilityDetailRuntimeSource(): s
 const PREVIEW_INSPECTOR_TARGET_RESOLVING_STATUSES = new Set([
   'activating-local-ui',
   'advancing',
+  'awaiting-authored-state',
   'blocked',
   'filling-requirements',
   'mounting-contextual-target',
@@ -87,6 +88,7 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
   const requiredPathSummary = summarizePreviewInspectorRequiredPaths(blocker.requiredPaths);
   const minimumSearch = blocker.minimumRequirementSearch;
   const resolving = isPreviewInspectorTargetReachabilityResolving(blocker);
+  const awaitingAuthoredState = blocker.status === 'awaiting-authored-state';
   const circuitOpen = ['cycle-detected', 'limit-reached'].includes(minimumSearch?.status) ||
     minimumSearch?.status === 'rolled-back';
   const invisibleExplanation = fallbackOutput
@@ -132,7 +134,9 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
                 : 'Automatic search stopped after its safe pass limit.' +
                   (targetMountedWithoutOutput ? ' ' + invisibleExplanation : '')
             : resolving
-              ? pageCommitted
+              ? awaitingAuthoredState
+                ? 'The page is waiting for an authored choice. Select an option in the preview to continue with the real page layout.'
+                : pageCommitted
                 ? targetMountedWithoutOutput
                   ? 'The page loaded. React Preview is still checking this file’s visible output…'
                   : 'The page loaded. React Preview is still tracing the selected file on this path…'
@@ -154,7 +158,9 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
         : candidateOutput
           ? 'candidate DOM rejected · exact target Fiber absent'
           : resolving
-            ? targetMountedWithoutOutput
+            ? awaitingAuthoredState
+              ? 'waiting for a page choice'
+              : targetMountedWithoutOutput
               ? 'connected · checking visible output'
               : 'searching this page path'
             : targetMountedWithoutOutput
@@ -177,7 +183,9 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
             .join(', '))
       : React.createElement('div', { className: 'rpi-note' },
           resolving
-            ? 'React Preview is following newly revealed conditions and data requirements on this path.'
+            ? awaitingAuthoredState
+              ? 'This branch depends on local React state, so React Preview keeps the authored selection screen interactive instead of forcing a detached form.'
+              : 'React Preview is following newly revealed conditions and data requirements on this path.'
             : targetMountedWithoutOutput
               ? deferredCallbackPending
                 ? 'Next likely cause: the parent needs data before it calls this render callback.'

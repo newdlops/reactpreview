@@ -163,6 +163,9 @@ function completePreviewInspectorBlockerTraceAttempt(
   settlementDetail = result,
 ) {
   if (!settlePreviewInspectorBlockerTraceAttempt(attempt, settlementDetail)) return false;
+  if (typeof observePreviewInspectorNeuralResidualAttempt === 'function') {
+    observePreviewInspectorNeuralResidualAttempt(attempt, result);
+  }
   const outcome = result?.outcome === 'rolled-back'
     ? 'rolled-back'
     : result?.outcome === 'committed'
@@ -734,6 +737,10 @@ function queuePreviewInspectorBlockerTraceAutoDecision(auto, blocker) {
 function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
   initializePreviewInspectorBlockerTraceState();
   const blocker = createPreviewInspectorBlockerTraceDecisionRecord(candidate);
+  const neuralResidualDecision =
+    typeof copyPreviewInspectorNeuralResidualDecision === 'function'
+      ? copyPreviewInspectorNeuralResidualDecision(candidate?.neuralResidualDecision)
+      : undefined;
   const startsRenderAttempt = candidate?.startsRenderAttempt === true;
   const generatedPaths = Array.isArray(candidate?.generatedPaths)
     ? candidate.generatedPaths.filter((value) => typeof value === 'string').slice(0, 128)
@@ -823,6 +830,7 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
       autoMode: auto.mode,
       blocker,
       knownFatalErrors,
+      ...(neuralResidualDecision === undefined ? {} : { neuralResidualDecision }),
       observedSnapshotCount: 0,
       startedAt: now,
       ...(targetReachabilityKey === undefined ? {} : { targetReachabilityKey }),

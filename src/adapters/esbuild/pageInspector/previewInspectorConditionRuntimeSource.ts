@@ -150,6 +150,7 @@ function normalizePreviewInspectorConditionMetadata(metadata) {
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
     ownerName: readText('ownerName'),
     sourcePath: readText('sourcePath'),
+    ...(source.requiresAuthoredState === true ? { requiresAuthoredState: true } : {}),
     ...(source.synchronousContinuation === true ? { synchronousContinuation: true } : {}),
     ...(['navigation', 'overlay'].includes(source.role) ? { role: source.role } : {}),
     ...(targetBranch === undefined ? {} : { targetBranch }),
@@ -418,6 +419,7 @@ function didPreviewInspectorConditionChange(previous, next) {
     'ownerName',
     'reachabilityDiscoveryOrder',
     'reachabilityKey',
+    'requiresAuthoredState',
     'role',
     'sourcePath',
     'synchronousContinuation',
@@ -451,6 +453,7 @@ function schedulePreviewInspectorConditionRegistryRefresh() {
  */
 function readPreviewInspectorDirectContinuationOverride(metadata, manualOverride, autoOverride) {
   if (manualOverride !== undefined || autoOverride !== undefined) return undefined;
+  if (metadata.requiresAuthoredState === true) return undefined;
   if (previewInspectorSession.fallbackValuesEnabled !== true) return undefined;
   if (typeof previewInspectorSession.activeTargetReachabilityKey === 'string') return undefined;
   const descriptors = Array.isArray(previewInspectorSession.descriptors)
@@ -706,7 +709,11 @@ function readPreviewInspectorRenderChoices() {
  * Forces one statically proven continuation branch for the current target-search pass.
  * Automatic decisions are deliberately ephemeral and always lose to an explicit user override.
  */
-function setPreviewInspectorTargetGuidedConditionOverride(conditionId, enabled) {
+function setPreviewInspectorTargetGuidedConditionOverride(
+  conditionId,
+  enabled,
+  neuralResidualDecision,
+) {
   initializePreviewInspectorConditionState();
   const record = previewInspectorSession.renderConditions.get(conditionId);
   if (record === undefined || typeof enabled !== 'boolean') {
@@ -738,6 +745,7 @@ function setPreviewInspectorTargetGuidedConditionOverride(conditionId, enabled) 
       generatedPaths: [],
       line: record.line,
       mode: 'target-guided-auto',
+      neuralResidualDecision,
       ownerName: record.ownerName,
       reason: 'Static path analysis selected the branch leading toward the current-file export',
       selectedValue: enabled,
@@ -745,6 +753,10 @@ function setPreviewInspectorTargetGuidedConditionOverride(conditionId, enabled) 
       startsRenderAttempt: true,
       summary: {
         authoredEnabled: record.authoredEnabled,
+        neuralResidual:
+          typeof summarizePreviewInspectorNeuralResidualDecision === 'function'
+            ? summarizePreviewInspectorNeuralResidualDecision(neuralResidualDecision)
+            : undefined,
         role: record.role,
         targetBranch: record.targetBranch,
       },
@@ -907,6 +919,9 @@ function setPreviewInspectorRenderConditionOverride(conditionId, enabled) {
   if (!isPreviewInspectorKnownRenderCondition(conditionId) || typeof enabled !== 'boolean') {
     return;
   }
+  const condition = previewInspectorSession.renderConditions.get(conditionId) ??
+    previewInspectorSession.renderConditionDefinitions?.get?.(conditionId);
+  if (condition?.requiresAuthoredState === true) return;
   const previous = previewInspectorSession.renderConditionOverrides.get(conditionId);
   if (previous === enabled) return;
   previewInspectorSession.renderConditionOverrides.set(conditionId, enabled);

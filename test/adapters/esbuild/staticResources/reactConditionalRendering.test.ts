@@ -217,7 +217,11 @@ describe('React conditional rendering instrumentation', () => {
     ].join('\n');
 
     const definitions: string[] = [];
-    const transformed = instrumentReactConditionalRendering('/workspace/src/Page.tsx', source, definitions);
+    const transformed = instrumentReactConditionalRendering(
+      '/workspace/src/Page.tsx',
+      source,
+      definitions,
+    );
 
     expect(readRenderConditionCalls(transformed)).toHaveLength(2);
     expect(readAuthoredExpressions(transformed)).toEqual(
@@ -479,6 +483,31 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"ownerName":"Application"');
     expect(transformed).toContain('"targetBranch":"falsy"');
     expect(transformed).toContain('"falsyLabel":"continue <Application>"');
+  });
+
+  /** Keeps a wizard's required local value behind the real authored selection interaction. */
+  it('marks a stateful selection guard when its missing value is forwarded to the next step', () => {
+    const source = [
+      `import { useState } from 'react';`,
+      'type Target = { type: "company" | "investor" };',
+      'function FormStep({ target }: { target: Target }) {',
+      '  return <SignupForm target={target} />;',
+      '}',
+      'export function SignupPage() {',
+      '  const [target, setTarget] = useState<Target | null>(null);',
+      '  if (!target) {',
+      '    return <SelectionStep onSelect={(selected) => setTarget(selected)} />;',
+      '  }',
+      '  return <FormStep target={target} />;',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering('/workspace/SignupPage.tsx', source);
+
+    expect(readRenderConditionCalls(transformed)).toHaveLength(1);
+    expect(transformed).toContain('"expression":"<SignupPage> gate: !target"');
+    expect(transformed).toContain('"requiresAuthoredState":true');
+    expect(transformed).toContain('"targetBranch":"falsy"');
   });
 
   /** Retains the selected child identity when two early returns use the same shared wrapper. */

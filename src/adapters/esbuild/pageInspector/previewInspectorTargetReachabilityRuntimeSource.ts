@@ -635,6 +635,7 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exac
   return [...previewInspectorSession.renderConditions.values()]
     .filter((condition) =>
       condition?.reachabilityKey === state.key &&
+      condition?.requiresAuthoredState !== true &&
       !previewInspectorSession.renderConditionOverrides.has(condition.id) &&
       (
         typeof isPreviewInspectorRenderConditionControlledByOutcome !== 'function' ||
@@ -659,16 +660,42 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exac
       const exactSourceLocal = (evidence.pathScores?.get(conditionSourcePath) ?? 0) >= 800;
       const exactOverlayTargetLocal =
         isPreviewInspectorExactTargetOverlayCondition(condition, evidence);
+      const desiredValue = exactMountedTargetOverlayLocal || exactOverlayTargetLocal
+        ? true
+        : readPreviewInspectorTargetConditionValue(condition, evidence);
+      const exactTargetLocal =
+        exactConditionLocal || exactOwnerLocal || exactSourceLocal || exactMountedTargetOverlayLocal;
+      const pathLocal = isPreviewInspectorConditionOnTargetPath(condition, evidence);
+      const neuralResidualDecision =
+        typeof createPreviewInspectorNeuralResidualDecision === 'function'
+          ? createPreviewInspectorNeuralResidualDecision({
+              blockerKind: 'render-condition',
+              holeKind: 'condition-activation-order',
+              numbers: {
+                discoveryOrder: condition.reachabilityDiscoveryOrder ?? 0,
+                exactTarget: Number(exactTargetLocal),
+                line: condition.line ?? 0,
+              },
+              texts: [condition.expression, condition.ownerName, conditionSourcePath],
+              tokens: [
+                'desired:' + String(desiredValue),
+                'authored:' + String(condition.authoredEnabled),
+                'kind:' + String(condition.kind ?? 'condition'),
+                'role:' + String(condition.role ?? 'condition'),
+                'target-branch:' + String(condition.targetBranch ?? 'unknown'),
+                'exact-overlay:' + String(exactOverlayTargetLocal),
+                'exact-mounted-overlay:' + String(exactMountedTargetOverlayLocal),
+              ],
+            })
+          : undefined;
       return {
         condition,
-        desiredValue: exactMountedTargetOverlayLocal || exactOverlayTargetLocal
-          ? true
-          : readPreviewInspectorTargetConditionValue(condition, evidence),
+        desiredValue,
         exactMountedTargetOverlayLocal,
         exactOverlayTargetLocal,
-        exactTargetLocal:
-          exactConditionLocal || exactOwnerLocal || exactSourceLocal || exactMountedTargetOverlayLocal,
-        pathLocal: isPreviewInspectorConditionOnTargetPath(condition, evidence),
+        exactTargetLocal,
+        neuralResidualDecision,
+        pathLocal,
       };
     })
     .filter(({
@@ -703,9 +730,38 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exac
     )
     .sort((left, right) =>
       Number(right.pathLocal) - Number(left.pathLocal) ||
+      (
+        typeof comparePreviewInspectorNeuralResidualDecisions === 'function'
+          ? comparePreviewInspectorNeuralResidualDecisions(
+              left.neuralResidualDecision,
+              right.neuralResidualDecision,
+            )
+          : 0
+      ) ||
       (left.condition.reachabilityDiscoveryOrder ?? Number.MAX_SAFE_INTEGER) -
         (right.condition.reachabilityDiscoveryOrder ?? Number.MAX_SAFE_INTEGER) ||
       (left.condition.line ?? 0) - (right.condition.line ?? 0),
+    )[0];
+}
+
+/** Finds a path-local gate that can advance only after the authored page updates its own state. */
+function readPreviewInspectorPendingAuthoredStateGate(descriptor, candidate, state) {
+  initializePreviewInspectorConditionState();
+  const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
+  return [...previewInspectorSession.renderConditions.values()]
+    .filter((condition) => {
+      if (
+        condition?.requiresAuthoredState !== true ||
+        condition.reachabilityKey !== state.key ||
+        !isPreviewInspectorConditionOnTargetPath(condition, evidence)
+      ) return false;
+      const desiredValue = readPreviewInspectorTargetConditionValue(condition, evidence);
+      return typeof desiredValue === 'boolean' && condition.effectiveEnabled !== desiredValue;
+    })
+    .sort((left, right) =>
+      (left.reachabilityDiscoveryOrder ?? Number.MAX_SAFE_INTEGER) -
+        (right.reachabilityDiscoveryOrder ?? Number.MAX_SAFE_INTEGER) ||
+      (left.line ?? 0) - (right.line ?? 0),
     )[0];
 }
 /** Reports whether the exact selected target facade committed at least one live boundary. */
@@ -1293,6 +1349,18 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   // requirements collected from the surrounding application shell. Traverse it before spending
   // another minimum-value pass (or closing that pass circuit at its limit).
   const nextGate = mountedTargetGate ?? selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
+  const authoredStateGate = nextGate === undefined
+    ? readPreviewInspectorPendingAuthoredStateGate(descriptor, candidate, state)
+    : undefined;
+  if (authoredStateGate !== undefined) {
+    state.awaitingAuthoredStateConditionId = authoredStateGate.id;
+    state.exhausted = false;
+    state.idlePasses = 0;
+    state.status = 'awaiting-authored-state';
+    schedulePreviewInspectorTreeRefresh();
+    return;
+  }
+  delete state.awaitingAuthoredStateConditionId;
   if (nextGate === undefined) {
     if (
       state.pageRootCommitted === true &&
@@ -1323,6 +1391,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     if (!setPreviewInspectorTargetGuidedConditionOverride(
       nextGate.condition.id,
       nextGate.desiredValue,
+      nextGate.neuralResidualDecision,
     )) {
       state.rejectedConditions ??= [];
       state.rejectedConditions.push({

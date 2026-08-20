@@ -10,6 +10,7 @@ import { createPreviewInspectorDiagnosticsRuntimeSource } from './previewInspect
 import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspectorDevtoolsUiRuntimeSource';
 import { createPreviewInspectorElementVisibilityRuntimeSource } from './previewInspectorElementVisibilityRuntimeSource';
 import { createPreviewInspectorGraphqlDocumentRuntimeSource } from './previewInspectorGraphqlDocumentRuntimeSource';
+import { createPreviewInspectorNeuralResidualRuntimeSource } from './previewInspectorNeuralResidualRuntimeSource';
 import { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
 import { createPreviewInspectorPropsUiRuntimeSource } from './previewInspectorPropsUiRuntimeSource';
 import { createPreviewInspectorRefreshRuntimeSource } from './previewInspectorRefreshRuntimeSource';
@@ -42,6 +43,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const elementVisibilityRuntimeSource = createPreviewInspectorElementVisibilityRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
   const graphqlDocumentRuntimeSource = createPreviewInspectorGraphqlDocumentRuntimeSource();
+  const neuralResidualRuntimeSource = createPreviewInspectorNeuralResidualRuntimeSource();
   const pageCandidateRuntimeSource = createPreviewInspectorPageCandidateRuntimeSource();
   const propsUiRuntimeSource = createPreviewInspectorPropsUiRuntimeSource();
   const refreshRuntimeSource = createPreviewInspectorRefreshRuntimeSource();
@@ -124,6 +126,7 @@ ${stateRuntimeSource}
 ${dataRuntimeSource}
 ${renderOutcomeRuntimeSource}
 ${conditionRuntimeSource}
+${neuralResidualRuntimeSource}
 ${targetOutputRuntimeSource}
 const hasPreviewInspectorResolvedTargetOutput = createPreviewInspectorTargetOutputFactory();
 ${targetReachabilityRuntimeSource}
@@ -160,6 +163,9 @@ function createPreviewInspectorSession() {
     highlightStatus: 'Waiting for the inspected component to render.',
     listeners: new Set(),
     manualElementsByExport: new Map(),
+    neuralResidualModel: normalizePreviewInspectorNeuralResidualModel(
+      persisted.neuralResidualModel,
+    ),
     lastRequestedRouteSelectionPath: undefined,
     overridesByExport: new Map(
       persistedOverrides.filter(([, value]) => value !== null && typeof value === 'object'),

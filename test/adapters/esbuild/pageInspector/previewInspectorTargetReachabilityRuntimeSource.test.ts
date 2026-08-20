@@ -1177,6 +1177,60 @@ describe('Preview Inspector target reachability runtime source', () => {
     });
   });
 
+  /** Waits for the page's real selection callback instead of mounting a detached target facade. */
+  it('parks traversal on an authored-state gate while the selection screen is active', () => {
+    const context: {
+      __result?: {
+        readonly conditionId: string;
+        readonly contextualFallback: boolean;
+        readonly selectedGate: string;
+        readonly status: string;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        ${createEmptyPageTargetRuntimePreambleSource()}
+        const setPreviewInspectorTargetGuidedConditionOverride = () => {
+          throw new Error('Authored state must not be replaced by a Boolean override.');
+        };
+        ${createTargetReachabilityFixtureSource()}
+        ${createPageTargetDescriptorCandidateFixtureSource()}
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        state.pageRootCommitted = true;
+        previewInspectorSession.activeTargetReachabilityKey = state.key;
+        previewInspectorSession.renderConditions.set('signup-target-gate', {
+          effectiveEnabled: true,
+          expression: '<Page> gate: !target',
+          fallbackBranch: 'truthy',
+          id: 'signup-target-gate',
+          kind: 'early-return',
+          ownerName: 'Page',
+          reachabilityDiscoveryOrder: 1,
+          reachabilityKey: state.key,
+          requiresAuthoredState: true,
+          sourcePath: '/Page.tsx',
+          targetBranch: 'falsy',
+        });
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        globalThis.__result = {
+          conditionId: state.awaitingAuthoredStateConditionId,
+          contextualFallback: state.contextualTargetFallbackRequested,
+          selectedGate:
+            selectPreviewInspectorNextTargetGate(descriptor, candidate, state)?.condition?.id ?? 'none',
+          status: state.status,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      conditionId: 'signup-target-gate',
+      contextualFallback: false,
+      selectedGate: 'none',
+      status: 'awaiting-authored-state',
+    });
+  });
+
   /** Retains a short target commit after Navigate removes it before the delayed DFS observation. */
   it('advances a latched HOC guard after its redirect unmounts the target boundary', () => {
     const context: { __result?: { readonly applied: readonly [string, boolean][] } } = {};

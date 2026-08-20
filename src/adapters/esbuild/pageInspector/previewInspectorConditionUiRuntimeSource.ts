@@ -94,6 +94,7 @@ function createPreviewInspectorConditionTreeNode(condition) {
     : 'Not reached yet';
   const forced = typeof condition.override === 'boolean';
   const targetGuided = typeof condition.autoOverride === 'boolean';
+  const requiresAuthoredState = condition.requiresAuthoredState === true;
   const fallbackActive = condition.fallbackBranch === (enabled ? 'truthy' : 'falsy');
   const overlay = condition.role === 'overlay';
   const booleanSwitch = condition.kind === 'logical-and';
@@ -115,7 +116,9 @@ function createPreviewInspectorConditionTreeNode(condition) {
       control: booleanSwitch ? 'boolean-switch' : 'branch',
       effective: enabled,
       fallbackActive,
-      mode: forced ? 'forced' : targetGuided ? 'target-guided' : 'authored',
+      mode: requiresAuthoredState
+        ? 'authored-state'
+        : forced ? 'forced' : targetGuided ? 'target-guided' : 'authored',
       reached,
     },
     role: overlay ? 'overlay' : undefined,
@@ -336,7 +339,8 @@ function PreviewInspectorConditionDetail({ node }) {
   }
   const condition = node.condition;
   const reached = condition.reached !== false && typeof condition.id === 'string';
-  const controllable = typeof condition.id === 'string';
+  const requiresAuthoredState = condition.requiresAuthoredState === true;
+  const controllable = typeof condition.id === 'string' && !requiresAuthoredState;
   const enabled = condition.effectiveEnabled === true;
   const forced = typeof condition.override === 'boolean';
   const targetGuided = typeof condition.autoOverride === 'boolean';
@@ -352,7 +356,9 @@ function PreviewInspectorConditionDetail({ node }) {
     React.createElement(
       'div',
       { className: 'rpi-meta' },
-      (!reached
+        (requiresAuthoredState
+        ? 'Authored state gate'
+        : !reached
         ? 'JSX boolean switch · not reached'
         : overlay
         ? 'Overlay visibility'
@@ -404,6 +410,7 @@ function PreviewInspectorConditionDetail({ node }) {
             React.createElement(
               PreviewInspectorDevtoolsButton,
               {
+                disabled: !controllable,
                 onClick: () => setPreviewInspectorRenderConditionOverride(condition.id, true),
                 pressed: condition.override === true,
                 title: 'Force the truthy JSX branch',
@@ -413,6 +420,7 @@ function PreviewInspectorConditionDetail({ node }) {
             React.createElement(
               PreviewInspectorDevtoolsButton,
               {
+                disabled: !controllable,
                 onClick: () => setPreviewInspectorRenderConditionOverride(condition.id, false),
                 pressed: condition.override === false,
                 title: 'Force the falsy or hidden JSX branch',
@@ -433,7 +441,9 @@ function PreviewInspectorConditionDetail({ node }) {
     React.createElement(
       'div',
       { className: 'rpi-note' },
-      'Selecting this blocker keeps authored output unchanged until you choose a branch, then remounts the surrounding page context.',
+      requiresAuthoredState
+        ? 'Choose the option in the rendered page. This condition protects a value that the next page step needs, so Boolean forcing is disabled.'
+        : 'Selecting this blocker keeps authored output unchanged until you choose a branch, then remounts the surrounding page context.',
     ),
   );
 }

@@ -106,6 +106,10 @@ function persistPreviewInspectorState() {
           stringifyPreviewInspectorProps(previewInspectorSession.devtoolsState ?? {}),
         ),
         highlightEnabled: previewInspectorSession.highlightEnabled,
+        neuralResidualModel:
+          typeof serializePreviewInspectorNeuralResidualModel === 'function'
+            ? serializePreviewInspectorNeuralResidualModel()
+            : undefined,
         overrides,
         renderScenario: readPreviewInspectorRenderScenario(),
         selectedExportName: previewInspectorSession.selectedExportName,

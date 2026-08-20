@@ -81,6 +81,8 @@ interface ReactConditionalRenderMetadata {
   readonly ownerName?: string;
   /** Optional render-control classification used for navigation and dormant overlay handling. */
   readonly role?: 'navigation' | 'overlay';
+  /** Whether continuing requires an authored state transition instead of a Boolean branch override. */
+  readonly requiresAuthoredState?: true;
   /** Whether a one-sided terminal throw must be bypassed before the selected page can commit. */
   readonly synchronousContinuation?: true;
   /** Branch that continues toward the selected descendant after an early render exit. */
@@ -376,7 +378,7 @@ function collectEarlyReturnGateCandidate(
   }
   const returnedBranch = thenRender !== undefined || thenThrows ? 'truthy' : 'falsy';
   const targetBranch = returnedBranch === 'truthy' ? 'falsy' : 'truthy';
-  if (isPreviewReactContinuationSafetyGuard(statement, returnedBranch)) return undefined;
+  const requiresAuthoredState = isPreviewReactContinuationSafetyGuard(statement, returnedBranch);
   const thrownBranch = returnedBranch === 'truthy' ? thenThrows : elseThrows;
   const returnedLabel = thrownBranch
     ? 'thrown error'
@@ -392,6 +394,7 @@ function collectEarlyReturnGateCandidate(
       kind: 'early-return',
       ownerName,
       ...(role === undefined ? {} : { role }),
+      ...(requiresAuthoredState ? { requiresAuthoredState: true as const } : {}),
       ...(thrownBranch ? { synchronousContinuation: true as const } : {}),
       targetBranch,
       truthyLabel: returnedBranch === 'truthy' ? returnedLabel : continuationLabel,
@@ -518,7 +521,7 @@ function havePreviewReactGuardedAccessPath(
   );
 }
 
-/** Requires a direct dereference/call/destructure before treating a bare identifier as protected. */
+/** Requires a dereference, forwarding boundary, call, or destructure for a guarded identifier. */
 function isPreviewReactUnsafeGuardedRootUse(expression: ts.Expression): boolean {
   const parent = expression.parent;
   if (
@@ -526,7 +529,16 @@ function isPreviewReactUnsafeGuardedRootUse(expression: ts.Expression): boolean 
     parent.expression === expression
   )
     return true;
-  if (ts.isCallExpression(parent) && parent.expression === expression) return true;
+  if (
+    ts.isCallExpression(parent) &&
+    (parent.expression === expression || parent.arguments.includes(expression))
+  )
+    return true;
+  if (
+    (ts.isJsxExpression(parent) && parent.expression === expression) ||
+    (ts.isJsxSpreadAttribute(parent) && parent.expression === expression)
+  )
+    return true;
   return (
     ts.isVariableDeclaration(parent) &&
     parent.initializer === expression &&

@@ -95,6 +95,20 @@ describe('Preview Inspector target reachability progress UI', () => {
     expect(runtime.isResolving(blocker)).toBe(true);
     expect(runtime.createNode(blocker).name).toBe('Finding current file · default');
   });
+
+  it('asks for the authored page choice while preserving the interactive selection screen', () => {
+    const runtime = evaluateProgressUiRuntime();
+    const blocker = createReachabilityBlocker({ status: 'awaiting-authored-state' });
+    const detail = runtime.renderDetail({ node: { blocker } });
+    const text = collectRenderedText(detail).join(' ');
+
+    expect(runtime.isResolving(blocker)).toBe(true);
+    expect(text).toContain(
+      'Select an option in the preview to continue with the real page layout.',
+    );
+    expect(text).toContain('Current file: default · waiting for a page choice');
+    expect(text).toContain('instead of forcing a detached form');
+  });
 });
 
 /** Creates the common committed-page state used by progress and terminal-state assertions. */

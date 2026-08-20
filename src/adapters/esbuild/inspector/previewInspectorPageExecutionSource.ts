@@ -123,7 +123,16 @@ export function createPreviewInspectorPageExecutionSource(
     ) === true;
   const contextualTargetSupportsDeferredSibling =
     contextualTargetEdge !== undefined && options.targetModuleContract !== undefined;
-  const contextualTargetReachabilityKey = `${options.candidate.browserCandidate.id}:${options.target.exportName}`;
+  const targetPageTabKeys = [
+    ...new Set(
+      (options.candidate.targetPageTabKeys ?? []).filter(
+        (value) => typeof value === 'string' && value.length > 0 && value.length <= 128,
+      ),
+    ),
+  ].slice(0, 8);
+  const contextualTargetReachabilityKey =
+    `${options.candidate.browserCandidate.id}:${options.target.exportName}` +
+    (targetPageTabKeys.length === 0 ? '' : `:${targetPageTabKeys.join('\0')}`);
   const contextualTargetFallbackCapabilityRevision = JSON.stringify({
     mountedTransparentChildren: contextualTargetSupportsMountedTransparentChildren,
     retainedRoutePage: contextualTargetSupportsMountedTransparentChildren,

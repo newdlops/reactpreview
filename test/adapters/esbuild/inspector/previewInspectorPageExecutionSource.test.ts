@@ -161,6 +161,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
       ],
       executionRootSurfaceId: 'page',
       runtimeTargetSurfaceId: 'target',
+      targetPageTabKeys: ['all'],
     } as unknown as PreviewInspectorPageExecutionCandidate;
 
     const source = createPreviewInspectorPageExecutionSource({
@@ -175,6 +176,9 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     });
 
     expect(source).toContain('function PreviewInspectorContextualTargetFallback({ children })');
+    expect(source).toContain(
+      'const PreviewInspectorContextualTargetFallbackReachabilityKey = "inactive-descendant:TargetTable:all";',
+    );
     expect(source).toContain(
       'const PreviewInspectorContextualTargetFallbackCapability = Object.freeze({"mountedTransparentChildren":false,"retainedRoutePage":false});',
     );

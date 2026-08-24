@@ -1,11 +1,4 @@
-/**
- * Generates the isolated DevTools-style shell shown by React Page Inspector.
- *
- * The emitted browser source owns only presentation and user interaction. Live Fiber discovery and
- * editor navigation remain optional capabilities on `previewInspectorApi`, which keeps the shell
- * useful while either adapter is unavailable and prevents UI code from depending on React internals
- * or the VS Code message protocol.
- */
+/** Generates the isolated presentation shell; Fiber and editor navigation stay optional. */
 import { createPreviewInspectorLayoutRuntimeSource } from './previewInspectorLayoutRuntimeSource';
 import { createPreviewInspectorNavigationUiRuntimeSource } from './previewInspectorNavigationUiRuntimeSource';
 import { createPreviewInspectorJsxScenarioUiRuntimeSource } from './previewInspectorJsxScenarioUiRuntimeSource';
@@ -15,6 +8,7 @@ import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspector
 import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
 import { createPreviewInspectorDeferredUiTriggerUiRuntimeSource } from './previewInspectorDeferredUiTriggerUiRuntimeSource';
 import { createPreviewInspectorHiddenElementsUiRuntimeSource } from './previewInspectorHiddenElementsUiRuntimeSource';
+import { createPreviewInspectorNeuralLearningUiRuntimeSource } from './previewInspectorNeuralLearningUiRuntimeSource';
 import { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
 import { createPreviewInspectorPageCompositionHealthRuntimeSource } from './previewInspectorPageCompositionHealthRuntimeSource';
 import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspectorBlockerUiRuntimeSource';
@@ -29,12 +23,7 @@ import { createPreviewInspectorTreeIdentityUiRuntimeSource } from './previewInsp
 import { createPreviewInspectorWireframeUiRuntimeSource } from './previewInspectorWireframeUiRuntimeSource';
 
 /**
- * Creates the browser source for a bottom-docked, Elements-like React component inspector.
- *
- * Expected generated-entry bindings include `React`, the non-privileged `previewInspectorApi`, and
- * the lexical-only `previewInspectorSourceNavigation` bridge. The source renders through the
- * pre-existing Shadow DOM portal, so it introduces no wrapper into the application DOM.
- *
+ * Creates browser source for the Shadow DOM Inspector using existing React and navigation bindings.
  * @returns Plain JavaScript source concatenated after the Page Inspector public API is installed.
  */
 export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
@@ -47,6 +36,7 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const jsxScenarioUiRuntimeSource = createPreviewInspectorJsxScenarioUiRuntimeSource();
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
   const navigationUiRuntimeSource = createPreviewInspectorNavigationUiRuntimeSource();
+  const neuralLearningUiRuntimeSource = createPreviewInspectorNeuralLearningUiRuntimeSource();
   const pageCandidateUiRuntimeSource = createPreviewInspectorPageCandidateUiRuntimeSource();
   const pageCompositionHealthRuntimeSource =
     createPreviewInspectorPageCompositionHealthRuntimeSource();
@@ -82,6 +72,7 @@ ${jsxScenarioUiRuntimeSource}
 ${navigationUiRuntimeSource}
 ${wireframeUiRuntimeSource}
 ${pageCompositionHealthRuntimeSource}
+${neuralLearningUiRuntimeSource}
 /** Normalizes one source identity while leaving its opaque path untouched for source navigation. */
 function normalizePreviewInspectorUiSource(source) {
   if (source === null || typeof source !== 'object') return undefined;
@@ -408,12 +399,14 @@ function usePreviewInspectorTreeRefresh(enabled) {
 }
 
 /** Creates one reusable toolbar button with native disabled, expanded, and pressed semantics. */
-function PreviewInspectorDevtoolsButton({ children, companionSource, disabled, expanded, onClick, pressed, sourceHighlight, sourceOpen, title }) {
+function PreviewInspectorDevtoolsButton({ ariaLabel, busy, children, companionSource, disabled, expanded, onClick, pressed, sourceHighlight, sourceOpen, title }) {
   const companionSourcePath = companionSource?.path ?? companionSource?.sourcePath;
   return React.createElement(
     'button',
     {
+      'aria-label': ariaLabel,
       'aria-expanded': expanded,
+      'aria-busy': busy === true ? true : undefined,
       'aria-pressed': pressed,
       className: 'rpi-button',
       'data-rpi-source-column': sourceOpen === true ? companionSource?.column : undefined,
@@ -805,6 +798,8 @@ function PreviewInspectorToolbar() {
   const editable = isPreviewInspectorUiNodeEditable(selectedNode);
   const mainComponentName = readPreviewInspectorMainComponentName();
   const pageContext = readPreviewInspectorPageContext();
+  const pageContextDescriptor = findSelectedPreviewInspectorDescriptor();
+  const pageContextLabel = formatPreviewInspectorPageContextAccordionLabel(pageContextDescriptor);
   return React.createElement(
     React.Fragment,
     undefined,
@@ -853,6 +848,9 @@ function PreviewInspectorToolbar() {
             updateLayout,
           }),
           React.createElement('span', { className: 'rpi-title' }, 'React Page Inspector'),
+          React.createElement(PreviewInspectorNeuralLearningStatus),
+          React.createElement(PreviewInspectorNeuralRequestButton),
+          React.createElement(PreviewInspectorNeuralChoiceList),
           React.createElement(
             PreviewInspectorDevtoolsButton,
             {
@@ -940,7 +938,7 @@ function PreviewInspectorToolbar() {
         PreviewInspectorShellRegionHeightHandle,
         {
           contentId: 'rpi-page-context-section',
-          label: 'Page context',
+          label: pageContextLabel,
           regionName: 'context',
           resizeId: 'shell-page-context',
         },
@@ -957,8 +955,8 @@ function PreviewInspectorToolbar() {
           React.createElement('span', { className: 'rpi-context-badge' }, pageContext.badge),
           React.createElement('span', { className: 'rpi-context-path' }, pageContext.breadcrumb),
           React.createElement('span', { className: 'rpi-context-detail' }, pageContext.detail),
-          React.createElement(PreviewInspectorPageCandidateSelect, {
-            descriptor: findSelectedPreviewInspectorDescriptor(),
+          React.createElement(PreviewInspectorPageContextControls, {
+            descriptor: pageContextDescriptor,
           }),
         ),
       ),

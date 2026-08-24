@@ -35,4 +35,14 @@ describe('PreviewPanelPreparationState', () => {
     state.resetForRetry();
     expect(state.current).toBe('corridor');
   });
+
+  it('ignores stale corridor completion while a newer selection is pending', () => {
+    const state = new PreviewPanelPreparationState('component');
+    state.beginSelection();
+    expect(state.tryMarkCorridorCommitted()).toBe(false);
+    expect(state.current).toBe('fast');
+    state.rollbackSelection();
+    expect(state.tryMarkCorridorCommitted()).toBe(true);
+    expect(state.current).toBe('corridor');
+  });
 });

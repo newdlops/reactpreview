@@ -11,6 +11,9 @@ import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspecto
 import { createPreviewInspectorElementVisibilityRuntimeSource } from './previewInspectorElementVisibilityRuntimeSource';
 import { createPreviewInspectorGraphqlDocumentRuntimeSource } from './previewInspectorGraphqlDocumentRuntimeSource';
 import { createPreviewInspectorNeuralResidualRuntimeSource } from './previewInspectorNeuralResidualRuntimeSource';
+import { createPreviewInspectorNeuralModelSharingRuntimeSource } from './previewInspectorNeuralModelSharingRuntimeSource';
+import { createPreviewInspectorNeuralLearningStatusRuntimeSource } from './previewInspectorNeuralLearningStatusRuntimeSource';
+import { createPreviewInspectorNeuralAssistanceRuntimeSource } from './previewInspectorNeuralAssistanceRuntimeSource';
 import { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
 import { createPreviewInspectorPropsUiRuntimeSource } from './previewInspectorPropsUiRuntimeSource';
 import { createPreviewInspectorRefreshRuntimeSource } from './previewInspectorRefreshRuntimeSource';
@@ -44,6 +47,10 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
   const graphqlDocumentRuntimeSource = createPreviewInspectorGraphqlDocumentRuntimeSource();
   const neuralResidualRuntimeSource = createPreviewInspectorNeuralResidualRuntimeSource();
+  const neuralModelSharingRuntimeSource = createPreviewInspectorNeuralModelSharingRuntimeSource();
+  const neuralLearningStatusRuntimeSource =
+    createPreviewInspectorNeuralLearningStatusRuntimeSource();
+  const neuralAssistanceRuntimeSource = createPreviewInspectorNeuralAssistanceRuntimeSource();
   const pageCandidateRuntimeSource = createPreviewInspectorPageCandidateRuntimeSource();
   const propsUiRuntimeSource = createPreviewInspectorPropsUiRuntimeSource();
   const refreshRuntimeSource = createPreviewInspectorRefreshRuntimeSource();
@@ -127,6 +134,8 @@ ${dataRuntimeSource}
 ${renderOutcomeRuntimeSource}
 ${conditionRuntimeSource}
 ${neuralResidualRuntimeSource}
+${neuralModelSharingRuntimeSource}
+${neuralLearningStatusRuntimeSource}
 ${targetOutputRuntimeSource}
 const hasPreviewInspectorResolvedTargetOutput = createPreviewInspectorTargetOutputFactory();
 ${targetReachabilityRuntimeSource}
@@ -141,6 +150,7 @@ ${graphqlDocumentRuntimeSource}
 ${smartPropsRuntimeSource}
 ${refreshRuntimeSource}
 ${diagnosticsRuntimeSource}
+${neuralAssistanceRuntimeSource}
 function createPreviewInspectorSession() {
   const persisted = readPersistedPreviewInspectorState();
   const persistedOverrides =
@@ -166,6 +176,7 @@ function createPreviewInspectorSession() {
     neuralResidualModel: normalizePreviewInspectorNeuralResidualModel(
       persisted.neuralResidualModel,
     ),
+    runtimeFallbackNeuralRevision: 0,
     lastRequestedRouteSelectionPath: undefined,
     overridesByExport: new Map(
       persistedOverrides.filter(([, value]) => value !== null && typeof value === 'object'),
@@ -202,6 +213,14 @@ function createPreviewInspectorSession() {
       typeof persisted.userSelectedPageCandidateId === 'string'
         ? persisted.userSelectedPageCandidateId
         : typeof persisted.selectedPageCandidateId === 'string' ? persisted.selectedPageCandidateId : '',
+    verifiedPageCandidateId:
+      typeof persisted.verifiedPageCandidateId === 'string'
+        ? persisted.verifiedPageCandidateId
+        : '',
+    verifiedPageContextScope:
+      typeof persisted.verifiedPageContextScope === 'string'
+        ? persisted.verifiedPageContextScope
+        : '',
     version: 0,
     interactionSequence: 0,
   };
@@ -210,6 +229,7 @@ const previewInspectorSession =
   previewHotRuntime.inspectorSession ?? createPreviewInspectorSession();
 previewHotRuntime.inspectorSession = previewInspectorSession;
 previewInspectorSession.instanceEpochByExport ??= new Map();
+previewInspectorSession.runtimeFallbackNeuralRevision ??= 0;
 previewInspectorSession.targetOwnershipPhasesByIdentity ??= new Map();
 previewInspectorSession.lastRequestedRouteSelectionPath ??= undefined;
 previewInspectorSession.pendingRouteBranchId ??= undefined;
@@ -224,12 +244,16 @@ previewInspectorSession.pendingPageCandidateInteractionId ??= undefined;
 previewInspectorSession.pendingPageCandidateRevision ??= undefined;
 previewInspectorSession.interactionSequence ??= 0;
 previewInspectorSession.selectionStatusHandler = handlePreviewInspectorSelectionStatus;
+previewInspectorSession.neuralResidualHostMessageHandler =
+  handlePreviewInspectorNeuralResidualHostMessage;
 if (!previewInspectorSession.selectionStatusListenerInstalled) {
   previewInspectorSession.selectionStatusListenerInstalled = true;
-  window.addEventListener('message', (event) =>
-    previewHotRuntime.inspectorSession?.selectionStatusHandler?.(event.data),
-  );
+  window.addEventListener('message', (event) => {
+    previewHotRuntime.inspectorSession?.selectionStatusHandler?.(event.data);
+    previewHotRuntime.inspectorSession?.neuralResidualHostMessageHandler?.(event.data);
+  });
 }
+publishPreviewInspectorNeuralResidualModel();
 if (previewInspectorSession.resolverPropsRevision !== previewEntryRevision) {
   /* Automatic overlay props belong only to one built source revision, never persisted user state. */
   previewInspectorSession.resolverPropsByExport = new Map();
@@ -240,6 +264,8 @@ previewInspectorSession.renderabilityByExport ??= new Map();
 previewInspectorSession.treeListeners ??= new Set();
 previewInspectorSession.treeDirty ??= true;
 previewInspectorSession.userSelectedPageCandidateId ??= '';
+previewInspectorSession.verifiedPageCandidateId ??= '';
+previewInspectorSession.verifiedPageContextScope ??= '';
 function getPreviewInspectorVersion() {
   return previewInspectorSession.version;
 }
@@ -611,9 +637,20 @@ function selectPreviewInspectorExport(exportName) {
   schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorCommitRefresh();
 }
-function setPreviewInspectorPropsOverride(exportName, value, commit = true) {
+function setPreviewInspectorPropsOverride(
+  exportName,
+  value,
+  commit = true,
+  preserveSourceProvenChoices = false,
+) {
   if (typeof exportName !== 'string' || exportName.length === 0) {
     return false;
+  }
+  if (
+    preserveSourceProvenChoices !== true &&
+    typeof resetPreviewInspectorSourceProvenPropChoices === 'function'
+  ) {
+    resetPreviewInspectorSourceProvenPropChoices(exportName);
   }
   const serializedValue = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
   previewInspectorSession.overridesByExport.set(
@@ -645,6 +682,9 @@ function setPreviewInspectorResolverPropsOverride(exportName, value, commit = tr
   return true;
 }
 function resetPreviewInspectorPropsOverride(exportName) {
+  if (typeof resetPreviewInspectorSourceProvenPropChoices === 'function') {
+    resetPreviewInspectorSourceProvenPropChoices(exportName);
+  }
   previewInspectorSession.overridesByExport.delete(exportName);
   refreshPreviewInspectorExport(exportName, false);
   persistPreviewInspectorState();
@@ -1116,7 +1156,9 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
   const effectiveProps = { ...baseRootProps, ...overrideProps };
   const candidateKey = selectedCandidate?.id ?? 'nearest-authored-owner';
   const conditionRevision = readPreviewInspectorRenderConditionRevision();
-  const renderKey = candidateKey + ':condition:' + String(conditionRevision);
+  const neuralRevision = previewInspectorSession.runtimeFallbackNeuralRevision ?? 0;
+  const renderKey = candidateKey + ':condition:' + String(conditionRevision) +
+    ':neural:' + String(neuralRevision);
   return useStorybook
     ? React.createElement(StorybookPreviewRoot, {
         PreviewTarget: descriptor.value,
@@ -1143,6 +1185,7 @@ function PreviewPageInspectorExportBoundary({ descriptor, children }) {
   const rootRevision = previewInspectorSession.propsRevisionByExport.get(rootName) ?? 0;
   const dataRevision = previewInspectorSession.dataRevision ?? 0;
   const conditionRevision = readPreviewInspectorRenderConditionRevision();
+  const neuralRevision = previewInspectorSession.runtimeFallbackNeuralRevision ?? 0;
   return React.createElement(
     PreviewExportErrorBoundary,
     {
@@ -1150,7 +1193,8 @@ function PreviewPageInspectorExportBoundary({ descriptor, children }) {
       key: inspectedExportName + ':candidate:' + String(selectedCandidate?.id ?? ''),
       parentSlice: descriptor?.parentSlice,
       resetKey: String(targetRevision) + ':' + rootName + ':' + String(rootRevision) +
-        ':data:' + String(dataRevision) + ':condition:' + String(conditionRevision),
+        ':data:' + String(dataRevision) + ':condition:' + String(conditionRevision) +
+        ':neural:' + String(neuralRevision),
     },
     children,
   );
@@ -1189,6 +1233,7 @@ const previewInspectorApi = {
   registerGraphqlFixedRenderer: registerPreviewInspectorGraphqlFixedRenderer,
   registerGraphqlFixedRendererUsage: registerPreviewInspectorGraphqlFixedRendererUsage,
   registerGraphqlRenderPropUsage: registerPreviewInspectorGraphqlRenderPropUsage,
+  registerRuntimeContextIdentity: registerPreviewInspectorRuntimeContextIdentity,
   previewAxiosRequest: previewInspectorAxiosRequest,
   previewFetch: previewInspectorFetch,
   recordConsoleEntry: recordPreviewInspectorConsoleEntry,

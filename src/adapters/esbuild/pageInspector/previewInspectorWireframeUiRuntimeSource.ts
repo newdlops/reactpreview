@@ -477,6 +477,29 @@ function createPreviewInspectorWireframeRectStyle(rect) {
   };
 }
 
+/** Normalizes the shared resolution vocabulary for overlay labels and marker colors. */
+function readPreviewInspectorWireframeResolutionKind(node) {
+  const kind = typeof readPreviewInspectorResolutionKind === 'function'
+    ? readPreviewInspectorResolutionKind(node)
+    : 'choice';
+  return ['automatic', 'choice', 'error'].includes(kind) ? kind : 'error';
+}
+
+/** Describes a missing rectangle as progress, a decision, or a real failure. */
+function formatPreviewInspectorWireframePlaceholderLabel(name, resolutionKind) {
+  if (resolutionKind === 'automatic') return 'Resolving · ' + name;
+  if (resolutionKind === 'choice') return 'Waiting for choice · ' + name;
+  if (resolutionKind === 'error') return 'Render error · ' + name;
+  return 'Not mounted · ' + name;
+}
+
+/** Finds the blocker owned by a placeholder, falling back to the page's first unresolved step. */
+function readPreviewInspectorWireframePlaceholderBlocker(item, blockers) {
+  return blockers.find((blocker) =>
+    blocker.owner?.id === item.node?.id || blocker.node?.id === item.node?.id)?.node ??
+      blockers[0]?.node;
+}
+
 /** Renders the full viewport frame, component placement boxes, and clickable blocker markers. */
 function PreviewInspectorWireframeLayer({ enabled, onSelectBlocker, snapshot }) {
   usePreviewInspectorWireframeGeometryRefresh(enabled);
@@ -495,26 +518,38 @@ function PreviewInspectorWireframeLayer({ enabled, onSelectBlocker, snapshot }) 
       { className: 'rpi-wireframe-page-frame' },
       React.createElement('span', { className: 'rpi-wireframe-page-label' }, 'Page · ' + pageName),
     ),
-    layout.boxes.map((item) => React.createElement(
-      'div',
-      {
-        'aria-hidden': true,
-        className: 'rpi-wireframe-box',
-        'data-current-file-export': item.node.currentFileExport === true ? 'true' : undefined,
-        'data-placeholder': item.placeholder ? 'true' : undefined,
-        key: item.node.id,
-        style: createPreviewInspectorWireframeRectStyle(item.rect),
-      },
-      React.createElement(
-        'span',
+    layout.boxes.map((item) => {
+      const placeholderBlocker = item.placeholder
+        ? readPreviewInspectorWireframePlaceholderBlocker(item, layout.blockers)
+        : undefined;
+      const resolutionKind = placeholderBlocker === undefined
+        ? undefined
+        : readPreviewInspectorWireframeResolutionKind(placeholderBlocker);
+      return React.createElement(
+        'div',
         {
-          className: 'rpi-wireframe-box-label',
-          style: { top: item.labelOffset },
+          'aria-hidden': true,
+          className: 'rpi-wireframe-box',
+          'data-current-file-export': item.node.currentFileExport === true ? 'true' : undefined,
+          'data-placeholder': item.placeholder ? 'true' : undefined,
+          'data-resolution-kind': resolutionKind,
+          key: item.node.id,
+          style: createPreviewInspectorWireframeRectStyle(item.rect),
         },
-        item.placeholder ? 'Unrendered · ' + item.node.name : item.node.name,
-      ),
-    )),
+        React.createElement(
+          'span',
+          {
+            className: 'rpi-wireframe-box-label',
+            style: { top: item.labelOffset },
+          },
+          item.placeholder
+            ? formatPreviewInspectorWireframePlaceholderLabel(item.node.name, resolutionKind)
+            : item.node.name,
+        ),
+      );
+    }),
     layout.blockers.map((item) => {
+      const resolutionKind = readPreviewInspectorWireframeResolutionKind(item.node);
       const markerTop = Math.min(
         layout.viewport.height - 30,
         item.anchor.top + 20 + (item.markerIndex % 5) * 27,
@@ -526,9 +561,14 @@ function PreviewInspectorWireframeLayer({ enabled, onSelectBlocker, snapshot }) 
       return React.createElement(
         'button',
         {
-          'aria-label': 'Open render blocker details: ' + item.node.name,
+          'aria-label': (resolutionKind === 'automatic'
+            ? 'Review resolving render step: '
+            : resolutionKind === 'choice'
+              ? 'Review required page choice: '
+              : 'Open render error: ') + item.node.name,
           className: 'rpi-wireframe-blocker',
           'data-react-preview-wireframe-blocker': item.node.id,
+          'data-resolution-kind': resolutionKind,
           key: item.node.id,
           onClick: (event) => {
             event.preventDefault();
@@ -539,10 +579,18 @@ function PreviewInspectorWireframeLayer({ enabled, onSelectBlocker, snapshot }) 
             left: markerLeft,
             top: markerTop,
           },
-          title: item.node.name + ' · open blocker details in React Page Inspector',
+          title: item.node.name + ' · ' + (
+            resolutionKind === 'automatic'
+              ? 'the viewer is resolving this step'
+              : resolutionKind === 'choice'
+                ? 'choose how the rendered page should continue'
+                : 'open the exact runtime error in React Page Inspector'
+          ),
           type: 'button',
         },
-        '!',
+        typeof readPreviewInspectorResolutionSymbol === 'function'
+          ? readPreviewInspectorResolutionSymbol(item.node)
+          : '?',
       );
     }),
   );

@@ -26,7 +26,7 @@ describe('Preview Inspector legacy React empty-render compatibility', () => {
     [
       'page candidate selector',
       {
-        expression: 'PreviewInspectorPageCandidateSelect({ descriptor: {} })',
+        expression: 'PreviewInspectorPageContextControls({ descriptor: {} })',
         prelude: `
           function readPreviewInspectorPageCandidates() { return []; }
           function readSelectedPreviewInspectorPageCandidate() { return undefined; }

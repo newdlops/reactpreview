@@ -31,7 +31,8 @@ function formatPreviewInspectorFlowchartGraphKind(graphKind) {
 }
 
 /** Chooses a compact, text-independent node symbol while keeping the full meaning in its label. */
-function readPreviewInspectorFlowchartNodeSymbol(graphKind) {
+function readPreviewInspectorFlowchartNodeSymbol(step) {
+  const graphKind = step?.graphKind;
   if (graphKind === 'entry') return '▶';
   if (graphKind === 'decision') return '?';
   if (graphKind === 'branch') return '⑂';
@@ -39,7 +40,17 @@ function readPreviewInspectorFlowchartNodeSymbol(graphKind) {
   if (graphKind === 'return') return '↩';
   if (graphKind === 'hoc') return 'H';
   if (graphKind === 'component-slot') return 'P';
-  if (graphKind === 'blocker') return '!';
+  if (graphKind === 'blocker') {
+    if (step?.status === 'resolved') return '✓';
+    if (step?.status === 'active' || step?.directCurrentFileBlocker === true) {
+      return typeof readPreviewInspectorResolutionSymbol === 'function'
+        ? readPreviewInspectorResolutionSymbol(step?.node ?? step)
+        : '?';
+    }
+    if (step?.status === 'ready') return '?';
+    if (step?.status === 'waiting') return '·';
+    return '✓';
+  }
   return 'C';
 }
 
@@ -296,7 +307,7 @@ function PreviewInspectorFlowchartNode({ layout, majorPath, onSelect, selectedSt
     React.createElement(
       'span',
       { className: 'rpi-flowchart-node-symbol' },
-      readPreviewInspectorFlowchartNodeSymbol(step.graphKind),
+      readPreviewInspectorFlowchartNodeSymbol(step),
     ),
     React.createElement(
       'span',

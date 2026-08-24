@@ -89,6 +89,22 @@ describe('Preview Inspector flowchart UI runtime source', () => {
     expect(css).toContain('.rpi-flowchart-camera-status:empty{display:none}');
   });
 
+  /** Separates an actionable step from resolved or queued work without a generic warning mark. */
+  it('uses semantic symbols for active, resolved, and queued blocker nodes', () => {
+    const source = createPreviewInspectorFlowchartUiRuntimeSource();
+    const context: Record<string, unknown> = {};
+    new vm.Script(
+      `${source}\n` +
+        'globalThis.__readSymbol = readPreviewInspectorFlowchartNodeSymbol;',
+    ).runInNewContext(context);
+    const readSymbol = context.__readSymbol as (step: Record<string, unknown>) => string;
+
+    expect(readSymbol({ graphKind: 'blocker', status: 'active' })).toBe('?');
+    expect(readSymbol({ graphKind: 'blocker', status: 'ready' })).toBe('?');
+    expect(readSymbol({ graphKind: 'blocker', status: 'waiting' })).toBe('·');
+    expect(readSymbol({ graphKind: 'blocker', status: 'resolved' })).toBe('✓');
+  });
+
   /** Uses compiler path metadata plus exact-owner JSX context without leaking rendered children. */
   it('filters Main to one entry path and the current file JSX flow while preserving edge kinds', () => {
     const source = createPreviewInspectorFlowchartUiRuntimeSource();

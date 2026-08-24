@@ -228,6 +228,11 @@ vi.mock('vscode', () => {
       }
     }
 
+    /** Delivers one arbitrary browser protocol message to the owning preview session. */
+    public emitMessage(message: unknown): void {
+      for (const listener of [...this.messageListeners]) listener(message);
+    }
+
     /** Delivers one webview-to-extension message to the listeners owned by this panel only. */
     private emitHotReloadAcknowledgement(identity: HotReloadMessageIdentity, type: string): void {
       for (const listener of [...this.messageListeners]) {
@@ -310,6 +315,76 @@ afterEach(() => {
   vscodeState.watchers.length = 0;
 });
 describe('PreviewController', () => {
+  /** Keeps profile learning shared without waking retained hidden webviews into a render cascade. */
+  it('delivers neural snapshots to the source immediately and a sibling only when focused', async () => {
+    const targetA = createTarget('/workspace/src/NeuralA.tsx');
+    const targetB = createTarget('/workspace/src/NeuralB.tsx');
+    let artifactSequence = 0;
+    const execute = vi.fn((request: PreviewBuildRequest): Promise<PreparedPreview> => {
+      artifactSequence += 1;
+      return Promise.resolve({
+        artifact: {
+          contentHash: `neural-${artifactSequence.toString()}`,
+          scriptLocation: `file:///artifacts/neural-${artifactSequence.toString()}/entry.js`,
+        },
+        dependencies: [request.documentPath],
+        diagnostics: [],
+        watchDirectories: [],
+      });
+    });
+    const controller = new PreviewController(
+      { execute, releaseArtifact: vi.fn(() => Promise.resolve()) } as unknown as BuildPreview,
+      vscode.Uri.file('/artifacts'),
+      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
+    );
+    const openTarget = (
+      controller as unknown as {
+        openTarget(target: ResolvedPreviewTarget, renderMode: 'page-inspector'): void;
+      }
+    ).openTarget.bind(controller);
+    openTarget(targetA, 'page-inspector');
+    openTarget(targetB, 'page-inspector');
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledTimes(2);
+    });
+    const [panelA, , panelB] = vscodeState.panels as TestPanel[];
+    const neuralSnapshots = (panel: TestPanel | undefined): readonly unknown[] =>
+      panel?.hotReloadMessages.filter(
+        (message) =>
+          (message as { readonly type?: unknown } | null)?.type ===
+          'react-preview-neural-model-snapshot',
+      ) ?? [];
+
+    panelA?.emitMessage({
+      model: {
+        candidateOutcomes: {},
+        heads: {
+          condition: {
+            evidence: 1,
+            outputBias: 0.1,
+            outputWeights: Array(16).fill(0),
+            updates: 1,
+          },
+        },
+        outcomeSequence: 0,
+        updates: 1,
+        version: 4,
+      },
+      runtimeRevision: 1,
+      type: 'react-preview-neural-model-sync',
+    });
+
+    await vi.waitFor(() => {
+      expect(neuralSnapshots(panelA)).toHaveLength(1);
+    });
+    expect(neuralSnapshots(panelB)).toHaveLength(0);
+
+    panelB?.focus();
+    expect(neuralSnapshots(panelB)).toHaveLength(1);
+    controller.dispose();
+  });
+
   /** Keeps the selected composition mode immutable for independent tabs and later refreshes. */
   it('pins component and page-inspector modes independently for the same source file', async () => {
     const target = createTarget('/workspace/src/SharedTarget.tsx');

@@ -64,6 +64,7 @@ function createPreviewInspectorRuntimeFallbackTreeNode(fallback) {
     props: {
       generatedPaths: fallback.generatedPaths,
       mode: fallback.mode,
+      neuralRecommendation: fallback.neuralRecommendation,
       reason: fallback.reason,
       requiredPaths: fallback.requiredPaths,
     },
@@ -482,7 +483,19 @@ function isPreviewInspectorBlockingNode(node) {
 }
 /** Collects only active render stops for the friendly page-status summary. */
 function readPreviewInspectorActiveBlockerSummary() {
+  const conditionNodes = typeof readPreviewInspectorRenderConditions === 'function' &&
+    typeof createPreviewInspectorConditionTreeNode === 'function'
+    ? readPreviewInspectorRenderConditions()
+        .map(createPreviewInspectorConditionTreeNode)
+        .filter((node) => node?.blocksCurrentTarget === true)
+        .map((node) => ({
+          ...node,
+          blocker: node.condition,
+          blockerKind: 'render-condition',
+        }))
+    : [];
   const nodes = [
+    ...conditionNodes,
     ...readPreviewInspectorTargetReachabilityBlockers().map(createPreviewInspectorTargetReachabilityTreeNode),
     ...readPreviewInspectorRuntimeFallbacks()
       .filter((record) => record.passive !== true)
@@ -491,6 +504,9 @@ function readPreviewInspectorActiveBlockerSummary() {
     ...readPreviewInspectorTargetFailures().map(createPreviewInspectorTargetFailureTreeNode),
   ];
   const active = nodes.filter(isPreviewInspectorBlockingNode);
+  if (typeof comparePreviewInspectorResolutionNodes === 'function') {
+    active.sort(comparePreviewInspectorResolutionNodes);
+  }
   return { active, count: active.length, first: active[0] };
 }
 /** Produces the compact status badge shown directly beside one blocker tree row. */
@@ -548,18 +564,23 @@ function PreviewInspectorBlockerGuide({ node }) {
   if (runtimeGlobal) {
     detail = 'This JavaScript binding must come from the compiler or application runtime. Component props and backend payloads cannot supply it.';
     helpKind = 'blocking';
-    icon = '!';
+    icon = '×';
     title = 'A required runtime/compiler binding is unavailable.';
   } else if (condition && blocking) {
     const manuallyDormant = node.condition?.override === false;
+    const resolutionKind = readPreviewInspectorResolutionKind(node);
     detail = manuallyDormant
       ? 'This child overlay is explicitly forced OFF. Turn this exact overlay switch ON, or choose Use authored value, to reveal the selected file.'
-      : 'A parent switch revealed this hidden overlay. React Preview is retrying its visible branch along the selected page path; you can also turn this exact child switch ON.';
-    helpKind = 'blocking';
-    icon = '!';
+      : resolutionKind === 'automatic'
+        ? 'The target path proves which branch continues. React Preview is applying it and will hand control back only if that attempt is rejected.'
+        : 'Automatic attempts are exhausted. Choose this exact branch or restore the authored value to continue.';
+    helpKind = resolutionKind === 'automatic' ? 'assisted' : 'condition';
+    icon = readPreviewInspectorResolutionSymbol(node);
     title = manuallyDormant
       ? 'A manual OFF switch keeps the current-file overlay dormant.'
-      : 'A child overlay on the current-file path is still dormant.';
+      : resolutionKind === 'automatic'
+        ? 'React Preview is crossing this proven condition.'
+        : 'Your branch choice is needed here.';
   } else if (condition) {
     detail = 'Choose a branch below. This changes only the pinned preview.';
     helpKind = 'condition';
@@ -583,16 +604,34 @@ function PreviewInspectorBlockerGuide({ node }) {
       : fallbackShown
         ? 'A wrapper or fallback is visible instead. Find the condition or missing value that selects the authored content.'
         : 'This file ran, but the current branch returned no visible element. Check the nearest OFF condition, missing value, or null return.';
-    helpKind = 'blocking';
-    icon = '!';
+    const resolutionKind = readPreviewInspectorResolutionKind(node);
+    helpKind = resolutionKind === 'automatic' ? 'assisted' : 'condition';
+    icon = readPreviewInspectorResolutionSymbol(node);
     title = callbackWaiting
       ? 'Waiting for the parent to render this file.'
       : fallbackShown ? 'A fallback is visible instead of this file.' : 'This file is not visible yet.';
   } else if (blocking) {
-    detail = 'Use Smart fill to add only proven missing values, or enter a value below; the page remounts after applying it.';
-    helpKind = 'blocking';
-    icon = '!';
-    title = 'Rendering stops at this point in the component tree.';
+    const resolutionKind = readPreviewInspectorResolutionKind(node);
+    const finiteChoices = node?.blockerKind === 'target-error' &&
+      typeof readPreviewInspectorTargetFailurePropChoices === 'function'
+      ? readPreviewInspectorTargetFailurePropChoices(node.blocker)
+      : [];
+    detail = resolutionKind === 'automatic'
+      ? 'React Preview is applying a proven local repair and will verify that the selected file becomes visible.'
+      : resolutionKind === 'error'
+        ? 'Safe automatic attempts are exhausted. Inspect the exact runtime error below, then retry after correcting its runtime dependency.'
+        : finiteChoices.length > 0
+          ? 'Choose one of the source-proven values below. Unrelated manual props stay unchanged.'
+          : 'Automatic attempts are exhausted. Use the focused control below to choose a value or branch and retry.';
+    helpKind = resolutionKind === 'error'
+      ? 'blocking'
+      : resolutionKind === 'automatic' ? 'assisted' : 'condition';
+    icon = readPreviewInspectorResolutionSymbol(node);
+    title = resolutionKind === 'automatic'
+      ? 'React Preview is resolving this render step.'
+      : resolutionKind === 'error'
+        ? 'A runtime error stops rendering here.'
+        : 'Your choice is needed to continue.';
   }
   return React.createElement(
     'section',
@@ -657,6 +696,17 @@ function PreviewInspectorRuntimeBlockerDetail({ node }) {
     fallback.requiredPaths?.length > 0
       ? React.createElement('div', { className: 'rpi-note' },
           'Required properties: ' + fallback.requiredPaths.join(', '))
+      : undefined,
+    fallback.neuralRecommendation !== undefined
+      ? React.createElement(
+          'div',
+          { className: 'rpi-note' },
+          'Local neural recommendation: ' + fallback.neuralRecommendation.label +
+            ' · ' + String(Math.round(
+              Number(fallback.neuralRecommendation.residual?.score ?? 0.5) * 100,
+            )) + '% confidence' +
+            ' · ' + fallback.neuralRecommendation.strategy,
+        )
       : undefined,
     React.createElement('div', { className: 'rpi-note' },
       'Smart fill preserves user JSON; otherwise it starts from an empty compatible root, adds only demanded paths, restores inert callbacks, and creates one item only when a demanded path enters a list.'),

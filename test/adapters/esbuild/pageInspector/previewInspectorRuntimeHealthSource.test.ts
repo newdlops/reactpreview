@@ -20,7 +20,14 @@ interface RuntimeHealthMessage {
 
 /** Generated functions exposed by the isolated VM fixture. */
 interface RuntimeHealthFixture {
+  readonly automaticEvents: {
+    readonly detail: unknown;
+    readonly event: string;
+    readonly targetErrorRetained?: boolean;
+  }[];
   readonly error: (entry: Record<string, unknown>) => void;
+  readonly flushScheduledFrames: () => void;
+  readonly learningEvents: { readonly detail: unknown; readonly event: string }[];
   readonly messages: RuntimeHealthMessage[];
   readonly reachability: Record<string, unknown>;
   readonly readTargetError: (exportName: string) => Record<string, unknown> | undefined;
@@ -70,6 +77,103 @@ describe('Preview Inspector runtime health source', () => {
 
     expect(runtime.messages.map((message) => message.event.event)).toEqual([
       'page-composition-snapshot',
+    ]);
+  });
+
+  /** Publishes only verifier-owned model updates, never feature vectors or project values. */
+  it('records neural residual verifier updates', () => {
+    const runtime = createRuntimeHealthFixture();
+    runtime.record({
+      category: 'neural-residual',
+      detail: { holeKind: 'unrendered-runtime-value', label: 1, updates: 2 },
+      event: 'neural-residual-trained',
+    });
+
+    expect(runtime.messages[0]?.event).toMatchObject({
+      detail: { holeKind: 'unrendered-runtime-value', label: 1, updates: 2 },
+      event: 'neural-residual-trained',
+    });
+    expect(runtime.learningEvents).toEqual([
+      {
+        detail: { holeKind: 'unrendered-runtime-value', label: 1, updates: 2 },
+        event: 'neural-residual-trained',
+      },
+    ]);
+    expect(runtime.automaticEvents).toEqual([
+      {
+        detail: { holeKind: 'unrendered-runtime-value', label: 1, updates: 2 },
+        event: 'neural-residual-trained',
+      },
+    ]);
+  });
+
+  /** Makes table/collection call-flow labels visible to both status and automatic assistance. */
+  it('records verified neural table data-flow learning', () => {
+    const runtime = createRuntimeHealthFixture();
+    runtime.record({
+      category: 'neural-residual',
+      detail: { headKey: 'rendered-data-collection', updates: 5 },
+      event: 'neural-residual-data-flow-trained',
+    });
+
+    expect(runtime.messages[0]?.event).toMatchObject({
+      detail: { headKey: 'rendered-data-collection', updates: 5 },
+      event: 'neural-residual-data-flow-trained',
+    });
+    expect(runtime.automaticEvents).toEqual([
+      {
+        detail: { headKey: 'rendered-data-collection', updates: 5 },
+        event: 'neural-residual-data-flow-trained',
+      },
+    ]);
+  });
+
+  /** Distinguishes inference selection from later verifier-owned training. */
+  it('records a compact neural candidate selection', () => {
+    const runtime = createRuntimeHealthFixture();
+    runtime.record({
+      category: 'neural-residual',
+      detail: {
+        candidateId: 'branch-opening',
+        headKey: 'blocker-exception',
+        holeKind: 'blocker-exception-runtime-value',
+        prediction: 0.5,
+        traceId: 'blocker-trace-7',
+      },
+      event: 'neural-residual-selected',
+    });
+
+    expect(runtime.messages[0]?.event).toMatchObject({
+      detail: {
+        candidateId: 'branch-opening',
+        headKey: 'blocker-exception',
+      },
+      event: 'neural-residual-selected',
+    });
+  });
+
+  /** Keeps a user request observable without confusing it with a verifier-owned training update. */
+  it('records explicit neural assistance separately from learning', () => {
+    const runtime = createRuntimeHealthFixture();
+    runtime.record({
+      category: 'neural-residual',
+      detail: {
+        action: 'page-path-search',
+        modelUpdates: 12,
+        requestedBy: 'user',
+      },
+      event: 'neural-assistance-requested',
+    });
+
+    expect(runtime.messages[0]?.event).toMatchObject({
+      detail: { action: 'page-path-search', modelUpdates: 12, requestedBy: 'user' },
+      event: 'neural-assistance-requested',
+    });
+    expect(runtime.learningEvents).toEqual([
+      {
+        detail: { action: 'page-path-search', modelUpdates: 12, requestedBy: 'user' },
+        event: 'neural-assistance-requested',
+      },
     ]);
   });
 
@@ -256,11 +360,48 @@ describe('Preview Inspector runtime health source', () => {
       phase: 'unhandled browser error',
       source: 'preview-runtime',
     });
+    expect(runtime.automaticEvents).toMatchObject([
+      {
+        event: 'runtime-error-root',
+        targetErrorRetained: true,
+      },
+    ]);
+  });
+
+  /** Retries after the React boundary commit when the synchronous blocker read is still stale. */
+  it('defers automatic error repair when the first retained-error sweep cannot start', () => {
+    const runtime = createRuntimeHealthFixture({ rejectedAutomaticAssistanceCalls: 2 });
+    runtime.error({
+      componentStack: 'at ResolutionFixture\n at GlobalErrorBoundary',
+      exportName: 'Header',
+      level: 'error',
+      message: 'Error: Unreachable',
+      source: 'react-boundary',
+    });
+
+    expect(runtime.automaticEvents).toMatchObject([
+      {
+        event: 'runtime-error-root',
+        targetErrorRetained: true,
+      },
+    ]);
+
+    runtime.flushScheduledFrames();
+
+    expect(runtime.automaticEvents).toMatchObject([
+      { event: 'runtime-error-root', targetErrorRetained: true },
+      { event: 'runtime-error-root', targetErrorRetained: true },
+      { event: 'runtime-error-root', targetErrorRetained: true },
+    ]);
   });
 });
 
 /** Evaluates generated source with inert session, revision, and postMessage primitives. */
-function createRuntimeHealthFixture(): RuntimeHealthFixture {
+function createRuntimeHealthFixture(
+  options: {
+    readonly rejectedAutomaticAssistanceCalls?: number;
+  } = {},
+): RuntimeHealthFixture {
   const context: { __runtime?: RuntimeHealthFixture } = {};
   vm.runInNewContext(
     `
@@ -271,12 +412,46 @@ function createRuntimeHealthFixture(): RuntimeHealthFixture {
         targetHasOutput: true,
       };
       const previewInspectorSession = {
+        neuralAssistancePending: false,
         selectedExportName: 'Header',
         selectedPageCandidateId: 'app-path',
         targetReachabilityByKey: new Map([['target', reachability]]),
       };
       const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
       const messages = [];
+      const learningEvents = [];
+      const automaticEvents = [];
+      const scheduledFrames = [];
+      let automaticAssistanceCallCount = 0;
+      const syncPreviewInspectorNeuralLearningStatusFromHealth = (event, detail) => {
+        learningEvents.push({ detail, event });
+      };
+      const schedulePreviewInspectorAutomaticNeuralAssistanceFromHealth = (event, detail) => {
+        automaticAssistanceCallCount += 1;
+        automaticEvents.push({
+          detail,
+          event,
+          ...(event.startsWith('runtime-error-')
+            ? {
+                targetErrorRetained:
+                  previewInspectorSession.runtimeHealthRootErrors instanceof Map &&
+                  previewInspectorSession.runtimeHealthRootErrors.size > 0,
+              }
+            : {}),
+        });
+        const accepted = automaticAssistanceCallCount > ${String(
+          Math.max(0, options.rejectedAutomaticAssistanceCalls ?? 0),
+        )};
+        if (accepted && event.startsWith('runtime-error-')) {
+          scheduledFrames.push(() => {
+            previewInspectorSession.neuralAssistancePending = true;
+          });
+        }
+        return accepted;
+      };
+      const schedulePreviewInspectorNeuralAssistanceFrame = (callback) => {
+        scheduledFrames.push(callback);
+      };
       const previewInspectorPostHostMessage = (message) => messages.push(message);
       const readPreviewInspectorRuntimeCorrelation = () => ({
         artifactId: '0123456789abcdef',
@@ -290,7 +465,12 @@ function createRuntimeHealthFixture(): RuntimeHealthFixture {
       });
       ${createPreviewInspectorRuntimeHealthSource()}
       globalThis.__runtime = {
+        automaticEvents,
         error: recordPreviewInspectorRuntimeHealthError,
+        flushScheduledFrames: () => {
+          while (scheduledFrames.length > 0) scheduledFrames.shift()();
+        },
+        learningEvents,
         messages,
         reachability,
         readTargetError: readPreviewInspectorRuntimeHealthTargetError,

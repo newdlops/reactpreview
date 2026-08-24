@@ -129,7 +129,7 @@ function formatBlockerRow(value: PreviewRuntimeHealthJson): readonly string[] {
   if (blocker?.active !== true) return [];
   const name = readText(blocker.name) ?? 'Unnamed blocker';
   const ownerPath = readText(blocker.ownerPath);
-  return [`    [!] ${clip(name)}${ownerPath === undefined ? '' : ` · at ${clip(ownerPath)}`}`];
+  return [`    [?] ${clip(name)}${ownerPath === undefined ? '' : ` · at ${clip(ownerPath)}`}`];
 }
 
 /** Renders one bounded pre-order row with an explicit live/expected/blocking state marker. */
@@ -141,7 +141,7 @@ function formatTreeRow(value: PreviewRuntimeHealthJson): readonly string[] {
   const state = readText(row.state) ?? 'unknown';
   const marker =
     row.blocker === true
-      ? '!'
+      ? '?'
       : state === 'mounted-output'
         ? '+'
         : state.startsWith('mounted')

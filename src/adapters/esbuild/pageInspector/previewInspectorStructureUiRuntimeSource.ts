@@ -43,9 +43,118 @@ function isPreviewInspectorTransparentWrapperNode(node) {
   return node?.role === 'transparent-wrapper';
 }
 
+/** Reports whether the bounded neural sweep exhausted this exact blocker rather than another row. */
+function hasPreviewInspectorResolutionEffortExhausted(node) {
+  if (
+    typeof readPreviewInspectorNeuralAssistanceReachability !== 'function' ||
+    typeof createPreviewInspectorAutomaticNeuralAssistanceKey !== 'function' ||
+    typeof createPreviewInspectorNeuralAssistanceAttemptIdentity !== 'function' ||
+    typeof readPreviewInspectorNeuralAssistanceAttemptLimit !== 'function'
+  ) return false;
+  const reachability = readPreviewInspectorNeuralAssistanceReachability();
+  if (reachability === undefined) return false;
+  const key = createPreviewInspectorAutomaticNeuralAssistanceKey(reachability);
+  const record = previewInspectorSession.automaticNeuralAssistanceByKey?.get?.(key);
+  const identity = createPreviewInspectorNeuralAssistanceAttemptIdentity(node);
+  if (record === undefined || typeof identity !== 'string') return false;
+  const attempts = record.attemptsByBlocker?.get?.(identity) ?? 0;
+  const effortRecord = Number.isSafeInteger(record.manualPasses)
+    ? record
+    : { ...record, manualPasses: 0 };
+  return attempts >= readPreviewInspectorNeuralAssistanceAttemptLimit(
+    effortRecord,
+    node?.blockerKind,
+  );
+}
+
+/** Reports a source-proven target repair that can run without asking the user to invent a value. */
+function hasPreviewInspectorAutomaticTargetFailureRepair(node) {
+  return node?.blockerKind === 'target-error' &&
+    typeof createPreviewInspectorFinitePropChoiceMutation === 'function' &&
+    createPreviewInspectorFinitePropChoiceMutation(node.blocker) !== undefined;
+}
+
+/** Classifies this exact unresolved row as automatic progress, a user decision, or a real error. */
+function readPreviewInspectorResolutionKind(node) {
+  if (node?.blockerKind === 'runtime-global') return 'error';
+  const condition = node?.condition ?? (
+    node?.blockerKind === 'render-condition' ? node?.blocker : undefined
+  );
+  if (
+    condition !== undefined ||
+    (typeof isPreviewInspectorConditionNode === 'function' && isPreviewInspectorConditionNode(node))
+  ) {
+    const rejected = previewInspectorSession.renderConditionRejectedAutoOverridesByKey?.get?.(
+      condition?.reachabilityKey,
+    );
+    return condition?.requiresAuthoredState === true ||
+      typeof condition?.override === 'boolean' || rejected?.has?.(condition?.id) === true ||
+      hasPreviewInspectorResolutionEffortExhausted({
+        ...node,
+        blocker: condition,
+        blockerKind: 'render-condition',
+      })
+      ? 'choice'
+      : 'automatic';
+  }
+  if (node?.blockerKind === 'target-error') {
+    if (hasPreviewInspectorAutomaticTargetFailureRepair(node)) return 'automatic';
+    const choices = typeof readPreviewInspectorTargetFailurePropChoices === 'function'
+      ? readPreviewInspectorTargetFailurePropChoices(node.blocker)
+      : [];
+    if (choices.length > 0) return 'choice';
+    return hasPreviewInspectorResolutionEffortExhausted(node) ? 'error' : 'automatic';
+  }
+  if (node?.blockerKind === 'target-reachability') {
+    if (node?.blocker?.status === 'awaiting-authored-state') return 'choice';
+    return typeof isPreviewInspectorTargetReachabilityResolving === 'function' &&
+      isPreviewInspectorTargetReachabilityResolving(node.blocker) &&
+      !hasPreviewInspectorResolutionEffortExhausted(node)
+      ? 'automatic'
+      : 'choice';
+  }
+  if (['data-request', 'runtime-fallback'].includes(node?.blockerKind)) {
+    return hasPreviewInspectorResolutionEffortExhausted(node) ? 'choice' : 'automatic';
+  }
+  return 'error';
+}
+
+/** Keeps exact exceptions ahead of generic reachability symptoms in every next-step surface. */
+function readPreviewInspectorResolutionPriority(node) {
+  const blockerKind = node?.blockerKind ?? (
+    typeof isPreviewInspectorConditionNode === 'function' && isPreviewInspectorConditionNode(node)
+      ? 'render-condition'
+      : ''
+  );
+  const blockerPriority = [
+    'target-error',
+    'runtime-global',
+    'render-condition',
+    'runtime-fallback',
+    'data-request',
+    'target-reachability',
+  ].indexOf(blockerKind);
+  return blockerPriority < 0 ? 99 : blockerPriority;
+}
+
+/** Sorts unresolved rows in the same exception-first order used by the bounded neural resolver. */
+function comparePreviewInspectorResolutionNodes(left, right) {
+  return readPreviewInspectorResolutionPriority(left) -
+    readPreviewInspectorResolutionPriority(right) ||
+    String(left?.id ?? left?.blocker?.id ?? left?.blocker?.key ?? '').localeCompare(
+      String(right?.id ?? right?.blocker?.id ?? right?.blocker?.key ?? ''),
+    );
+}
+
+/** Uses a stable symbol vocabulary without the ambiguous generic exclamation mark. */
+function readPreviewInspectorResolutionSymbol(node) {
+  const kind = readPreviewInspectorResolutionKind(node);
+  return kind === 'error' ? '×' : kind === 'automatic' ? '↻' : '?';
+}
+
 /** Produces a semantic tree icon while keeping the explicit role label available beside it. */
 function readPreviewInspectorStructureIcon(node, isCondition, isBlocking, isCurrentFileExport) {
-  if (isBlocking) return '!';
+  if (isBlocking) return readPreviewInspectorResolutionSymbol(node);
   if (isCondition) return '?';
   if (node?.kind === 'deferred-ui-trigger') return '▶';
   if (node?.blockerKind === 'target-reachability') return '↳';
@@ -70,7 +179,12 @@ function readPreviewInspectorTreeNodeRole(node, isCondition, isBlocking, isCurre
   ) {
     return { key: 'path', label: 'FLOW OUTCOME' };
   }
-  if (isBlocking) return { key: 'blocker', label: 'BLOCKER' };
+  if (isBlocking) {
+    const resolutionKind = readPreviewInspectorResolutionKind(node);
+    if (resolutionKind === 'error') return { key: 'blocker', label: 'ERROR' };
+    if (resolutionKind === 'automatic') return { key: 'assisted', label: 'RESOLVING' };
+    return { key: 'condition', label: 'ACTION' };
+  }
   if (isCondition) return { key: 'condition', label: 'CONDITION' };
   if (node?.kind === 'deferred-ui-trigger') return { key: 'condition', label: 'DEFERRED UI' };
   if (node?.blockerKind === 'target-reachability') {

@@ -483,7 +483,7 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
       expect(entryJavascript.length).toBeGreaterThan(0);
       expect(allJavascript).toContain('PUBLIC_PAGE_CONTEXT');
       expect(allJavascript).not.toContain('STAFF_PAGE_CONTEXT');
-      expect(allJavascript).toContain('Authored page caller path');
+      expect(allJavascript).toContain('Page context path recommendation and source-proven alternatives');
       expect(allJavascript).toContain('PublicPage');
       expect(allJavascript).toContain('StaffPage');
       expect(bundle.dependencies).toEqual(

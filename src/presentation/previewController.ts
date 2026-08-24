@@ -15,6 +15,11 @@ import {
   type ResolvedPreviewTarget,
 } from './activePreviewTarget';
 import { PreviewInspectorCompanionPanel } from './previewInspectorCompanionPanel';
+import type { PreviewInspectorNeuralModel } from './previewInspectorNeuralModelProtocol';
+import {
+  PreviewInspectorNeuralModelStore,
+  type PreviewInspectorNeuralModelState,
+} from './previewInspectorNeuralModelStore';
 import { PreviewPanelSession } from './previewPanelSession';
 import { createPreviewPanelTitle } from './previewPanelTitle';
 
@@ -44,6 +49,8 @@ export class PreviewController implements vscode.Disposable {
   private lastFocusedSession: PreviewPanelSession | undefined;
   private disposed = false;
   private readonly extensionDisposables: vscode.Disposable[] = [];
+  private readonly neuralModelStore: PreviewInspectorNeuralModelStore;
+  private sharedInspectorNeuralModel: PreviewInspectorNeuralModel | undefined;
   private readonly sessions = new Set<PreviewPanelSession>();
 
   /**
@@ -58,7 +65,9 @@ export class PreviewController implements vscode.Disposable {
     private readonly resourceRoot: vscode.Uri,
     private readonly log: vscode.LogOutputChannel,
     private readonly workspaceState: PreviewWorkspaceState,
+    neuralModelState: PreviewInspectorNeuralModelState = workspaceState,
   ) {
+    this.neuralModelStore = new PreviewInspectorNeuralModelStore(neuralModelState, log);
     this.extensionDisposables.push(
       vscode.window.onDidChangeVisibleTextEditors(this.handleVisibleTextEditorsChanged.bind(this)),
       vscode.workspace.onDidChangeTextDocument(this.handleDocumentChanged.bind(this)),
@@ -228,6 +237,7 @@ export class PreviewController implements vscode.Disposable {
       callbacks: {
         onDidDispose: this.handleSessionDisposed.bind(this),
         onDidFocus: this.handleSessionFocused.bind(this),
+        onDidSynchronizeNeuralModel: this.handleNeuralModelSynchronization.bind(this),
       },
       initialTarget: target,
       log: this.log,
@@ -246,6 +256,28 @@ export class PreviewController implements vscode.Disposable {
       });
     }
     session.start();
+  }
+
+  /** Merges learning without waking retained hidden webviews in the shared renderer process. */
+  private handleNeuralModelSynchronization(
+    source: PreviewPanelSession,
+    model: PreviewInspectorNeuralModel,
+    runtimeRevision: number,
+  ): void {
+    void this.neuralModelStore
+      .synchronize(model)
+      .then((sharedModel) => {
+        if (this.disposed) return;
+        this.sharedInspectorNeuralModel = sharedModel;
+        for (const session of this.sessions) {
+          if (session === source)
+            session.applySharedInspectorNeuralModel(sharedModel, runtimeRevision);
+          else if (session.isActive) session.applySharedInspectorNeuralModel(sharedModel);
+        }
+      })
+      .catch((error: unknown) => {
+        this.log.debug('Could not synchronize the shared React Inspector neural model.', error);
+      });
   }
 
   /**
@@ -298,6 +330,9 @@ export class PreviewController implements vscode.Disposable {
   private handleSessionFocused(session: PreviewPanelSession): void {
     if (this.sessions.has(session)) {
       this.lastFocusedSession = session;
+      if (this.sharedInspectorNeuralModel !== undefined) {
+        session.applySharedInspectorNeuralModel(this.sharedInspectorNeuralModel);
+      }
     }
   }
 

@@ -63,6 +63,8 @@ describe('Page Inspector runtime source', () => {
       'const candidateChanged = reconcilePreviewInspectorPageCandidateSelection(candidateIds)',
     );
     expect(source).toContain('typeof persisted.userSelectedPageCandidateId');
+    expect(source).toContain('typeof persisted.verifiedPageCandidateId');
+    expect(source).toContain('typeof persisted.verifiedPageContextScope');
     expect(source).toContain('descriptor?.inspector === undefined');
     expect(source).toContain('PreviewInspectorDirectTarget');
     expect(source).toContain('PreviewInspectorRoutedDirectTarget');
@@ -102,6 +104,7 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain(
       "resetKey: String(targetRevision) + ':' + rootName + ':' + String(rootRevision)",
     );
+    expect(source).toContain("':neural:' + String(neuralRevision)");
     expect(source).toContain("key: inspectedExportName + ':candidate:'");
     expect(source).toContain('resolveRenderCondition: resolvePreviewInspectorRenderCondition');
     expect(source).toContain(
@@ -118,6 +121,9 @@ describe('Page Inspector runtime source', () => {
     );
     expect(source).toContain('resolveBackendRequest: resolvePreviewInspectorBackendRequest');
     expect(source).toContain('resolveRuntimeHook: resolvePreviewInspectorScopedRuntimeHook');
+    expect(source).toContain(
+      'registerRuntimeContextIdentity: registerPreviewInspectorRuntimeContextIdentity',
+    );
     expect(source).toContain('function activatePreviewInspectorRuntimeFallbackScope');
     expect(source).toContain('previewAxiosRequest: previewInspectorAxiosRequest');
     expect(source).toContain('previewFetch: previewInspectorFetch');
@@ -125,6 +131,16 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('installPreviewInspectorConsoleCapture()');
     expect(source).toContain("type: 'react-preview-blocker-trace'");
     expect(source).toContain('recordPreviewInspectorBlockerAutoDecision');
+    expect(source).toContain('function createPreviewInspectorNeuralResidualDecision');
+    expect(source).toContain('function observePreviewInspectorNeuralResidualAttempt');
+    expect(source).toContain('function requestPreviewInspectorNeuralAssistance()');
+    expect(source).toContain('function readPreviewInspectorNeuralAssistanceAvailability()');
+    expect(source).toContain("const origin = requestedBy === 'automatic-learning'");
+    expect(source).toContain("? 'automatic-neural'");
+    expect(source).toContain("event: 'neural-assistance-requested'");
+    expect(source).toContain('neuralResidualModel: normalizePreviewInspectorNeuralResidualModel(');
+    expect(source).toContain('neuralRecommendation: fallback.neuralRecommendation');
+    expect(source).toContain('Local neural recommendation: ');
     expect(source).toContain('React preview blocker trace');
     expect(source).toContain('React preview runtime health');
     expect(source).toContain('reportPreviewInspectorTargetFailure(error');
@@ -156,6 +172,12 @@ describe('Page Inspector runtime source', () => {
     expect(candidatesSource).toContain('candidate?.target?.exportName === selectedExportName');
     expect(selectionSource).toContain('readPreviewInspectorPageCandidates(descriptor)');
     expect(selectionSource).toContain('selectPreviewInspectorPageCandidate(preferredCandidate.id)');
+    expect(source).toContain('function selectPreviewInspectorNeuralPageContextCandidate');
+    expect(source).toContain('function observeCurrentPreviewInspectorNeuralPageContextOutcome');
+    expect(source).toContain('function PreviewInspectorPagePathSurface');
+    expect(source).toContain('React.createElement(PreviewInspectorPagePathSurface');
+    expect(source).not.toContain('function PreviewInspectorOptimizedViewPath');
+    expect(source).not.toContain("'aria-label': 'Authored page caller path'");
   });
 
   /** Keeps cold first-paint Router and target identities stable across Inspector store updates. */

@@ -443,7 +443,11 @@ function PreviewInspectorConditionDetail({ node }) {
       { className: 'rpi-note' },
       requiresAuthoredState
         ? 'Choose the option in the rendered page. This condition protects a value that the next page step needs, so Boolean forcing is disabled.'
-        : 'Selecting this blocker keeps authored output unchanged until you choose a branch, then remounts the surrounding page context.',
+        : forced
+          ? 'Your pinned branch stays authoritative. Choose another branch or Use authored value to let the viewer continue.'
+          : node.blocksCurrentTarget === true
+            ? 'React Preview will cross the source-proven target branch automatically. You can pin either branch here at any time.'
+            : 'Choose a branch to pin this preview, then the surrounding page context remounts.',
     ),
   );
 }

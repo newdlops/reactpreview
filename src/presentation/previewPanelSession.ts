@@ -44,6 +44,10 @@ import type { PreviewInspectorPageCandidateSelectionRequest } from './previewIns
 import type { PreviewInspectorPageExecutionRetryRequest } from './previewInspectorPageExecutionRetryProtocol';
 import type { PreviewInspectorRouteSelectionRequest } from './previewInspectorRouteSelectionProtocol';
 import type { PreviewInspectorSelectionStatusMessage } from './previewInspectorSelectionStatusProtocol';
+import {
+  createPreviewInspectorNeuralModelSnapshot,
+  type PreviewInspectorNeuralModel,
+} from './previewInspectorNeuralModelProtocol';
 import type { PreviewRuntimeHealthMessage } from './previewRuntimeHealthProtocol';
 import { PreviewProgressGate } from './previewProgressGate';
 import type {
@@ -120,7 +124,9 @@ export class PreviewPanelSession implements vscode.Disposable {
             kind: 'context-enrichment',
             owningRevision: revision,
           });
-          if (handle.disposition === 'already-displayed') this.preparationState.markCorridorCommitted();
+          if (handle.disposition === 'already-displayed') {
+            this.preparationState.tryMarkCorridorCommitted();
+          }
         },
         isCurrent: this.isCurrentRevision.bind(this),
         reportFailure: (error, target, revision) => {
@@ -190,6 +196,22 @@ export class PreviewPanelSession implements vscode.Disposable {
       panelViewColumn: this.options.panel.viewColumn,
       pinnedDocumentUri: this.documentUri,
     });
+  }
+  public applySharedInspectorNeuralModel(
+    model: PreviewInspectorNeuralModel,
+    runtimeRevision = this.displayedRuntimeRevision,
+  ): void {
+    if (this.disposed || this.options.renderMode !== 'page-inspector') return;
+    try {
+      const delivery = this.options.panel.webview.postMessage(
+        createPreviewInspectorNeuralModelSnapshot(runtimeRevision, model),
+      );
+      void Promise.resolve(delivery).catch((error: unknown) => {
+        this.options.log.debug('Could not synchronize the shared React Inspector neural model.', error);
+      });
+    } catch (error) {
+      this.options.log.debug('Could not post the shared React Inspector neural model.', error);
+    }
   }
   public dispose(): void {
     if (this.disposed) {
@@ -636,6 +658,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     if (
       handlePreviewInspectorHostMessage(message, {
         currentRuntimeRevision: this.displayedRuntimeRevision,
+        expectedNeuralRuntimeRevision: this.revision,
         dependencyPaths: this.dependencies,
         enabled: this.options.renderMode === 'page-inspector',
         expectedPreviewCommand:
@@ -649,6 +672,13 @@ export class PreviewPanelSession implements vscode.Disposable {
         selectPageExecutionRetry: this.selectInspectorPageExecutionRetry.bind(this),
         settleVerifiedTargetOutput: this.retainVerifiedTargetOutput.bind(this),
         sourceDecoration: this.inspectorSourceDecoration,
+        synchronizeNeuralResidualModel: (model, runtimeRevision) => {
+          this.options.callbacks.onDidSynchronizeNeuralModel?.(
+            this,
+            model,
+            runtimeRevision,
+          );
+        },
         targetPath: this.targetPath,
       })
     ) {
@@ -745,7 +775,12 @@ export class PreviewPanelSession implements vscode.Disposable {
   }
   private settlePreparedApplication(applicationId: string, origin: PreviewPreparedApplicationOrigin, displayedRevision: number): void {
     if (origin.kind === 'context-enrichment') {
-      this.preparationState.markCorridorCommitted();
+      if (!this.preparationState.tryMarkCorridorCommitted()) {
+        this.options.log.debug(
+          'Ignored a stale React preview context-enrichment settlement during branch selection.',
+        );
+        return;
+      }
       this.renderProgress(displayedRevision, this.options.initialTarget.documentName, 'ready');
       return;
     }

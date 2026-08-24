@@ -99,6 +99,7 @@ function getOrCreateResources(state: ActiveExtensionState): ActiveExtensionResou
     artifactStore.resourceRoot,
     state.log,
     state.context.workspaceState,
+    state.context.globalState,
   );
   const resources = { artifactStore, compiler, controller };
   state.resources = resources;

@@ -366,8 +366,14 @@ describe('Preview Inspector wireframe UI runtime source', () => {
     expect(source).toContain('function PreviewInspectorWireframeLayer');
     expect(source).toContain("requestPreviewInspectorWorkbenchTab('tree')");
     expect(source).toContain("'data-react-preview-wireframe-blocker': item.node.id");
+    expect(source).toContain("'data-resolution-kind': resolutionKind");
     expect(source).toContain('onSelectBlocker(item.node)');
-    expect(source).toContain("'!',");
+    expect(source).toContain('readPreviewInspectorResolutionSymbol(item.node)');
+    expect(source).toContain("return 'Resolving · ' + name");
+    expect(source).toContain("return 'Waiting for choice · ' + name");
+    expect(source).toContain("return 'Render error · ' + name");
+    expect(source).not.toContain("'Unrendered · '");
+    expect(source).not.toContain("'!',");
     expect(source).not.toContain("React.createElement('span', { 'aria-hidden': true }, '⚠')");
     expect(source).toContain('requestAnimationFrame');
     expect(source).not.toContain('setInterval');

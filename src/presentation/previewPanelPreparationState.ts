@@ -48,6 +48,13 @@ export class PreviewPanelPreparationState {
     this.mode = 'corridor';
   }
 
+  /** Ignores a stale automatic completion while a newer branch selection owns the corridor. */
+  public tryMarkCorridorCommitted(): boolean {
+    if (this.rollbackMode !== undefined) return false;
+    this.mode = 'corridor';
+    return true;
+  }
+
   /** Clears selection state before retrying automatic preparation. */
   public resetForRetry(): void {
     this.mode = this.baseline;

@@ -12,8 +12,22 @@ const PREVIEW_INSPECTOR_HEALTH_RECORD_LIMIT = 256;
 const PREVIEW_INSPECTOR_HEALTH_ERROR_ROOT_LIMIT = 64;
 const PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT = 4_000;
 const PREVIEW_INSPECTOR_HEALTH_ERROR_CHAIN_MS = 5_000;
+const PREVIEW_INSPECTOR_HEALTH_ERROR_ASSISTANCE_FRAME_LIMIT = 6;
+const previewInspectorRuntimeHealthDeferredAssistanceEvents = new Set([
+  'runtime-error-cascade',
+  'runtime-error-fallback',
+  'runtime-error-root',
+]);
 const previewInspectorRuntimeHealthEvents = new Set([
   'graphql-interpolation-repaired',
+  'neural-assistance-requested',
+  'neural-residual-corrected',
+  'neural-residual-data-flow-trained',
+  'neural-residual-selected',
+  'neural-residual-shared',
+  'neural-residual-trained',
+  'neural-page-context-failed',
+  'neural-page-context-verified',
   'page-composition-snapshot',
   'page-context-selected',
   'render-attempt-started',
@@ -178,6 +192,23 @@ function recordPreviewInspectorRuntimeHealth(candidate = {}) {
   } catch {
     /* Health delivery cannot participate in project rendering. */
   }
+  try {
+    if (typeof syncPreviewInspectorNeuralLearningStatusFromHealth === 'function') {
+      syncPreviewInspectorNeuralLearningStatusFromHealth(event, detail);
+    }
+  } catch {
+    /* Progress UI cannot participate in project rendering or health delivery. */
+  }
+  try {
+    if (
+      !previewInspectorRuntimeHealthDeferredAssistanceEvents.has(event) &&
+      typeof schedulePreviewInspectorAutomaticNeuralAssistanceFromHealth === 'function'
+    ) {
+      schedulePreviewInspectorAutomaticNeuralAssistanceFromHealth(event, detail);
+    }
+  } catch {
+    /* Automatic assistance cannot participate in project rendering or health delivery. */
+  }
   return eventId;
 }
 
@@ -252,6 +283,35 @@ function demotePreviewInspectorReachedTargetAfterRuntimeError(exportName, errorR
   }
 }
 
+/** Waits a few commit frames for an exact runtime blocker to enter the inspector tree. */
+function schedulePreviewInspectorRuntimeHealthErrorAssistanceRetry(
+  event,
+  detail,
+  remainingFrames = PREVIEW_INSPECTOR_HEALTH_ERROR_ASSISTANCE_FRAME_LIMIT,
+) {
+  if (
+    remainingFrames <= 0 ||
+    typeof schedulePreviewInspectorNeuralAssistanceFrame !== 'function' ||
+    typeof schedulePreviewInspectorAutomaticNeuralAssistanceFromHealth !== 'function'
+  ) return false;
+  schedulePreviewInspectorNeuralAssistanceFrame(() => {
+    if (previewInspectorSession.neuralAssistancePending === true) return;
+    try {
+      schedulePreviewInspectorAutomaticNeuralAssistanceFromHealth(event, detail);
+      if (remainingFrames > 1) {
+        schedulePreviewInspectorRuntimeHealthErrorAssistanceRetry(
+          event,
+          detail,
+          remainingFrames - 1,
+        );
+      }
+    } catch {
+      /* A deferred retry cannot participate in project rendering. */
+    }
+  });
+  return true;
+}
+
 /** Reports root, cascade, and error-fallback failures without claiming heuristic certainty. */
 function recordPreviewInspectorRuntimeHealthError(entry) {
   const rawMessage = String(entry?.message ?? '[Runtime error]');
@@ -296,23 +356,24 @@ function recordPreviewInspectorRuntimeHealthError(entry) {
       ? hasFallbackEvidence ? 'runtime-error-fallback' : 'runtime-error-cascade'
       : 'runtime-error-root';
   const parentEventId = followsRoot ? previousRoot.eventId : undefined;
+  const healthDetail = {
+    componentStack: componentStack.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT),
+    confidence: isStyledComponentsInstanceWarning
+      ? 'package-runtime-warning'
+      : followsRoot
+        ? hasFallbackEvidence ? 'stack-evidenced' : 'temporal'
+        : 'root',
+    location: typeof entry.location === 'string' ? entry.location : undefined,
+    message,
+    phase: typeof entry.phase === 'string' ? entry.phase : undefined,
+    source,
+    stack: typeof entry.stack === 'string'
+      ? entry.stack.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT)
+      : undefined,
+  };
   const eventId = recordPreviewInspectorRuntimeHealth({
     category: 'runtime-error',
-    detail: {
-      componentStack: componentStack.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT),
-      confidence: isStyledComponentsInstanceWarning
-        ? 'package-runtime-warning'
-        : followsRoot
-          ? hasFallbackEvidence ? 'stack-evidenced' : 'temporal'
-          : 'root',
-      location: typeof entry.location === 'string' ? entry.location : undefined,
-      message,
-      phase: typeof entry.phase === 'string' ? entry.phase : undefined,
-      source,
-      stack: typeof entry.stack === 'string'
-        ? entry.stack.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT)
-        : undefined,
-    },
+    detail: healthDetail,
     event,
     parentEventId,
   });
@@ -350,6 +411,22 @@ function recordPreviewInspectorRuntimeHealthError(entry) {
         previewInspectorSession.runtimeHealthRootErrors.keys().next().value,
       );
     }
+  }
+  try {
+    if (
+      previewInspectorRuntimeHealthDeferredAssistanceEvents.has(event) &&
+      typeof schedulePreviewInspectorAutomaticNeuralAssistanceFromHealth === 'function'
+    ) {
+      const scheduled = schedulePreviewInspectorAutomaticNeuralAssistanceFromHealth(
+        event,
+        healthDetail,
+      );
+      if (scheduled !== true) {
+        schedulePreviewInspectorRuntimeHealthErrorAssistanceRetry(event, healthDetail);
+      }
+    }
+  } catch {
+    /* Automatic assistance starts only after the exact error blocker has committed. */
   }
 }
 `;

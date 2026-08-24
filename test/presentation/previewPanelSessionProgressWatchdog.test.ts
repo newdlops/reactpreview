@@ -570,6 +570,8 @@ function createVerifiedTargetOutputHealthMessage(artifactId: string): Record<str
       detail: {
         activeBlockerProvenance: [],
         blockerSummary: { active: 0 },
+        candidate: { complete: true },
+        projectionSummary: { count: 0, observed: true },
         targetState: {
           hasOutput: true,
           mounted: true,

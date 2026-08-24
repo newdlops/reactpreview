@@ -17,6 +17,7 @@ export interface TestPreviewPanel {
     type?: 'react-preview-hot-reload-failed' | 'react-preview-hot-reload-ready',
   ): void;
   dispose(): void;
+  emitMessage(message: unknown): void;
   failNextCommit(): void;
   focus(): void;
   holdHotReloadAcknowledgements(): void;

@@ -34,6 +34,11 @@ import {
   type PreviewInspectorPageExecutionRetryRequest,
 } from './previewInspectorPageExecutionRetryProtocol';
 import {
+  isPreviewInspectorNeuralModelSyncMessage,
+  readPreviewInspectorNeuralModelSyncRequest,
+  type PreviewInspectorNeuralModel,
+} from './previewInspectorNeuralModelProtocol';
+import {
   readPreviewRuntimeHealthMessage,
   type PreviewRuntimeHealthJson,
   type PreviewRuntimeHealthMessage,
@@ -43,6 +48,8 @@ import {
 export interface PreviewInspectorHostMessageContext extends PreviewInspectorSourceNavigationContext {
   /** Revision currently committed by the panel; in-flight builds must not decorate old sources. */
   readonly currentRuntimeRevision: number;
+  /** Latest revision allowed to publish learning before its ordinary ready acknowledgement settles. */
+  readonly expectedNeuralRuntimeRevision?: number;
   /** Panel-owned command that must exactly match the browser trace producer identity. */
   readonly expectedPreviewCommand: 'direct-preview' | 'page-inspector';
   /** Panel-owned source marker retaining one pending selection for later-visible editors. */
@@ -57,8 +64,13 @@ export interface PreviewInspectorHostMessageContext extends PreviewInspectorSour
   readonly selectPageCandidate?: (request: PreviewInspectorPageCandidateSelectionRequest) => void;
   /** Schedules one compiler-owned inner Page Execution retry. */
   readonly selectPageExecutionRetry?: (request: PreviewInspectorPageExecutionRetryRequest) => void;
-  /** Prevents optional enrichment from replacing an exact, blocker-free target output. */
+  /** Prevents optional enrichment only after the browser proves detail-complete target output. */
   readonly settleVerifiedTargetOutput?: (message: PreviewRuntimeHealthMessage) => void;
+  /** Merges verified anonymous learning into the profile-local model shared by preview panels. */
+  readonly synchronizeNeuralResidualModel?: (
+    model: PreviewInspectorNeuralModel,
+    runtimeRevision: number,
+  ) => void;
 }
 
 /**
@@ -72,6 +84,19 @@ export function handlePreviewInspectorHostMessage(
   value: unknown,
   context: PreviewInspectorHostMessageContext,
 ): boolean {
+  if (isPreviewInspectorNeuralModelSyncMessage(value)) {
+    const request = readPreviewInspectorNeuralModelSyncRequest(value);
+    if (
+      !context.enabled ||
+      request?.runtimeRevision !==
+        (context.expectedNeuralRuntimeRevision ?? context.currentRuntimeRevision)
+    ) {
+      context.log.debug('Ignored a malformed, disabled, or stale React Inspector neural model.');
+    } else {
+      context.synchronizeNeuralResidualModel?.(request.model, request.runtimeRevision);
+    }
+    return true;
+  }
   const executionRetry = readPreviewInspectorPageExecutionRetryRequest(value);
   if (executionRetry !== undefined) {
     if (executionRetry.runtimeRevision !== context.currentRuntimeRevision) {
@@ -145,7 +170,7 @@ export function handlePreviewInspectorHostMessage(
   return handlePreviewInspectorSourceNavigationMessage(value, context);
 }
 
-/** Accepts only an exact mounted target with output and no active blocker provenance. */
+/** Accepts only exact, blocker-free output with complete context and no shallow visual debt. */
 function isVerifiedTargetOutput(message: PreviewRuntimeHealthMessage): boolean {
   if (
     message.event.event !== 'page-composition-snapshot' ||
@@ -156,6 +181,8 @@ function isVerifiedTargetOutput(message: PreviewRuntimeHealthMessage): boolean {
   const detail = readHealthRecord(message.event.detail);
   const target = readHealthRecord(detail?.targetState);
   const blockers = readHealthRecord(detail?.blockerSummary);
+  const candidate = readHealthRecord(detail?.candidate);
+  const projection = readHealthRecord(detail?.projectionSummary);
   const provenance = detail?.activeBlockerProvenance;
   return (
     target?.stage === 'target-output' &&
@@ -164,6 +191,10 @@ function isVerifiedTargetOutput(message: PreviewRuntimeHealthMessage): boolean {
     target.mounted === true &&
     target.hasOutput === true &&
     target.pageRootCommitted === true &&
+    target.projectedCompatibilityOutput !== true &&
+    candidate?.complete === true &&
+    projection?.observed === true &&
+    projection?.count === 0 &&
     blockers?.active === 0 &&
     Array.isArray(provenance) &&
     provenance.length === 0

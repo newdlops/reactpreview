@@ -117,6 +117,6 @@ describe('Preview runtime health summary', () => {
     expect(summary).toContain('Observed Fiber path: Application > FallbackPage');
     expect(summary).toContain('Missing from live tree: DashboardPage');
     expect(summary).toContain('[+] Application · mounted-output');
-    expect(summary).toContain('[!] Target data unavailable · blocking · current file');
+    expect(summary).toContain('[?] Target data unavailable · blocking · current file');
   });
 });

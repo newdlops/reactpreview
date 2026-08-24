@@ -8,6 +8,7 @@ import type { BuildPreview } from '../application/buildPreview';
 import type { PreviewRenderMode } from '../domain/preview';
 import type { PreviewTargetIssue, ResolvedPreviewTarget } from './activePreviewTarget';
 import type { PreviewPanelSession } from './previewPanelSession';
+import type { PreviewInspectorNeuralModel } from './previewInspectorNeuralModelProtocol';
 
 /** Application operations required by an independently testable panel session. */
 export type PreviewBuildService = Pick<BuildPreview, 'execute' | 'releaseArtifact'>;
@@ -24,6 +25,12 @@ export interface PreviewPanelSessionCallbacks {
   readonly onDidFocus: (session: PreviewPanelSession) => void;
   /** Removes the independently disposed panel from the manager. */
   readonly onDidDispose: (session: PreviewPanelSession) => void;
+  /** Merges one browser-trained anonymous model and broadcasts the shared result. */
+  readonly onDidSynchronizeNeuralModel?: (
+    session: PreviewPanelSession,
+    model: PreviewInspectorNeuralModel,
+    runtimeRevision: number,
+  ) => void;
 }
 
 /** Construction dependencies and initial immutable target for one panel. */

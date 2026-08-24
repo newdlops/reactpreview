@@ -115,6 +115,7 @@ function PreviewInspectorRouteBranchButton({ branch, commonPrefix, selected }) {
         (selected ? ' is-selected' : '') +
         (pending ? ' is-pending' : '') +
         (failed ? ' is-error' : ''),
+      'data-rpi-page-choice': selectable ? 'true' : undefined,
       'data-rpi-scroll-transaction': 'route-selection:' + branch.id,
       'data-rpi-scroll-transaction-state': pending
         ? 'pending'
@@ -246,9 +247,14 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
   const visibleImmediateBranches = immediateBranches.slice(0, PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT);
   const routeError = previewInspectorSession.pendingRouteError;
   const openedOwner = ownerId === undefined ? undefined : branchById.get(ownerId);
+  const selectableAlternativeCount = branches.filter(
+    (branch) => branch.selectable !== false && branch.id !== selectedId,
+  ).length;
   const continuationGuide =
     openedOwner?.childState === 'expanded'
-      ? 'Another application route level was found. Choose the next path.'
+      ? selectableAlternativeCount > 0
+        ? 'Another application route level was found. Choose the next path.'
+        : 'No selectable nested application path was proven at this level.'
       : undefined;
   const renderVisibleBranch = (branch) => {
     const childCount = directChildCounts.get(branch.id) ?? 0;
@@ -282,7 +288,9 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
             : undefined,
         },
         selectedBranch === undefined
-          ? 'Choose an application path'
+          ? selectableAlternativeCount > 0
+            ? 'Choose an application path'
+            : 'No selectable application path'
           : selectedBranch.componentName + ' · ' + selectedBranch.pathname +
             (selectedDefaultChild ? ' · default child' : ''),
       ),

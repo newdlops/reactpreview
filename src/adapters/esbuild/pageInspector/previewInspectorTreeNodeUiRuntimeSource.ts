@@ -219,6 +219,7 @@ function PreviewInspectorComponentTreeNode({
   const isFlowOutcome = node?.blockerKind === 'target-reachability' &&
     node?.blocker?.pageRootCommitted === true && node?.blocker?.targetMounted !== true;
   const isBlocking = isPreviewInspectorBlockingNode(node) && !isFlowOutcome;
+  const resolutionKind = isBlocking ? readPreviewInspectorResolutionKind(node) : undefined;
   const isPathProbe = node?.blockerKind === 'target-reachability' &&
     !isBlocking && !isFlowOutcome;
   const isAssisted = isRenderControl && !isCondition && !isBlocking && !isPathProbe;
@@ -274,6 +275,7 @@ function PreviewInspectorComponentTreeNode({
         'data-render-blocked-owner': isBlockedOwner ? 'true' : undefined,
         'data-render-blocker': isBlocking ? 'true' : undefined,
         'data-render-condition': isCondition ? 'true' : undefined,
+        'data-resolution-kind': resolutionKind,
         'data-tree-role': role.key,
         'data-react-preview-tree-row': node.id,
         ...createPreviewInspectorTreeRowSourceAttributes(node.source),
@@ -282,7 +284,11 @@ function PreviewInspectorComponentTreeNode({
         role: 'treeitem',
         tabIndex: node.id === focusableId ? 0 : -1,
         title: isBlocking
-          ? 'Rendering stops here. Select this row to apply a value or retry.'
+          ? resolutionKind === 'automatic'
+            ? 'The viewer is resolving this step. Select it to review progress or provide a value.'
+            : resolutionKind === 'error'
+              ? 'A runtime error stops rendering here. Select it for the exact failure and retry.'
+              : 'Your choice is needed here. Select this row to continue.'
           : isFlowOutcome
             ? 'This authored flow rendered without the current file. Select it to compare paths or inspect path evidence.'
           : isDeferredUiTrigger
@@ -376,7 +382,9 @@ function PreviewInspectorComponentTreeNode({
       isWrapper ? React.createElement('span', { className: 'rpi-badge' }, 'wrapper') : undefined,
       isBlocking
         ? React.createElement('span', { className: 'rpi-badge rpi-blocker-badge' },
-            'BLOCKS PAGE · CLICK TO FIX')
+            resolutionKind === 'automatic'
+              ? 'VIEWER RESOLVING'
+              : resolutionKind === 'error' ? 'RUNTIME ERROR' : 'YOUR CHOICE')
         : isFlowOutcome
           ? React.createElement('span', { className: 'rpi-badge rpi-flow-outcome-badge' },
               'AUTHORED FLOW · NOT ON THIS PATH')

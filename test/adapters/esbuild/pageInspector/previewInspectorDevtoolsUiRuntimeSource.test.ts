@@ -58,6 +58,18 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('const pageContext = readPreviewInspectorPageContext()');
     expect(source).toContain('title: "Go to the current file\'s main component"');
     expect(source).toContain("'Current file'");
+    expect(source).toContain('function PreviewInspectorNeuralLearningStatus()');
+    expect(source).toContain('React.createElement(PreviewInspectorNeuralLearningStatus)');
+    expect(source).toContain('function PreviewInspectorNeuralRequestButton()');
+    expect(source).toContain('React.createElement(PreviewInspectorNeuralRequestButton)');
+    expect(source).toContain('function PreviewInspectorNeuralChoiceList()');
+    expect(source).toContain('React.createElement(PreviewInspectorNeuralChoiceList)');
+    expect(source).toContain("'data-choice-path': record.path");
+    expect(source).toContain("'Testing one path…'");
+    expect(source).toContain("'Review choice'");
+    expect(source).toContain("'Resolve blockers'");
+    expect(source).toContain("'aria-busy': busy === true ? true : undefined");
+    expect(source).toContain("'aria-live': 'polite'");
     expect(source).not.toContain("'Auto values'");
     expect(source).toContain("'Wireframe'");
     expect(source).toContain('function PreviewInspectorWireframeLayer');
@@ -117,8 +129,11 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('No API or GraphQL payload has been observed yet.');
     expect(source).toContain("'aria-label': 'Rendered page component context'");
     expect(source).toContain("className: 'rpi-context-badge'");
-    expect(source).toContain("'aria-label': 'Authored page caller path'");
-    expect(source).toContain('selectPreviewInspectorPageCandidate(event.target.value)');
+    expect(source).toContain(
+      "'aria-label': 'Page context path recommendation and source-proven alternatives'",
+    );
+    expect(source).toContain('applyPreviewInspectorPageCandidateChoice(possibility.candidateId)');
+    expect(source).not.toContain("'aria-label': 'Authored page caller path'");
     expect(source).toContain("'aria-label': 'Preview rendering perspective'");
     expect(source).toContain("'Page flow (as authored)'");
     expect(source).toContain("'File components (all exports)'");
@@ -131,7 +146,11 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'Rendered flow does not contain the current file'");
     expect(source).toContain('React Preview does not classify this application outcome.');
     expect(source).toContain("'aria-label': 'Inspector tree legend'");
-    expect(source).toContain("'Fix next blocker'");
+    expect(source).toContain("'Open next step'");
+    expect(source).toContain("['automatic', '↻', 'Viewer resolving']");
+    expect(source).toContain("['choice', '?', 'Your choice']");
+    expect(source).toContain("['error', '×', 'Runtime error']");
+    expect(source).not.toContain("'!'");
     expect(source).toContain('function revealPreviewInspectorFriendlyBlocker()');
     expect(source).toContain('requestPreviewInspectorTreeReveal(blocker.id)');
     expect(source).toContain('selectPreviewInspectorUiNode(blocker)');
@@ -170,12 +189,15 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("regionName: 'toolbar'");
     expect(source).toContain("regionName: 'context'");
     expect(source).toContain("label: 'Inspector controls'");
-    expect(source).toContain("label: 'Page context'");
+    expect(source).toContain('label: pageContextLabel');
+    expect(source).toContain(
+      "'Page context · ' + String(count) + ' path'",
+    );
     expect(source).toContain("id: 'rpi-selection-details-section'");
     expect(toolbarSource.indexOf("label: 'Inspector controls'")).toBeLessThan(
       toolbarSource.indexOf("className: 'rpi-toolbar'"),
     );
-    expect(toolbarSource.indexOf("label: 'Page context'")).toBeLessThan(
+    expect(toolbarSource.indexOf('label: pageContextLabel')).toBeLessThan(
       toolbarSource.indexOf("className: 'rpi-page-context'"),
     );
     expect(source).toContain(
@@ -333,8 +355,12 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'current file export'");
     expect(source).toContain("'Reveal'");
     expect(source).toContain("label: 'COMPONENT'");
-    expect(source).toContain("label: 'BLOCKER'");
-    expect(source).toContain("'BLOCKS PAGE · CLICK TO FIX'");
+    expect(source).toContain("label: 'RESOLVING'");
+    expect(source).toContain("label: 'ACTION'");
+    expect(source).toContain("label: 'ERROR'");
+    expect(source).toContain("'VIEWER RESOLVING'");
+    expect(source).toContain("'YOUR CHOICE'");
+    expect(source).toContain("'RUNTIME ERROR'");
     expect(source).toContain("'AUTHORED FLOW · NOT ON THIS PATH'");
     expect(source).toContain("label: 'FLOW OUTCOME'");
     expect(source).toContain('rpi-flow-outcome-row');

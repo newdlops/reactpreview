@@ -60,6 +60,18 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).not.toContain('font-weight:700;grid-row:1/3');
   });
 
+  /** Bounds a large caller inventory and defers off-screen row paint in the docked inspector. */
+  it('keeps the unified page-context path list scrollable', () => {
+    const source = createPreviewInspectorLayoutRuntimeSource();
+
+    expect(source).toContain(
+      '.rpi-page-path-list{display:grid;gap:4px;list-style:none;margin:0;max-height:min(34dvh,300px)',
+    );
+    expect(source).toContain('overflow:auto;overscroll-behavior:contain');
+    expect(source).toContain('contain-intrinsic-size:0 72px;content-visibility:auto');
+    expect(source).toContain('.rpi-page-path-list:focus-visible');
+  });
+
   /** Makes collapse state legible without consuming excessive width in a docked tree. */
   it('uses a visible disclosure target and colors the expanded state', () => {
     const source = createPreviewInspectorLayoutRuntimeSource();
@@ -116,5 +128,46 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).not.toContain('.rpi-flow-overview');
     expect(source).not.toContain('.rpi-blocker-navigation-scroll');
     expect(source).not.toContain('.rpi-simple-resolver');
+  });
+
+  /** Keeps real learning progress compact, theme-aware, and still for reduced-motion users. */
+  it('styles the neural learning status without expanding the toolbar contract', () => {
+    const source = createPreviewInspectorLayoutRuntimeSource();
+
+    expect(source).toContain('.rpi-neural-status{align-items:center');
+    expect(source).toContain('.rpi-neural-status[data-phase="learning"]');
+    expect(source).toContain('.rpi-neural-status[data-phase="applying"]');
+    expect(source).toContain('.rpi-neural-status[data-phase="learned"]');
+    expect(source).toContain('.rpi-neural-status[data-phase="applied"]');
+    expect(source).toContain('.rpi-neural-status[data-phase="paused"]');
+    expect(source).toContain('.rpi-friendly-status[data-status-kind="choice"]');
+    expect(source).toContain('.rpi-friendly-status[data-status-kind="resolving"]');
+    expect(source).toContain('.rpi-friendly-status[data-status-kind="error"]');
+    expect(source).toContain('.rpi-button[aria-busy="true"]:disabled');
+    expect(source).toContain('.rpi-neural-choice-list{background:color-mix');
+    expect(source).toContain(
+      '.rpi-neural-choice-scroll{display:grid;gap:7px;max-height:min(46dvh,470px);min-height:0;min-width:0;overflow-x:hidden;overflow-y:auto',
+    );
+    expect(source).toContain(
+      'overscroll-behavior:contain;scrollbar-gutter:stable;scrollbar-width:thin;touch-action:pan-y',
+    );
+    expect(source).toContain('.rpi-neural-choice-paths{background:color-mix');
+    expect(source).toContain('.rpi-neural-choice-path-actions{display:flex');
+    expect(source).toContain('.rpi-neural-choice-path-alternatives>ol{display:grid');
+    expect(source).toContain('li[data-recommended="true"]');
+    expect(source).toContain('li[data-selected="true"]');
+    expect(source).toContain('.rpi-neural-choice-options{display:flex;flex-wrap:wrap');
+    expect(source).toContain('overflow-wrap:anywhere;text-align:left;white-space:normal');
+    expect(source).toContain(
+      '.rpi-neural-choice-block-heading,.rpi-neural-choice-heading,.rpi-neural-choice-footer',
+    );
+    expect(source).toContain(
+      '.rpi-wireframe-box[data-placeholder="true"][data-resolution-kind="choice"]',
+    );
+    expect(source).toContain('.rpi-wireframe-blocker[data-resolution-kind="error"]');
+    expect(source).toContain('@keyframes rpi-neural-learning-spin');
+    expect(source).toContain(
+      '@media(prefers-reduced-motion:reduce){.rpi-neural-status-indicator{animation:none!important}}',
+    );
   });
 });

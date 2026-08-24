@@ -36,6 +36,64 @@ beforeEach(() => {
 });
 
 describe('handlePreviewInspectorHostMessage source selection', () => {
+  /** Accepts the newest loading revision so persisted learning is not lost before ready settles. */
+  it('routes a bounded anonymous neural model from the expected runtime revision', () => {
+    const { context, synchronizeNeuralResidualModel } = createContext();
+    const model = createNeuralModel();
+
+    expect(
+      handlePreviewInspectorHostMessage(
+        {
+          model,
+          runtimeRevision: 13,
+          type: 'react-preview-neural-model-sync',
+        },
+        { ...context, expectedNeuralRuntimeRevision: 13 },
+      ),
+    ).toBe(true);
+    expect(synchronizeNeuralResidualModel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateOutcomes: {},
+        outcomeSequence: 0,
+        updates: 3,
+        version: 4,
+      }),
+      13,
+    );
+    expect(handlerState.health).not.toHaveBeenCalled();
+  });
+
+  /** Consumes model-shaped hostile traffic without persisting raw candidate identifiers. */
+  it('rejects malformed or stale neural model synchronization', () => {
+    const { context, debug, synchronizeNeuralResidualModel } = createContext();
+
+    expect(
+      handlePreviewInspectorHostMessage(
+        {
+          model: {
+            ...createNeuralModel(),
+            candidateOutcomes: {
+              'condition:raw-project-candidate': {
+                attempts: 1,
+                consecutiveFailures: 0,
+                lastLabel: 1,
+                rewardSum: 1,
+                sequence: 1,
+              },
+            },
+          },
+          runtimeRevision: 11,
+          type: 'react-preview-neural-model-sync',
+        },
+        context,
+      ),
+    ).toBe(true);
+    expect(synchronizeNeuralResidualModel).not.toHaveBeenCalled();
+    expect(debug).toHaveBeenCalledWith(
+      'Ignored a malformed, disabled, or stale React Inspector neural model.',
+    );
+  });
+
   /** Rebuilds only for a route hierarchy offered by the currently committed runtime revision. */
   it('routes a current hierarchical application path selection', () => {
     const { context, selectRoute } = createContext();
@@ -217,8 +275,8 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
     expect(handlerState.navigation).toHaveBeenCalledTimes(1);
   });
 
-  /** Stops optional replacement work only after the current runtime proves exact target output. */
-  it('settles a current blocker-free target-output health event', () => {
+  /** Stops optional replacement only after the current runtime proves detail-complete output. */
+  it('settles a current detail-complete target-output health event', () => {
     const { context, settleVerifiedTargetOutput } = createContext();
     handlerState.health.mockReturnValue(true);
     const message = createTargetOutputHealthMessage();
@@ -229,6 +287,27 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
     expect(settleVerifiedTargetOutput).toHaveBeenCalledWith(
       expect.objectContaining({ artifactId: '0123456789abcdef', runtimeRevision: 12 }),
     );
+  });
+
+  /** A useful fast paint still receives corridor refinement while visual projections remain. */
+  it('does not settle target output with incomplete context or shallow visual debt', () => {
+    const { context, settleVerifiedTargetOutput } = createContext();
+    handlerState.health.mockReturnValue(true);
+
+    expect(
+      handlePreviewInspectorHostMessage(
+        createTargetOutputHealthMessage({ candidateComplete: false }),
+        context,
+      ),
+    ).toBe(true);
+    expect(
+      handlePreviewInspectorHostMessage(
+        createTargetOutputHealthMessage({ projectionCount: 3 }),
+        context,
+      ),
+    ).toBe(true);
+
+    expect(settleVerifiedTargetOutput).not.toHaveBeenCalled();
   });
 
   /** The session owns artifact overlap correlation while a newer replacement is preparing. */
@@ -291,6 +370,7 @@ interface TestPreviewInspectorHostMessageContext {
   readonly selectRoute: ReturnType<typeof vi.fn>;
   readonly selectPageCandidate: ReturnType<typeof vi.fn>;
   readonly settleVerifiedTargetOutput: ReturnType<typeof vi.fn>;
+  readonly synchronizeNeuralResidualModel: ReturnType<typeof vi.fn>;
 }
 
 /** Creates the smallest structurally complete host context used by protocol routing tests. */
@@ -301,6 +381,7 @@ function createContext(): TestPreviewInspectorHostMessageContext {
   const selectRoute = vi.fn();
   const selectPageCandidate = vi.fn();
   const settleVerifiedTargetOutput = vi.fn();
+  const synchronizeNeuralResidualModel = vi.fn();
   const context = {
     currentRuntimeRevision: 12,
     dependencyPaths: new Set([SOURCE_PATH]),
@@ -317,6 +398,7 @@ function createContext(): TestPreviewInspectorHostMessageContext {
       decorateBranches,
       select,
     } as unknown as PreviewInspectorHostMessageContext['sourceDecoration'],
+    synchronizeNeuralResidualModel,
     targetPath: SOURCE_PATH,
   };
   return {
@@ -327,12 +409,32 @@ function createContext(): TestPreviewInspectorHostMessageContext {
     selectRoute,
     selectPageCandidate,
     settleVerifiedTargetOutput,
+    synchronizeNeuralResidualModel,
+  };
+}
+
+/** Creates the previous version-three shape to prove host-side migration keeps its weights. */
+function createNeuralModel(): Record<string, unknown> {
+  return {
+    heads: {
+      condition: {
+        outputBias: 0.25,
+        outputWeights: Array(16).fill(0.1),
+        updates: 3,
+      },
+    },
+    updates: 3,
+    version: 3,
   };
 }
 
 /** Creates one fully correlated composition record accepted by the untrusted health protocol. */
 function createTargetOutputHealthMessage(
-  options: { readonly activeBlockers?: number } = {},
+  options: {
+    readonly activeBlockers?: number;
+    readonly candidateComplete?: boolean;
+    readonly projectionCount?: number;
+  } = {},
 ): Record<string, unknown> {
   const activeBlockers = options.activeBlockers ?? 0;
   return {
@@ -345,6 +447,8 @@ function createTargetOutputHealthMessage(
             ? []
             : [{ active: true, kind: 'target-reachability', name: 'Target blocked' }],
         blockerSummary: { active: activeBlockers },
+        candidate: { complete: options.candidateComplete ?? true },
+        projectionSummary: { count: options.projectionCount ?? 0, observed: true },
         targetState: {
           hasOutput: true,
           mounted: true,

@@ -159,7 +159,7 @@ describe('EsbuildPreviewCompiler without a project React installation', () => {
         ? failure.diagnostics.map(({ message }) => message)
         : [];
     expect(diagnosticMessages).toEqual(
-      expect.arrayContaining(['Could not resolve "react"', 'Could not resolve "react-dom"']),
+      expect.arrayContaining(['Could not resolve "react"', 'Could not resolve "react-dom/client"']),
     );
     expect(acquisitions).toEqual([['react', 'react-dom']]);
     expect(progressStages).toContain('acquiring-dependencies');

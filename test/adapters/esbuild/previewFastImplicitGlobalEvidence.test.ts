@@ -136,6 +136,26 @@ describe('preparePreviewImplicitGlobalEvidence', () => {
     expect(result.truncated).toBe(true);
   });
 
+  /** Optional conventional runtime paths may not exist and must not make a proven page provisional. */
+  it('treats absent convention candidates as complete negative evidence', async () => {
+    const result = await preparePreviewImplicitGlobalEvidence({
+      cache: new PreviewImplicitGlobalEvidenceCache(),
+      cacheKey: '/workspace\0nearest-config',
+      fallbackSourcePaths: [],
+      fast: true,
+      inspectorDependencyPaths: ['/workspace/pages/company.tsx'],
+      pageInspector: true,
+      prioritizedSourcePath: undefined,
+      readSource: () => undefined,
+      resolveModule: () => undefined,
+      runtimeDependencyPaths: ['/workspace/index.tsx', '/workspace/src/main.tsx'],
+      snapshotSourceByPath: EMPTY_SNAPSHOTS,
+    });
+
+    expect(result.evidence).toEqual([]);
+    expect(result.truncated).toBe(false);
+  });
+
   /** Direct exports still need conventional bootstrap globals that sit outside their module graph. */
   it('inspects only conventional bootstrap candidates for a fast non-page preview', async () => {
     const entryPath = '/workspace/src/index.tsx';

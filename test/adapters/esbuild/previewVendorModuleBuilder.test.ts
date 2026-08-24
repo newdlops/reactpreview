@@ -110,7 +110,8 @@ describe('PreviewVendorModuleBuilder', () => {
 
       expect(result.moduleImports?.map(({ specifier }) => specifier)).toEqual([packageName]);
       expect(javascript).toContain('vendor-builtins');
-      expect(javascript).toContain('previewNodeBuiltinNeutralValue');
+      expect(javascript).toContain('Filesystem unavailable in React Preview.');
+      expect(javascript).toContain('browser-local POSIX string facade');
     } finally {
       await rm(workspaceRoot, { force: true, recursive: true });
     }

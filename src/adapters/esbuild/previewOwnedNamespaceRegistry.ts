@@ -30,10 +30,12 @@ import {
 } from './previewBuildEntryPlugin';
 
 /** Namespace-aware confinement policy identity. Bump whenever registry admission semantics change. */
-export const PREVIEW_OWNED_NAMESPACE_POLICY_VERSION = 3;
+export const PREVIEW_OWNED_NAMESPACE_POLICY_VERSION = 5;
 
 /** Compiler-private namespace values that are intentionally unavailable to build requests. */
 export const PREVIEW_COMPILER_PRIVATE_NAMESPACES = Object.freeze({
+  dependencyPackageHint: 'react-preview-neural-package-contract',
+  dependencyStyleHint: 'react-preview-neural-style-contract',
   generatedModuleFallback: 'react-preview-generated-module-fallback',
   generatedUiFallback: 'react-preview-generated-ui-fallback',
   inspectorCorridor: 'react-preview-inspector-corridor',
@@ -75,6 +77,14 @@ export interface PreviewOwnedNamespaceRegistry {
 const BASE_COMPILER_REGISTRATIONS = Object.freeze([
   registration(PREVIEW_MAIN_ENTRY_NAMESPACE, 'react-preview-build-entry'),
   registration(PREVIEW_RUNTIME_ANCHOR_NAMESPACE, 'react-preview-build-entry'),
+  registration(
+    PREVIEW_COMPILER_PRIVATE_NAMESPACES.dependencyPackageHint,
+    'react-preview-neural-dependency-hints',
+  ),
+  registration(
+    PREVIEW_COMPILER_PRIVATE_NAMESPACES.dependencyStyleHint,
+    'react-preview-neural-dependency-hints',
+  ),
   registration(PREVIEW_INSPECTOR_RUNTIME_NAMESPACE, 'react-preview-page-inspector-runtime'),
   registration(
     PREVIEW_COMPILER_PRIVATE_NAMESPACES.inspectorJsxRuntime,
@@ -260,6 +270,7 @@ export function isKnownPreviewCompilerVirtualInput(inputIdentity: string): boole
   );
 }
 
+/** Freezes one internal namespace ownership declaration. */
 function registration(
   namespace: string,
   ownerPluginName: string,
@@ -267,6 +278,7 @@ function registration(
   return Object.freeze({ namespace, ownerPluginName });
 }
 
+/** Wraps namespace policy violations in the compiler's public error type. */
 function createRegistryError(message: string): PreviewCompilationError {
   return new PreviewCompilationError(
     `React Preview namespace confinement registry rejected the build. ${message}`,

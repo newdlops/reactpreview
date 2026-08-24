@@ -206,8 +206,8 @@ async function readFastImplicitGlobalSource(
         ? { sourceText: overlayText, truncated: false }
         : { truncated: true };
     }
-  } catch {
-    return { truncated: true };
+  } catch (error) {
+    return isMissingFastImplicitGlobalSource(error) ? { truncated: false } : { truncated: true };
   }
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
@@ -237,11 +237,18 @@ async function readFastImplicitGlobalSource(
       sourceText: buffer.subarray(0, totalBytesRead).toString('utf8'),
       truncated: false,
     };
-  } catch {
-    return { truncated: true };
+  } catch (error) {
+    return isMissingFastImplicitGlobalSource(error) ? { truncated: false } : { truncated: true };
   } finally {
     await handle?.close().catch(() => undefined);
   }
+}
+
+/** Missing convention candidates are ordinary absence, not incomplete evidence inspection. */
+function isMissingFastImplicitGlobalSource(error: unknown): boolean {
+  if (error === null || typeof error !== 'object' || !('code' in error)) return false;
+  const code = error.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 /** Normalizes caller-owned JavaScript/TypeScript paths without touching the filesystem. */

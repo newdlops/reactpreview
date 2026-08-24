@@ -4,7 +4,7 @@ import { PreviewBuildStalledError } from '../../../src/domain/previewBuildExecut
 
 describe('resolvePreviewCompilerFailure', () => {
   it('converts a frozen-frontier guard error to frontier-mismatch without dependency recovery', async () => {
-    const tryAcquireMissingDependencies = vi.fn(() => Promise.resolve(false));
+    const tryAcquireMissingDependencies = vi.fn(() => Promise.resolve(undefined));
 
     await expect(
       resolvePreviewCompilerFailure({
@@ -69,7 +69,7 @@ describe('resolvePreviewCompilerFailure', () => {
         error,
         retryCompilation: vi.fn(),
         target: '/workspace/Target.tsx',
-        tryAcquireMissingDependencies: vi.fn(() => Promise.resolve(false)),
+        tryAcquireMissingDependencies: vi.fn(() => Promise.resolve(undefined)),
       }),
     ).rejects.toBe(error);
   });

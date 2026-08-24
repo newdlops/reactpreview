@@ -79,6 +79,11 @@ import type { EsbuildPreviewCompilerOptions } from './previewCompilerOptions';
 import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
 import { createPreviewDragDropBridgePlugin } from './previewDragDropBridgePlugin';
 import { collectPreviewDragDropRequirement } from './previewDragDropRequirement';
+import { createPreviewDependencyResolutionHintPlugin } from './previewDependencyResolutionHintPlugin';
+import {
+  PreviewDependencyResolutionNeuralModel,
+  type PreviewDependencyResolutionNeuralScore,
+} from './previewDependencyResolutionNeuralModel';
 import { createPreviewMissingSourceFallbackPlugin } from './previewMissingSourceFallbackPlugin';
 import {
   createPreviewLegacyCommonJsGlobalDefines,
@@ -88,7 +93,12 @@ import { createPreviewManagedDependencyPeerPlugin } from './previewManagedDepend
 import { createPreviewLegacyNbindCspPlugin } from './previewLegacyNbindCspPlugin';
 import { createPreviewMdxFallbackPlugin } from './previewMdxFallbackPlugin';
 import {
+  collectPreviewDependencyResolutionPreflightMessages,
+  createPreviewRenderOnlyDependencyResolutionHintPlan,
+  createPreviewDependencyResolutionHintPlan,
+  mergePreviewDependencyResolutionHintPlans,
   tryAcquirePreviewMissingDependencies,
+  type PreviewDependencyResolutionHintPlan,
   type PreviewMissingDependencyAcquisitionContext,
 } from './previewMissingDependencyRequirements';
 import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
@@ -186,6 +196,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   private readonly projectUsageCache = new PreviewProjectUsageCache();
   private readonly incrementalBuildCache = new PreviewIncrementalBuildCache();
   private readonly diagnosticEmissionCache = new PreviewDiagnosticEmissionCache();
+  private readonly dependencyResolutionNeuralModel = new PreviewDependencyResolutionNeuralModel();
   private readonly setupFailureCache = new PreviewSetupFailureCache();
   private readonly vendorModuleBuilder: PreviewVendorModuleBuilder;
   private readonly completeRouteInventoryCache = new Map<
@@ -528,7 +539,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   public async compile(
     request: PreviewBuildRequest,
     context?: PreviewBuildExecutionContext,
-    dependencyAcquisitionAttempted = false,
+    dependencyResolutionHints?: PreviewDependencyResolutionHintPlan,
   ): Promise<PreviewBundle> {
     if (this.disposed) {
       throw new PreviewCompilationError('The React preview compiler is already closed.', []);
@@ -538,7 +549,20 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     this.activeBuildControllers.add(buildController);
     const buildSignal = buildController.signal;
     let acquisitionContext: PreviewMissingDependencyAcquisitionContext | undefined;
+    let activeDependencyResolutionHints = dependencyResolutionHints;
+    let dependencyRecoveryAttempted = dependencyResolutionHints !== undefined;
     let staticModuleResolutionMemo: PreviewStaticModuleResolutionMemo | undefined;
+    const appliedDependencyHintScores = new Set<PreviewDependencyResolutionNeuralScore>();
+    const recordDependencyHintBuildOutcome = (successful: boolean): void => {
+      for (const score of appliedDependencyHintScores) {
+        this.dependencyResolutionNeuralModel.recordOutcome(
+          score,
+          successful,
+          successful ? 0.5 : 0.2,
+        );
+      }
+      appliedDependencyHintScores.clear();
+    };
     try {
       throwIfPreviewBuildCancelled(buildSignal);
       context?.reportProgress?.('discovering-components');
@@ -560,7 +584,26 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       acquisitionContext = {
         environment: managedDependencyEnvironment,
         projectRoot,
+        readSource: (sourcePath) => {
+          const normalizedPath = path.normalize(sourcePath);
+          const snapshot = [
+            ...request.dependencySnapshots,
+            {
+              documentPath: request.documentPath,
+              language: request.language,
+              sourceText: request.sourceText,
+            },
+          ].find((candidate) => path.normalize(candidate.documentPath) === normalizedPath);
+          return (
+            snapshot?.sourceText ??
+            this.projectUsageCache.readSourceText({
+              maximumBytes: 2 * 1024 * 1024,
+              sourcePath,
+            })
+          );
+        },
         reportAcquisition: () => context?.reportProgress?.('acquiring-dependencies'),
+        targetPath: request.documentPath,
         workspaceRoot: canonicalWorkspaceRoot,
       };
       const baseStaticModuleResolver = createPreviewStaticModuleResolver({
@@ -860,6 +903,44 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       if (preparedBundleExecution !== undefined) {
         context?.reportProgress?.('analyzing-project', preparedBundleExecution.activity);
         preparedBundleExecution.throwIfRejected(request.documentPath);
+      }
+      if (activeDependencyResolutionHints === undefined && preparedBundleExecution !== undefined) {
+        const preflightMessages = await collectPreviewDependencyResolutionPreflightMessages({
+          readSource: async (sourcePath) =>
+            snapshotSourceByPath.get(path.normalize(sourcePath)) ??
+            (await this.projectUsageCache.readSourceText({
+              maximumBytes: 2 * 1024 * 1024,
+              sourcePath,
+            })),
+          resolveModule: analysisStaticModuleResolver.resolve,
+          sourcePaths: [
+            ...preparedBundleExecution.prepared.frontier.authenticSourcePaths,
+            ...styleContext.tailwindCandidateSnapshots.map((snapshot) => snapshot.documentPath),
+            ...applicationStylesheetImports.flatMap((selection) => {
+              const resolved = analysisStaticModuleResolver.resolve(
+                selection.moduleSpecifier,
+                selection.importerPath,
+              );
+              if (resolved !== undefined) return [resolved];
+              return selection.moduleSpecifier.startsWith('.')
+                ? [path.resolve(path.dirname(selection.importerPath), selection.moduleSpecifier)]
+                : [];
+            }),
+          ],
+        });
+        const preflightHints = await createPreviewDependencyResolutionHintPlan(
+          preflightMessages,
+          acquisitionContext,
+          this.dependencyResolutionNeuralModel,
+        );
+        const hasRenderOnlyContracts =
+          preflightHints.facadeSourcePaths.length > 0 ||
+          preflightHints.packageContractCandidates.length > 0 ||
+          preflightHints.styleCandidates.length > 0;
+        if (hasRenderOnlyContracts) {
+          activeDependencyResolutionHints =
+            createPreviewRenderOnlyDependencyResolutionHintPlan(preflightHints);
+        }
       }
       const analysisTarget = activeInspectorPlan?.target ?? targetUsageProps.inspectorPlan?.target;
       const runtimeTargetMode = resolvePreviewInspectorRuntimeTargetMode(
@@ -1269,6 +1350,30 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               createPreviewLegacyNbindCspPlugin({
                 readSource: (options) => this.projectUsageCache.readSourceText(options),
               }),
+              ...(activeDependencyResolutionHints !== undefined &&
+              (activeDependencyResolutionHints.facadeSourcePaths.length > 0 ||
+                activeDependencyResolutionHints.packageContractCandidates.length > 0 ||
+                activeDependencyResolutionHints.styleCandidates.length > 0)
+                ? [
+                    createPreviewDependencyResolutionHintPlugin({
+                      facadeHints: activeDependencyResolutionHints.facadeCandidates,
+                      facadeSourcePaths: activeDependencyResolutionHints.facadeSourcePaths,
+                      onHintApplied: (score) => {
+                        appliedDependencyHintScores.add(score);
+                      },
+                      packageContractHints:
+                        activeDependencyResolutionHints.packageContractCandidates,
+                      readSource: (sourcePath) =>
+                        snapshotSourceByPath.get(path.normalize(sourcePath)) ??
+                        this.projectUsageCache.readSourceText({
+                          maximumBytes: 2 * 1024 * 1024,
+                          sourcePath,
+                        }),
+                      styleHints: activeDependencyResolutionHints.styleCandidates,
+                      workspaceRoot: canonicalWorkspaceRoot,
+                    }),
+                  ]
+                : []),
               ...(inspectorPlan === undefined
                 ? []
                 : [
@@ -1499,6 +1604,24 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           };
         };
         const buildPlanIdentity = createPreviewBuildPlanIdentity({
+          dependencyResolutionHints:
+            activeDependencyResolutionHints === undefined
+              ? undefined
+              : {
+                  facadeSourcePaths: activeDependencyResolutionHints.facadeSourcePaths,
+                  packageContracts: activeDependencyResolutionHints.packageContractCandidates.map(
+                    (candidate) => ({
+                      moduleSpecifier: candidate.moduleSpecifier,
+                      sourcePath: candidate.sourcePath,
+                    }),
+                  ),
+                  packageNames: activeDependencyResolutionHints.packageNames,
+                  styleHints: activeDependencyResolutionHints.styleCandidates.map((candidate) => ({
+                    moduleSpecifier: candidate.moduleSpecifier,
+                    sourcePath: candidate.sourcePath,
+                  })),
+                  version: activeDependencyResolutionHints.version,
+                },
           documentPath: request.documentPath,
           documentShell: { evidence: documentShellEvidence?.shell, portalHostIds },
           environment,
@@ -1574,6 +1697,24 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         environment: PreviewRuntimeEnvironment,
       ): ReturnType<typeof runBuild> => {
         const adaptivePlanKey = createPreviewBuildPlanIdentity({
+          dependencyResolutionHints:
+            activeDependencyResolutionHints === undefined
+              ? undefined
+              : {
+                  facadeSourcePaths: activeDependencyResolutionHints.facadeSourcePaths,
+                  packageContracts: activeDependencyResolutionHints.packageContractCandidates.map(
+                    (candidate) => ({
+                      moduleSpecifier: candidate.moduleSpecifier,
+                      sourcePath: candidate.sourcePath,
+                    }),
+                  ),
+                  packageNames: activeDependencyResolutionHints.packageNames,
+                  styleHints: activeDependencyResolutionHints.styleCandidates.map((candidate) => ({
+                    moduleSpecifier: candidate.moduleSpecifier,
+                    sourcePath: candidate.sourcePath,
+                  })),
+                  version: activeDependencyResolutionHints.version,
+                },
           documentPath: request.documentPath,
           environment,
           managedDependencyEnvironment: managedDependencyEnvironment.identity,
@@ -1699,6 +1840,24 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         return finalBuild;
       };
       const outputStrategyKey = createPreviewBuildPlanIdentity({
+        dependencyResolutionHints:
+          activeDependencyResolutionHints === undefined
+            ? undefined
+            : {
+                facadeSourcePaths: activeDependencyResolutionHints.facadeSourcePaths,
+                packageContracts: activeDependencyResolutionHints.packageContractCandidates.map(
+                  (candidate) => ({
+                    moduleSpecifier: candidate.moduleSpecifier,
+                    sourcePath: candidate.sourcePath,
+                  }),
+                ),
+                packageNames: activeDependencyResolutionHints.packageNames,
+                styleHints: activeDependencyResolutionHints.styleCandidates.map((candidate) => ({
+                  moduleSpecifier: candidate.moduleSpecifier,
+                  sourcePath: candidate.sourcePath,
+                })),
+                version: activeDependencyResolutionHints.version,
+              },
         documentPath: request.documentPath,
         managedDependencyEnvironment: managedDependencyEnvironment.identity,
         preparationMode: request.preparationMode,
@@ -1723,7 +1882,32 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         context?.reportProgress?.('bundling-modules', preparedBundleExecution.activity);
       context?.reportProgress?.('bundling-modules');
       try {
-        buildExecution = await runAdaptiveBuild(activeRuntimeEnvironment);
+        try {
+          buildExecution = await runAdaptiveBuild(activeRuntimeEnvironment);
+        } catch (error) {
+          if (dependencyRecoveryAttempted || !isBuildFailure(error)) {
+            throw error;
+          }
+          const hints = await createPreviewDependencyResolutionHintPlan(
+            error.errors,
+            acquisitionContext,
+            this.dependencyResolutionNeuralModel,
+          );
+          const hasRenderOnlyContracts =
+            hints.facadeSourcePaths.length > 0 ||
+            hints.packageContractCandidates.length > 0 ||
+            hints.styleCandidates.length > 0;
+          // A package acquisition changes the managed environment identity and must still restart
+          // the compile. Pure render-only contracts can reuse the expensive page/frontier analysis
+          // and rebuild immediately with only the exact failed edges changed.
+          if (!hasRenderOnlyContracts || hints.packageNames.length > 0) throw error;
+          dependencyRecoveryAttempted = true;
+          activeDependencyResolutionHints = mergePreviewDependencyResolutionHintPlans(
+            activeDependencyResolutionHints,
+            hints,
+          );
+          buildExecution = await runAdaptiveBuild(activeRuntimeEnvironment);
+        }
       } catch (error) {
         if (!isBuildFailure(error)) {
           throw error;
@@ -1831,7 +2015,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         styledComponentsDependencyPaths: styleContext.styledComponentsPlan.dependencyPaths,
         targetDependencyPaths: targetUsageProps.dependencyPaths,
       });
-      const browserBundle = await this.vendorModuleBuilder.prepare({
+      const preparedVendorModules = await this.vendorModuleBuilder.prepareWithEvidence({
         bundle: previewBundle,
         globalPackagePlan: buildExecution.globalPackagePlan,
         metafile: buildExecution.result.metafile,
@@ -1839,13 +2023,17 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         projectRoot,
         workspaceRoot: canonicalWorkspaceRoot,
       });
+      const browserBundle = preparedVendorModules.bundle;
       assertPreviewResolutionPaths(resolutionConfinement, browserBundle.dependencies);
       const publicAssetRoot = await findPreviewPublicAssetRoot(projectRoot);
       const publicApplicationOrigin = resolvePreviewPublicApplicationOrigin(
         activeRuntimeEnvironment.publicEnvironment,
       );
       this.managedDependencyStore?.scheduleAdmission({
-        dependencyPaths: collectPreviewBuildDependencies(request, buildExecution.result.metafile),
+        dependencyPaths: [
+          ...collectPreviewBuildDependencies(request, buildExecution.result.metafile),
+          ...preparedVendorModules.dependencyPaths,
+        ],
         profile: managedDependencyEnvironment.profile,
         workspaceRoot: canonicalWorkspaceRoot,
       });
@@ -1855,20 +2043,23 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         ...(publicApplicationOrigin === undefined ? {} : { publicApplicationOrigin }),
         ...(publicAssetRoot === undefined ? {} : { publicAssetRoot }),
       };
+      recordDependencyHintBuildOutcome(true);
       return inspectorSourceGestureSecret === undefined
         ? browserBundleWithPublicAssets
         : { ...browserBundleWithPublicAssets, inspectorSourceGestureSecret };
     } catch (error) {
+      recordDependencyHintBuildOutcome(false);
       return await resolvePreviewCompilerFailure({
         buildSignal,
-        dependencyAcquisitionAttempted,
+        dependencyAcquisitionAttempted: dependencyRecoveryAttempted,
         error,
-        retryCompilation: () => this.compile(request, context, true),
+        retryCompilation: (hints) => this.compile(request, context, hints),
         target: request.documentPath,
         tryAcquireMissingDependencies: (errors) =>
           tryAcquirePreviewMissingDependencies({
             context: acquisitionContext,
             errors,
+            neuralModel: this.dependencyResolutionNeuralModel,
             signal: buildSignal,
             store: this.managedDependencyStore,
           }),

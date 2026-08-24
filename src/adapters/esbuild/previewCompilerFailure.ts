@@ -10,17 +10,18 @@ import {
   PreviewBuildStalledError,
 } from '../../domain/previewBuildExecution';
 import { convertMessage, describeUnknownError, isBuildFailure } from './previewBuildResult';
+import type { PreviewDependencyResolutionHintPlan } from './previewMissingDependencyRequirements';
 
 /** Failure inputs kept outside the compiler's successful build orchestration. */
 export interface ResolvePreviewCompilerFailureOptions {
   readonly error: unknown;
   readonly buildSignal: AbortSignal;
   readonly dependencyAcquisitionAttempted: boolean;
-  readonly retryCompilation: () => Promise<PreviewBundle>;
+  readonly retryCompilation: (hints: PreviewDependencyResolutionHintPlan) => Promise<PreviewBundle>;
   readonly target: string;
   readonly tryAcquireMissingDependencies: (
     errors: readonly import('esbuild').Message[],
-  ) => Promise<boolean>;
+  ) => Promise<PreviewDependencyResolutionHintPlan | undefined>;
 }
 
 /** Either returns the recovered build or throws a stable diagnostic error. */
@@ -41,12 +42,9 @@ export async function resolvePreviewCompilerFailure(
       frontierMismatch.evidence,
     );
   }
-  if (
-    !options.dependencyAcquisitionAttempted &&
-    isBuildFailure(error) &&
-    (await options.tryAcquireMissingDependencies(error.errors))
-  ) {
-    return options.retryCompilation();
+  if (!options.dependencyAcquisitionAttempted && isBuildFailure(error)) {
+    const hints = await options.tryAcquireMissingDependencies(error.errors);
+    if (hints !== undefined) return options.retryCompilation(hints);
   }
   if (error instanceof PreviewCompilationError) throw error;
   const diagnostics: readonly PreviewDiagnostic[] = isBuildFailure(error)

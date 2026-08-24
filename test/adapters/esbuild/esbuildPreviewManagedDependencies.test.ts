@@ -79,7 +79,8 @@ describe('EsbuildPreviewCompiler managed dependencies', () => {
         { reportProgress: (stage) => reportedStages.push(stage) },
       );
 
-      expect(new TextDecoder().decode(bundle.javascript)).toContain('acquired-package-value');
+      expect(readBrowserJavaScript(bundle)).toContain('acquired-package-value');
+      expect(bundle.moduleImports?.map(({ specifier }) => specifier)).toContain('learned-package');
       expect(acquisitions).toEqual([['learned-package']]);
       expect(reportedStages.filter((stage) => stage === 'acquiring-dependencies')).toHaveLength(1);
       await expectPathToBeMissing(path.join(projectRoot, 'node_modules'));
@@ -219,7 +220,7 @@ describe('EsbuildPreviewCompiler managed dependencies', () => {
       useStorybookPreview: false,
       workspaceRoot: firstProject,
     });
-    expect(new TextDecoder().decode(firstBundle.javascript)).toContain('learned-package-value');
+    expect(readBrowserJavaScript(firstBundle)).toContain('learned-package-value');
     await firstCompiler.shutdown();
 
     const secondProject = await writeProject(fixtureRoot, 'second-project', false);
@@ -238,7 +239,7 @@ describe('EsbuildPreviewCompiler managed dependencies', () => {
       workspaceRoot: secondProject,
     });
 
-    expect(new TextDecoder().decode(secondBundle.javascript)).toContain('learned-package-value');
+    expect(readBrowserJavaScript(secondBundle)).toContain('learned-package-value');
     expect(secondBundle.dependencies.every((dependency) => !dependency.includes(storeRoot))).toBe(
       true,
     );
@@ -359,4 +360,18 @@ async function expectPathToBeMissing(candidatePath: string): Promise<void> {
   await expect(
     import('node:fs/promises').then(async ({ access }) => access(candidatePath)),
   ).rejects.toThrow();
+}
+
+/** Reads the entry plus browser-import-map vendor chunks as one logical execution artifact. */
+function readBrowserJavaScript(
+  bundle: Awaited<ReturnType<EsbuildPreviewCompiler['compile']>>,
+): string {
+  return [
+    bundle.javascript,
+    ...bundle.chunks
+      .filter(({ relativePath }) => relativePath.endsWith('.js'))
+      .map(({ contents }) => contents),
+  ]
+    .map((contents) => new TextDecoder().decode(contents))
+    .join('\n');
 }

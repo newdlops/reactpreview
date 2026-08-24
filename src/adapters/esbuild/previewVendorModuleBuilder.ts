@@ -27,8 +27,16 @@ const PREVIEW_VENDOR_BUILD_SCHEMA = 5;
 
 export interface PreviewVendorBuildOutput {
   readonly chunks: readonly PreviewBundleChunk[];
+  /** Local build inputs retained only for managed-store admission; persistent caches may omit it. */
+  readonly dependencyPaths?: readonly string[];
   readonly moduleImports: readonly PreviewBundleModuleImport[];
   readonly stylesheet?: Uint8Array;
+}
+
+/** Browser bundle plus private file evidence from the vendor graph that produced it. */
+export interface PreparedPreviewVendorModules {
+  readonly bundle: PreviewBundle;
+  readonly dependencyPaths: readonly string[];
 }
 
 /** Optional cross-process cache; callers must treat every cache fault as a local-build miss. */
@@ -63,13 +71,22 @@ export class PreviewVendorModuleBuilder {
   public constructor(private readonly sharedCache?: PreviewVendorModuleCacheBackend) {}
 
   public async prepare(options: PreparePreviewVendorModulesOptions): Promise<PreviewBundle> {
+    return (await this.prepareWithEvidence(options)).bundle;
+  }
+
+  /** Preserves vendor graph inputs for background admission without exposing store paths publicly. */
+  public async prepareWithEvidence(
+    options: PreparePreviewVendorModulesOptions,
+  ): Promise<PreparedPreviewVendorModules> {
     const demands = await collectVendorDemands(
       options.bundle,
       options.metafile,
       options.projectRoot,
       options.workspaceRoot,
     );
-    if (demands.length === 0) return options.bundle;
+    if (demands.length === 0) {
+      return { bundle: options.bundle, dependencyPaths: Object.freeze([]) };
+    }
     const environmentIdentity = createVendorEnvironmentIdentity(
       options.projectRoot,
       options.workspaceRoot,
@@ -82,7 +99,11 @@ export class PreviewVendorModuleBuilder {
         vendorDemandsCover(record.demands, demands),
     );
     if (reusable !== undefined) {
-      return attachVendorOutput(options.bundle, await reusable.output);
+      const output = await reusable.output;
+      return {
+        bundle: attachVendorOutput(options.bundle, output),
+        dependencyPaths: Object.freeze([...(output.dependencyPaths ?? [])]),
+      };
     }
     const identity = createVendorIdentity(
       options.projectRoot,
@@ -115,7 +136,10 @@ export class PreviewVendorModuleBuilder {
       });
     }
     const vendor = cloneVendorOutput(await pending);
-    return attachVendorOutput(options.bundle, vendor);
+    return {
+      bundle: attachVendorOutput(options.bundle, vendor),
+      dependencyPaths: Object.freeze([...(vendor.dependencyPaths ?? [])]),
+    };
   }
 
   public clear(): void {
@@ -424,6 +448,7 @@ function createVendorBuildOutput(
     .sort((left, right) => compareText(left.path, right.path));
   return {
     chunks,
+    dependencyPaths: collectVendorDependencyPaths(metafile, workspaceRoot),
     moduleImports,
     ...(stylesheets.length === 0
       ? {}
@@ -497,9 +522,33 @@ function attachVendorOutput(
 function cloneVendorOutput(output: PreviewVendorBuildOutput): PreviewVendorBuildOutput {
   return {
     chunks: output.chunks.map((chunk) => ({ ...chunk, contents: chunk.contents.slice() })),
+    ...(output.dependencyPaths === undefined
+      ? {}
+      : { dependencyPaths: Object.freeze([...output.dependencyPaths]) }),
     moduleImports: output.moduleImports.map((moduleImport) => ({ ...moduleImport })),
     ...(output.stylesheet === undefined ? {} : { stylesheet: output.stylesheet.slice() }),
   };
+}
+
+/** Restores real vendor metafile inputs while excluding compiler-owned virtual modules. */
+function collectVendorDependencyPaths(
+  metafile: Metafile,
+  workspaceRoot: string,
+): readonly string[] {
+  return Object.freeze(
+    [
+      ...new Set(
+        Object.keys(metafile.inputs).flatMap((inputPath) => {
+          if (inputPath.startsWith('<') || /^[A-Za-z][A-Za-z0-9_-]*:/u.test(inputPath)) return [];
+          return [
+            path.normalize(
+              path.isAbsolute(inputPath) ? inputPath : path.resolve(workspaceRoot, inputPath),
+            ),
+          ];
+        }),
+      ),
+    ].sort(compareText),
+  );
 }
 
 function createVendorIdentity(

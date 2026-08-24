@@ -164,6 +164,55 @@ describe('Preview Inspector target attempt runtime source', () => {
     },
   );
 
+  it.each(['deterministic-minimum-auto', 'minimum-requirement-dfs'])(
+    'continues %s composition only through its retained baseline error',
+    (mode) => {
+      const context: { __result?: Record<string, unknown> } = {};
+      vm.runInNewContext(
+        `
+          const state = {
+            key: 'candidate:Target',
+            targetExportName: 'Target',
+            targetOutputError: { message: 'existing missing value' },
+          };
+          const attempt = {
+            autoMode: ${JSON.stringify(mode)},
+            retainedBaselineFatalError: { message: 'existing missing value' },
+            settledAt: 200,
+            targetReachabilityKey: state.key,
+            traceId: 'trace-requirement',
+          };
+          const previewInspectorSession = {
+            blockerTraceActiveAttempt: attempt,
+            renderConditionAutoAttempts: new Map(),
+            renderConditions: new Map(),
+          };
+          ${createPreviewInspectorTargetAttemptRuntimeSource()}
+          const retained = canContinuePreviewInspectorMinimumRequirementsThroughBaselineError(
+            state,
+          );
+          state.targetOutputError = { message: 'new failure' };
+          const changed = canContinuePreviewInspectorMinimumRequirementsThroughBaselineError(
+            state,
+          );
+          delete attempt.settledAt;
+          state.targetOutputError = { message: 'existing missing value' };
+          const unsettled = canContinuePreviewInspectorMinimumRequirementsThroughBaselineError(
+            state,
+          );
+          globalThis.__result = { changed, retained, unsettled };
+        `,
+        context,
+      );
+
+      expect(context.__result).toEqual({
+        changed: false,
+        retained: true,
+        unsettled: false,
+      });
+    },
+  );
+
   /** Rolls back an inert committed JSX gate before resuming the same corridor's DFS. */
   it('rejects a settled target-guided gate with no blocker or target progress', () => {
     const context: { __result?: Record<string, unknown> } = {};

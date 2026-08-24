@@ -39,6 +39,7 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
     state.targetExportName,
     ...(state.applicationPath ?? []),
   ]);
+  const componentCorridorNames = new Set([state.rootName, state.targetExportName]);
   const localComponentOwnerNames = new Set();
   const runtimeOwnerNames = new Set(state.runtimeOwnerNames ?? []);
   const names = new Set([...staticNames, ...runtimeOwnerNames]);
@@ -102,6 +103,7 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
     }
     if (typeof step?.label === 'string') {
       names.add(step.label);
+      componentCorridorNames.add(step.label);
       corridorOwnerNames.add(step.label);
       if (!nameScores.has(step.label)) nameScores.set(step.label, 1);
     }
@@ -124,10 +126,12 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
     paths.add(normalizePreviewInspectorReachabilityPath(edge?.owner?.sourcePath));
     if (typeof edge?.child?.exportName === 'string') {
       staticNames.add(edge.child.exportName);
+      componentCorridorNames.add(edge.child.exportName);
       corridorOwnerNames.add(edge.child.exportName);
     }
     if (typeof edge?.owner?.exportName === 'string') {
       staticNames.add(edge.owner.exportName);
+      componentCorridorNames.add(edge.owner.exportName);
       corridorOwnerNames.add(edge.owner.exportName);
     }
     for (const ownerName of edge?.localOwnerNames ?? []) {
@@ -143,6 +147,7 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
   const repeatedOwnerNames = readPreviewInspectorRepeatedTargetOwnerNames(names);
   return {
     ambiguousNames,
+    componentCorridorNames,
     corridorOwnerNames,
     exactConditionIds,
     exactTargetNames,
@@ -200,6 +205,130 @@ function labelsPreviewInspectorExactTargetCondition(label, evidence) {
   }
   return false;
 }
+
+/** Scores only authored component steps, excluding JSX wrappers that may occur on both branches. */
+function scorePreviewInspectorTargetComponentConditionLabel(label, evidence) {
+  const normalized = String(label ?? '').replace(/[<>]/gu, '');
+  const tokens = normalized.split(/[^A-Za-z0-9_$]+/u).filter(Boolean);
+  let score = 0;
+  for (const name of evidence.componentCorridorNames ?? []) {
+    if (evidence.ambiguousNames?.has(name) && !evidence.exactTargetNames?.has(name)) {
+      continue;
+    }
+    if (normalized === String(name) || tokens.includes(String(name))) {
+      score = Math.max(score, evidence.nameScores?.get?.(name) ?? 1);
+    }
+  }
+  return score;
+}
+
+/** Reads one exact plain-property path from a selected neural state fixture without invoking getters. */
+function readPreviewInspectorNeuralRenderStatePath(value, path) {
+  const segments = typeof path === 'string' ? path.split('.') : [];
+  if (
+    segments.length === 0 || segments.length > 8 ||
+    segments.some((segment) =>
+      segment.length === 0 || ['__proto__', 'constructor', 'prototype'].includes(segment)
+    )
+  ) return { found: false, value: undefined };
+  let current = value;
+  for (const segment of segments) {
+    if (
+      current === null || (typeof current !== 'object' && typeof current !== 'function') ||
+      !Object.prototype.hasOwnProperty.call(current, segment)
+    ) return { found: false, value: undefined };
+    current = current[segment];
+  }
+  return { found: true, value: current };
+}
+
+/** Finds one unambiguous selected render-state scalar for the condition's exact source module. */
+function readPreviewInspectorNeuralRenderStateScalar(condition, path) {
+  const sourcePath = normalizePreviewInspectorReachabilityPath(condition?.sourcePath);
+  const recommendations = previewInspectorSession
+    .runtimeFallbackSharedNeuralRecommendationsByContract;
+  if (sourcePath.length === 0 || !(recommendations instanceof Map)) {
+    return { found: false, value: undefined };
+  }
+  let selected;
+  let found = false;
+  for (const recommendation of recommendations.values()) {
+    if (
+      typeof recommendation?.smartPathCandidateId !== 'string' ||
+      !recommendation.smartPathCandidateId.startsWith('render-state:') ||
+      normalizePreviewInspectorReachabilityPath(recommendation.sourcePath) !== sourcePath ||
+      !(recommendation.sharedGuardPaths ?? []).includes(path)
+    ) continue;
+    const candidate = readPreviewInspectorNeuralRenderStatePath(recommendation.value, path);
+    if (!candidate.found) continue;
+    if (found && !Object.is(selected, candidate.value)) {
+      return { found: false, value: undefined };
+    }
+    found = true;
+    selected = candidate.value;
+  }
+  return { found, value: selected };
+}
+
+/** Reports whether one selected render-state recommendation belongs to the exact target source. */
+function hasPreviewInspectorNeuralRenderStateForSource(rawSourcePath) {
+  const sourcePath = normalizePreviewInspectorReachabilityPath(rawSourcePath);
+  const recommendations = previewInspectorSession
+    .runtimeFallbackSharedNeuralRecommendationsByContract;
+  if (sourcePath.length === 0 || !(recommendations instanceof Map)) return false;
+  return [...recommendations.values()].some((recommendation) =>
+    typeof recommendation?.smartPathCandidateId === 'string' &&
+    recommendation.smartPathCandidateId.startsWith('render-state:') &&
+    normalizePreviewInspectorReachabilityPath(recommendation.sourcePath) === sourcePath
+  );
+}
+
+/** Evaluates compiler-proven scalar logic only when every required neural state leaf is known. */
+function evaluatePreviewInspectorNeuralRenderStateExpression(condition, expression, depth = 0) {
+  if (expression === null || typeof expression !== 'object' || depth > 6) return undefined;
+  if (expression.kind === 'comparison') {
+    const selected = readPreviewInspectorNeuralRenderStateScalar(condition, expression.path);
+    if (!selected.found) return undefined;
+    if (expression.operator === '===') return selected.value === expression.value;
+    if (expression.operator === '!==') return selected.value !== expression.value;
+    if (expression.operator === '==') {
+      // Compiler metadata admits only primitive literals; reproduce the useful nullish coercion.
+      return selected.value === expression.value ||
+        selected.value == null && expression.value == null;
+    }
+    if (expression.operator === '!=') {
+      return !(selected.value === expression.value ||
+        selected.value == null && expression.value == null);
+    }
+    return undefined;
+  }
+  if (expression.kind === 'not') {
+    const operand = evaluatePreviewInspectorNeuralRenderStateExpression(
+      condition,
+      expression.operand,
+      depth + 1,
+    );
+    return typeof operand === 'boolean' ? !operand : undefined;
+  }
+  if (expression.kind !== 'and' && expression.kind !== 'or') return undefined;
+  const left = evaluatePreviewInspectorNeuralRenderStateExpression(
+    condition,
+    expression.left,
+    depth + 1,
+  );
+  const right = evaluatePreviewInspectorNeuralRenderStateExpression(
+    condition,
+    expression.right,
+    depth + 1,
+  );
+  if (expression.kind === 'and') {
+    if (left === false || right === false) return false;
+    return left === true && right === true ? true : undefined;
+  }
+  if (left === true || right === true) return true;
+  return left === false && right === false ? false : undefined;
+}
+
 /** Requires a gate to belong to a statically proven path source or named path component. */
 function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
   if (evidence.exactConditionIds?.has(condition?.id)) return true;
@@ -236,6 +365,11 @@ function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
 }
 /** Selects the branch that continues toward the target using compiler-issued gate evidence only. */
 function readPreviewInspectorTargetConditionValue(condition, evidence) {
+  const coherentNeuralValue = evaluatePreviewInspectorNeuralRenderStateExpression(
+    condition,
+    condition?.scalarExpression,
+  );
+  if (typeof coherentNeuralValue === 'boolean') return coherentNeuralValue;
   const truthyScore = scorePreviewInspectorTargetConditionLabel(condition?.truthyLabel, evidence);
   const falsyScore = scorePreviewInspectorTargetConditionLabel(condition?.falsyLabel, evidence);
   const truthyNamesExactTarget = labelsPreviewInspectorExactTargetCondition(
@@ -248,6 +382,23 @@ function readPreviewInspectorTargetConditionValue(condition, evidence) {
   );
   /* An exact target label can correct conservative continuation metadata. Shared wrapper labels cannot. */
   if (truthyNamesExactTarget !== falsyNamesExactTarget) return truthyNamesExactTarget;
+  const truthyComponentScore = scorePreviewInspectorTargetComponentConditionLabel(
+    condition?.truthyLabel,
+    evidence,
+  );
+  const falsyComponentScore = scorePreviewInspectorTargetComponentConditionLabel(
+    condition?.falsyLabel,
+    evidence,
+  );
+  /*
+   * Early-return metadata describes the generic continuation, not the selected render path. When
+   * that path explicitly descends through one returned component, its deeper authored component
+   * step is stronger evidence. Wrapper-only names stay excluded because they may surround both arms.
+   */
+  if (
+    truthyComponentScore !== falsyComponentScore &&
+    Math.max(truthyComponentScore, falsyComponentScore) > 0
+  ) return truthyComponentScore > falsyComponentScore;
   if (condition?.targetBranch === 'truthy') return true;
   if (condition?.targetBranch === 'falsy') return false;
   /* Every compiler-issued logical-and guard exposes its JSX terminal only on the truthy side. */

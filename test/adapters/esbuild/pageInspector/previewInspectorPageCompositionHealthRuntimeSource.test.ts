@@ -36,6 +36,13 @@ interface PageCompositionRecord {
       readonly nestedMountCount: number;
       readonly runtimeTargetSurfaceId: string;
     };
+    readonly projectionSummary: {
+      readonly count: number;
+      readonly identities: readonly string[];
+      readonly identitiesTruncated: boolean;
+      readonly observed: boolean;
+      readonly visitLimitReached: boolean;
+    };
     readonly statusCounts: {
       readonly currentFileMounted: number;
       readonly expected: number;
@@ -155,6 +162,13 @@ describe('Preview Inspector page-composition health runtime source', () => {
           nestedMountCount: 1,
           runtimeTargetSurfaceId: 'leaf-surface',
         },
+        projectionSummary: {
+          count: 0,
+          identities: [],
+          identitiesTruncated: false,
+          observed: true,
+          visitLimitReached: false,
+        },
         requirementSearch: {
           exhausted: false,
           searchStatus: 'not-required',
@@ -187,6 +201,25 @@ describe('Preview Inspector page-composition health runtime source', () => {
     );
     expect(health.detail.targetState).not.toHaveProperty('errorMessage');
     expect(health.detail.targetState).not.toHaveProperty('errorOwner');
+  });
+
+  /** Exposes visual fidelity debt independently from blocker-free target reachability. */
+  it('counts connected shallow component projections and their bounded identities', () => {
+    const runtime = createPageCompositionFixture({}, [
+      'common/ui/paragraph:Paragraph',
+      'common/ui/paragraph:Paragraph',
+      'common/ui/badge:Badge',
+    ]);
+
+    const health = runtime.create({ roots: [] });
+
+    expect(health.detail.projectionSummary).toEqual({
+      count: 3,
+      identities: ['common/ui/paragraph:Paragraph', 'common/ui/badge:Badge'],
+      identitiesTruncated: false,
+      observed: true,
+      visitLimitReached: false,
+    });
   });
 
   /** Caps serialized rows while aggregate counts continue across a broader component tree. */
@@ -359,11 +392,30 @@ describe('Preview Inspector page-composition health runtime source', () => {
 /** Evaluates generated page-composition source against one deterministic page candidate. */
 function createPageCompositionFixture(
   reachabilityOverrides: Record<string, unknown> = {},
+  projectedIdentities: readonly string[] = [],
 ): PageCompositionFixture {
   const context: {
     __reachability: Record<string, unknown>;
     __runtime?: PageCompositionFixture;
-  } = { __reachability: reachabilityOverrides };
+    document: {
+      querySelectorAll: (selector: string) => readonly {
+        readonly isConnected: boolean;
+        readonly getAttribute: (name: string) => string | null;
+      }[];
+    };
+  } = {
+    __reachability: reachabilityOverrides,
+    document: {
+      querySelectorAll: (selector) =>
+        selector === '[data-react-preview-shallow-component]'
+          ? projectedIdentities.map((identity) => ({
+              getAttribute: (name: string) =>
+                name === 'data-react-preview-shallow-component' ? identity : null,
+              isConnected: true,
+            }))
+          : [],
+    },
+  };
   vm.runInNewContext(
     `
       const candidate = {
@@ -410,6 +462,7 @@ function createPageCompositionFixture(
         targetWasMounted: true,
         ...globalThis.__reachability,
       };
+      const previewInspectorSession = { runtimeFallbacks: new Map() };
       const records = [];
       const findSelectedPreviewInspectorDescriptor = () => descriptor;
       const readPreviewInspectorPageCandidates = () => [candidate];

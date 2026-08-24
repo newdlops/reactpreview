@@ -77,7 +77,7 @@ function stringifyPreviewInspectorProps(value) {
   }
 }
 
-/** Persists user-authored controls without retaining DOM nodes or project function values. */
+/** Persists user controls and the bounded learned head without retaining project runtime values. */
 function persistPreviewInspectorState() {
   const vscodeApi = previewHotRuntime.vscodeApi;
   if (typeof vscodeApi?.setState !== 'function') {
@@ -116,6 +116,8 @@ function persistPreviewInspectorState() {
         selectedPageCandidateId: previewInspectorSession.selectedPageCandidateId,
         selectedTreeNodeId: previewInspectorSession.selectedTreeNodeId,
         userSelectedPageCandidateId: previewInspectorSession.userSelectedPageCandidateId,
+        verifiedPageCandidateId: previewInspectorSession.verifiedPageCandidateId,
+        verifiedPageContextScope: previewInspectorSession.verifiedPageContextScope,
       },
     });
   } catch {

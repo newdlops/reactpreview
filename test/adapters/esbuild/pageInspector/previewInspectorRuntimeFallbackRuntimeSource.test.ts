@@ -105,6 +105,44 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.api.status()).toContain('1 render-blocking hook edge');
   });
 
+  /** Learns from row retention even when the authored empty state would also render valid DOM. */
+  it('selects and trains a generated collection predicate from observed call flow', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      hookName: 'useRoundFilter',
+      id: 'round-filter',
+      requiredPaths: ['matches()', 'hasSelection'],
+      smartPathValues: [
+        {
+          path: 'matches()',
+          role: 'collection-filter-predicate',
+          value: true,
+        },
+      ],
+    };
+
+    const value = fixture.api.resolve(
+      () => {
+        throw new Error('round filter provider unavailable');
+      },
+      () => ({ hasSelection: false, matches: () => undefined }),
+      metadata,
+    ) as { hasSelection: boolean; matches(value: unknown): boolean };
+
+    expect(value.hasSelection).toBe(false);
+    expect(value.matches({ round: 1 })).toBe(true);
+    expect(fixture.api.read()[0]?.neuralRecommendation).toMatchObject({
+      candidateId: 'retain-generated-collection',
+      strategy: 'retain-generated-collection',
+    });
+
+    fixture.flushEffectFrame();
+
+    expect(fixture.api.neuralModel().heads['data-collection']?.updates).toBe(1);
+    expect(fixture.api.neuralModel().updates).toBe(1);
+  });
+
   /** Uses a required fallback for nullish results and clears it when a real value appears. */
   it('retains real non-nullish values and removes stale blocker records', () => {
     const fixture = createRuntimeFallbackFixture(true);
@@ -140,7 +178,13 @@ describe('Preview Inspector runtime fallback source', () => {
     const authored = { workflow: { retained: 'application', stage: 'stage' } };
     const fallback = { workflow: { stage: 'basic' } };
 
-    expect(fixture.api.resolve(() => authored, () => fallback, metadata)).toEqual({
+    expect(
+      fixture.api.resolve(
+        () => authored,
+        () => fallback,
+        metadata,
+      ),
+    ).toEqual({
       workflow: { retained: 'application', stage: 'basic' },
     });
     expect(fixture.api.read()[0]).toMatchObject({
@@ -907,6 +951,169 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.api.read()[0]?.mode).toBe('smart');
   });
 
+  /**
+   * Repairs the scalar provenance gap created when one generated hook is returned by another hook.
+   * The first pass supplies a neutral typed shape; the existing Smart retry opens the learned branch.
+   */
+  it('uses a neural typed recommendation for a nested generated primitive', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const innerMetadata = {
+      ...createMetadata(),
+      fallbackLabel: 'generated scalar to continue past an early return',
+      hookName: 'useContext',
+      id: 'inner-context-hook',
+      ownerName: 'usePanel',
+      requiredPaths: ['<root>'],
+    };
+    const outerMetadata = {
+      ...createMetadata(),
+      fallbackLabel: 'generated object fields',
+      hookName: 'usePanel',
+      id: 'outer-panel-hook',
+      ownerName: 'PanelFrame',
+      requiredPaths: ['state.status'],
+      smartPathValues: [{ path: 'state.status', value: 'open' }],
+    };
+    const readPanel = (): unknown =>
+      fixture.api.resolve(
+        () => undefined,
+        () => 'ctx',
+        innerMetadata,
+      );
+    const usePanelIdentity = (): undefined => undefined;
+    const panelContextIdentity = {};
+    expect(fixture.api.registerContext(usePanelIdentity, panelContextIdentity)).toBe(true);
+
+    expect(
+      fixture.api.resolve(
+        readPanel,
+        () => ({ state: { status: 'PREVIEW' } }),
+        outerMetadata,
+        undefined,
+        undefined,
+        () => usePanelIdentity,
+      ),
+    ).toEqual({ state: { status: 'PREVIEW' } });
+    expect(fixture.api.read().find((record) => record.id === 'outer-panel-hook')).toMatchObject({
+      mode: 'auto',
+      neuralRecommendation: {
+        residual: { score: 0.5 },
+        strategy: 'branch-opening',
+        value: { state: { status: 'open' } },
+      },
+      reason: 'neural-candidate',
+      requiredPaths: ['state.status'],
+    });
+
+    fixture.api.smart('outer-panel-hook');
+    expect(fixture.neuralResumeCount()).toBe(0);
+    fixture.flushEffectFrame();
+    expect(fixture.neuralResumeCount()).toBe(1);
+    expect(fixture.neuralRetryCount()).toBe(1);
+    const authoredClose = (): string => 'authored-close';
+    const providerValue = {
+      close: authoredClose,
+      currentWidth: 480,
+      state: { status: 'closed' },
+    };
+    const providerConsumer = fixture.api.resolve(
+      () => providerValue,
+      () => ({ close: () => undefined, currentWidth: 520, state: { status: 'loading' } }),
+      {
+        ...innerMetadata,
+        id: 'provider-context-read',
+        ownerName: 'usePanel',
+        requiredPaths: ['state.status', 'currentWidth', 'close()'],
+      },
+      undefined,
+      undefined,
+      () => panelContextIdentity,
+    ) as { close: () => string; currentWidth: number; state: { status: string } };
+    expect(providerConsumer).not.toBe(providerValue);
+    expect(providerConsumer.state.status).toBe('open');
+    expect(providerConsumer.currentWidth).toBe(480);
+    expect(providerConsumer.close).toBe(authoredClose);
+    expect(providerValue.state.status).toBe('closed');
+
+    const resolved = fixture.api.resolve(
+      readPanel,
+      () => ({ state: { status: 'ignored-after-cache' } }),
+      outerMetadata,
+      undefined,
+      undefined,
+      () => usePanelIdentity,
+    ) as { state: { status: string } };
+
+    expect(resolved.state.status).toBe('open');
+    expect(fixture.api.read().find((record) => record.id === 'outer-panel-hook')).toMatchObject({
+      generatedPaths: ['state.status'],
+      mode: 'smart',
+      reason: 'partial',
+    });
+
+    const sibling = fixture.api.resolve(
+      readPanel,
+      () => ({
+        registration: { buttonBoundPathname: '/preview/chat' },
+        state: { status: 'SIBLING' },
+      }),
+      {
+        ...outerMetadata,
+        id: 'sibling-panel-hook',
+        ownerName: 'PanelButton',
+        requiredPaths: ['registration.buttonBoundPathname', 'state.status'],
+      },
+      undefined,
+      undefined,
+      () => usePanelIdentity,
+    ) as { registration: { buttonBoundPathname: string }; state: { status: string } };
+    expect(sibling.state.status).toBe('open');
+    expect(sibling.registration.buttonBoundPathname).toBe('/preview/chat');
+    expect(fixture.api.read().some((record) => record.id === 'sibling-panel-hook')).toBe(false);
+  });
+
+  /** A learned state reaches mounted consumers even while its boundary reset waits for DFS. */
+  it('notifies neural subscribers while an active target attempt defers export retry', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const innerMetadata = {
+      ...createMetadata(),
+      hookName: 'useContext',
+      id: 'inner-context-hook',
+      ownerName: 'usePanel',
+      requiredPaths: ['<root>'],
+    };
+    const outerMetadata = {
+      ...createMetadata(),
+      hookName: 'usePanel',
+      id: 'outer-panel-hook',
+      requiredPaths: ['state.status'],
+      smartPathValues: [{ path: 'state.status', value: 'open' }],
+    };
+    const hookIdentity = (): undefined => undefined;
+    const readPanel = (): unknown => fixture.api.resolve(
+      () => undefined,
+      () => 'ctx',
+      innerMetadata,
+    );
+    let notifications = 0;
+    fixture.api.subscribeNeural(() => { notifications += 1; });
+    fixture.api.resolve(
+      readPanel,
+      () => ({ state: { status: 'PREVIEW' } }),
+      outerMetadata,
+      undefined,
+      undefined,
+      () => hookIdentity,
+    );
+    fixture.api.setActiveNeuralAttempt(true);
+    fixture.api.smart('outer-panel-hook');
+    fixture.flushEffectFrame();
+
+    expect(notifications).toBe(1);
+    expect(fixture.neuralResumeCount()).toBe(0);
+    expect(fixture.neuralRetryCount()).toBe(0);
+  });
+
   /** Projects one selected state through the memoized Context object used by its page shell. */
   it('shares a target Smart discriminator with sibling consumers of the same hook identity', () => {
     const fixture = createRuntimeFallbackFixture(true);
@@ -960,6 +1167,50 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(shellValue.close).toBe(authoredClose);
     expect(authored.state.status).toBe('closed');
     expect(fixture.api.read().map((record) => record.id)).toEqual(['target-panel-hook']);
+  });
+
+  /** Selects one authored state candidate instead of collapsing the path to its first literal. */
+  it('uses the render-state neural head to choose a coherent Smart discriminator', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const authored = { state: { status: 'closed' } };
+    const metadata = {
+      ...createMetadata(),
+      hookName: 'usePanel',
+      id: 'render-state-panel-hook',
+      ownerName: 'Panel',
+      requiredPaths: ['state.status'],
+      smartPathValues: [
+        {
+          deterministicRank: 0,
+          path: 'state.status',
+          role: 'render-state',
+          value: 'open',
+        },
+        {
+          deterministicRank: 1,
+          path: 'state.status',
+          role: 'render-state',
+          value: 'loading',
+        },
+      ],
+    };
+
+    expect(
+      fixture.api.resolve(
+        () => authored,
+        () => ({ state: { status: 'PREVIEW' } }),
+        metadata,
+      ),
+    ).toBe(authored);
+    fixture.api.smart(metadata.id);
+    const resolved = fixture.api.resolve(
+      () => authored,
+      () => ({ state: { status: 'PREVIEW' } }),
+      metadata,
+    ) as { state: { status: string } };
+
+    expect(resolved.state.status).toBe('open');
+    expect(fixture.api.neuralModel().heads['render-state']).toBeUndefined();
   });
 
   /** Uses the exact hook function as a carrier only when a missing Provider makes both calls fail. */
@@ -1230,5 +1481,78 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.api.smartReachability('page:Target', { preserveUserValues: true })).toBe(false);
     expect(fixture.api.read()[0]?.mode).toBe('manual');
     expect(fixture.api.draft('hook-1')).toEqual({ profile: { name: 'Authored name' } });
+  });
+
+  /** Learns a failed independent identity value and applies the promoted candidate on retry. */
+  it('auto-learns compiler-proven identity references before retrying the rendered hook', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      hookName: 'useProjectField',
+      requiredPaths: ['value'],
+      semanticValueDemand: { kind: 'identity', path: 'value' },
+    };
+    const readHook = (): object => {
+      throw new Error('generated field provider unavailable');
+    };
+    const createFallback = (): object => ({ value: 'value' });
+
+    const discovery = fixture.api.resolve(readHook, createFallback, metadata) as { value: string };
+
+    expect(discovery.value).toBe('value');
+    expect(fixture.api.neuralModel().updates).toBe(0);
+    expect(fixture.api.neuralStatus()).toMatchObject({ phase: 'learning', updates: 0 });
+
+    fixture.flushEffectFrame();
+
+    const learnedModel = fixture.api.neuralModel();
+    expect(learnedModel.updates).toBeGreaterThan(0);
+    expect(learnedModel.heads['render-state']?.updates).toBeGreaterThan(0);
+    expect(fixture.api.neuralStatus()).toMatchObject({ phase: 'learning' });
+
+    const retried = fixture.api.resolve(readHook, createFallback, metadata) as { value: string };
+    expect(retried.value).toBe('preview-id');
+    expect(fixture.api.read()[0]).toMatchObject({
+      mode: 'auto',
+      neuralRecommendation: {
+        candidateId: 'generated-identity-reference',
+        strategy: 'generated-identity-reference',
+      },
+      reason: 'threw',
+    });
+    expect(fixture.autoDecisions.at(-1)).toMatchObject({
+      startsRenderAttempt: true,
+      targetReachabilityKey: 'page:Target',
+    });
+
+    fixture.flushEffectFrame();
+    expect(fixture.neuralRetryCount()).toBe(1);
+    expect(fixture.api.neuralStatus()).toMatchObject({
+      phase: 'learned',
+      updates: learnedModel.updates,
+    });
+  });
+
+  /** A complete application-owned identity is evidence, not a hole the generated model may replace. */
+  it('does not train or overwrite a successful authored identity field', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['value'],
+      semanticValueDemand: { kind: 'identity', path: 'value' },
+    };
+    const authored = { value: 'company-director-42' };
+
+    expect(
+      fixture.api.resolve(
+        () => authored,
+        () => ({ value: 'value' }),
+        metadata,
+      ),
+    ).toBe(authored);
+    fixture.flushEffectFrame();
+
+    expect(fixture.api.neuralModel().updates).toBe(0);
+    expect(fixture.neuralRetryCount()).toBe(0);
   });
 });

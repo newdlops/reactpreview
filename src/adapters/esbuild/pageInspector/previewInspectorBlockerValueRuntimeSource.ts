@@ -24,8 +24,7 @@ export const PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL = '[Preview component pl
 export const PREVIEW_INSPECTOR_CALL_RESULT_TEMPLATE_KEY = '[Preview generated call result]';
 
 /** JSON object key retaining the fulfillment payload of a generated Promise-returning function. */
-export const PREVIEW_INSPECTOR_PROMISE_RESULT_TEMPLATE_KEY =
-  '[Preview generated Promise result]';
+export const PREVIEW_INSPECTOR_PROMISE_RESULT_TEMPLATE_KEY = '[Preview generated Promise result]';
 
 /** Creates browser helpers for editable fallback templates and safe runtime materialization. */
 export function createPreviewInspectorBlockerValueRuntimeSource(): string {
@@ -197,7 +196,11 @@ function createPreviewInspectorRequiredPathSmartLeaf(propertyName, callable, see
   if (typeof seed === 'function') {
     return copyPreviewInspectorBlockerValueForJson(seed, { nodes: 0 });
   }
-  if (callable) return PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
+  if (callable) {
+    return typeof seed === 'boolean' || typeof seed === 'number' || typeof seed === 'string'
+      ? { [PREVIEW_INSPECTOR_CALL_RESULT_TEMPLATE_KEY]: seed }
+      : PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
+  }
   if (seed === null) return null;
   if (typeof seed === 'boolean') return seed;
   if (typeof seed === 'number') return Number.isFinite(seed) ? seed : 1;
@@ -454,9 +457,31 @@ function createPreviewInspectorRuntimeFallbackDraftTemplate(value, requiredPaths
   return copyPreviewInspectorBlockerValueForJson(autoValue, { nodes: 0 });
 }
 
+/** Records only bounded generated-call observations used as self-supervised data-flow labels. */
+function recordPreviewInspectorGeneratedCallableObservation(telemetry, path, result) {
+  if (!(telemetry?.paths instanceof Set) || !telemetry.paths.has(path)) return;
+  telemetry.calls = Math.min(Number.MAX_SAFE_INTEGER, (telemetry.calls ?? 0) + 1);
+  if (Boolean(result)) {
+    telemetry.truthyReturns = Math.min(
+      Number.MAX_SAFE_INTEGER,
+      (telemetry.truthyReturns ?? 0) + 1,
+    );
+  }
+}
+
 /** Restores synthetic callbacks/components only where editable JSON enters project code. */
-function materializePreviewInspectorRuntimeFallbackOverride(value, depth = 0) {
-  if (value === PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL) return Object.freeze(() => undefined);
+function materializePreviewInspectorRuntimeFallbackOverride(
+  value,
+  depth = 0,
+  telemetry,
+  path = '',
+) {
+  if (value === PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL) {
+    return Object.freeze(() => {
+      recordPreviewInspectorGeneratedCallableObservation(telemetry, path, undefined);
+      return undefined;
+    });
+  }
   if (value === PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL) {
     const component = function PreviewInspectorComponentPlaceholder() { return null; };
     Object.defineProperty(component, PREVIEW_INSPECTOR_COMPONENT_MARKER, { value: true });
@@ -473,9 +498,14 @@ function materializePreviewInspectorRuntimeFallbackOverride(value, depth = 0) {
     const callResult = materializePreviewInspectorRuntimeFallbackOverride(
       value[PREVIEW_INSPECTOR_CALL_RESULT_TEMPLATE_KEY],
       depth + 1,
+      telemetry,
+      path,
     );
     return Object.freeze(Object.defineProperty(
-      () => callResult,
+      () => {
+        recordPreviewInspectorGeneratedCallableObservation(telemetry, path, callResult);
+        return callResult;
+      },
       PREVIEW_INSPECTOR_CALL_RESULT_MARKER,
       { value: callResult },
     ));
@@ -488,9 +518,14 @@ function materializePreviewInspectorRuntimeFallbackOverride(value, depth = 0) {
     const callResult = materializePreviewInspectorRuntimeFallbackOverride(
       value[PREVIEW_INSPECTOR_PROMISE_RESULT_TEMPLATE_KEY],
       depth + 1,
+      telemetry,
+      path,
     );
     const callable = Object.defineProperty(
-      () => Promise.resolve(callResult),
+      () => {
+        recordPreviewInspectorGeneratedCallableObservation(telemetry, path, callResult);
+        return Promise.resolve(callResult);
+      },
       PREVIEW_INSPECTOR_CALL_RESULT_MARKER,
       { value: callResult },
     );
@@ -505,13 +540,23 @@ function materializePreviewInspectorRuntimeFallbackOverride(value, depth = 0) {
      */
     return Array.prototype.map.call(
       value,
-      (child) => materializePreviewInspectorRuntimeFallbackOverride(child, depth + 1),
+      (child, index) => materializePreviewInspectorRuntimeFallbackOverride(
+        child,
+        depth + 1,
+        telemetry,
+        path + '[' + String(index) + ']',
+      ),
     );
   }
   const result = {};
   for (const [propertyName, child] of Object.entries(value)) {
     if (blockedInspectorPropNames.has(propertyName)) continue;
-    result[propertyName] = materializePreviewInspectorRuntimeFallbackOverride(child, depth + 1);
+    result[propertyName] = materializePreviewInspectorRuntimeFallbackOverride(
+      child,
+      depth + 1,
+      telemetry,
+      path.length === 0 ? propertyName : path + '.' + propertyName,
+    );
   }
   return result;
 }

@@ -164,29 +164,177 @@ function scorePreviewInspectorRequirementRecord(record, evidence) {
   return score;
 }
 
+/** Reads the current contained exception without depending on composition-snapshot timing. */
+function readPreviewInspectorRequirementError(state) {
+  if (state?.targetOutputError !== undefined) return state.targetOutputError;
+  return typeof readPreviewInspectorRuntimeHealthTargetError === 'function'
+    ? readPreviewInspectorRuntimeHealthTargetError(state?.targetExportName)
+    : undefined;
+}
+
+/** Correlates a bare engine property such as status with one compiler-owned descendant path. */
+function countPreviewInspectorRequirementExceptionPathMatches(paths, state) {
+  if (typeof readPreviewInspectorErrorPropertyPaths !== 'function') return 0;
+  const errorPaths = readPreviewInspectorErrorPropertyPaths(
+    readPreviewInspectorRequirementError(state),
+  );
+  if (errorPaths.length === 0) return 0;
+  const candidatePaths = (Array.isArray(paths) ? paths : [])
+    .filter((path) => typeof path === 'string')
+    .map((path) => path.replace(/\(\)$/u, ''));
+  let matches = 0;
+  for (const errorPath of errorPaths) {
+    const normalizedError = errorPath.replace(/\(\)$/u, '');
+    if (candidatePaths.some((path) =>
+      path === normalizedError || path.endsWith('.' + normalizedError),
+    )) matches += 1;
+  }
+  return matches;
+}
+
+/** Encodes one already-admitted hook/backend value edge for neural residual ordering. */
+function createPreviewInspectorRequirementNeuralDecision(
+  record,
+  state,
+  blockerKind,
+  requiredPaths,
+  deterministicScore,
+  exceptionPathMatches,
+) {
+  if (typeof createPreviewInspectorNeuralResidualDecision !== 'function') return undefined;
+  const error = readPreviewInspectorRequirementError(state);
+  const errorMessage = typeof error?.message === 'string' ? error.message : '';
+  const strategy = typeof record?.neuralRecommendation?.strategy === 'string'
+    ? record.neuralRecommendation.strategy
+    : 'compiler-generated';
+  return createPreviewInspectorNeuralResidualDecision({
+    blockerKind,
+    candidateId: record?.id,
+    holeKind: record?.residualHoleKind === 'nested-generated-shape-mismatch'
+      ? 'blocker-exception-runtime-value'
+      : state?.targetMounted === true
+        ? 'rendered-without-output-value'
+        : 'unrendered-runtime-value',
+    numbers: {
+      deterministicScore: Math.tanh(Number(deterministicScore) / 1_000),
+      exceptionPathMatches,
+      exactSmartScalar: hasPreviewInspectorExactSmartScalar(record) ? 1 : 0,
+      requiredPathCount: requiredPaths.length,
+      targetMounted: state?.targetMounted === true ? 1 : 0,
+    },
+    texts: [
+      errorMessage,
+      record?.evidence,
+      record?.hookName ?? record?.label,
+      record?.ownerName,
+      record?.sourcePath,
+      requiredPaths.join(' '),
+    ],
+    tokens: [
+      'strategy:' + strategy,
+      'reason:' + String(record?.reason ?? 'unknown'),
+      ...requiredPaths.slice(0, 16).map((path) => 'required:' + path),
+    ],
+  });
+}
+
 /**
  * Chooses records proven to belong to the root-to-target path before considering a blind fallback.
  * A bounded fallback remains necessary for anonymous wrapper hooks whose compiler metadata cannot
  * name an owner, but zero-score siblings must never consume slots once any path evidence matches.
  */
-function selectPreviewInspectorRequirementIds(records, evidence, limit) {
+function selectPreviewInspectorRequirementIds(
+  records,
+  evidence,
+  limit,
+  blockerKind,
+  readRequiredPaths,
+  options = {},
+) {
   const ranked = records
-    .map((record) => ({
-      exactSmartScalar: hasPreviewInspectorExactSmartScalar(record),
-      record,
-      score: scorePreviewInspectorRequirementRecord(record, evidence),
-    }));
+    .map((record) => {
+      const requiredPaths = readRequiredPaths(record);
+      const score = scorePreviewInspectorRequirementRecord(record, evidence);
+      const exceptionPathMatches = countPreviewInspectorRequirementExceptionPathMatches(
+        requiredPaths,
+        evidence.state,
+      );
+      const retainedNeuralDecision = typeof previewInspectorSession === 'object'
+        ? previewInspectorSession.runtimeFallbackNeuralDecisions?.get?.(record?.id)
+        : undefined;
+      return {
+        exactSmartScalar: hasPreviewInspectorExactSmartScalar(record),
+        exceptionPathMatches,
+        neuralResidualDecision:
+          retainedNeuralDecision ??
+          createPreviewInspectorRequirementNeuralDecision(
+            record,
+            evidence.state,
+            blockerKind,
+            requiredPaths,
+            score,
+            exceptionPathMatches,
+          ),
+        record,
+        score,
+      };
+    });
+  /*
+   * A contained engine error can identify the missing operation even when the record itself was
+   * generated correctly enough to avoid the narrower nested-mismatch classifier. This matters for
+   * application shells: warnings.some() may fail before the selected target mounts, while a
+   * target-only path score would otherwise keep choosing unrelated hooks forever. Every admitted
+   * candidate still carries compiler-observed paths and remains inside the reversible verifier.
+   */
+  const exceptionLocal = ranked.filter((candidate) =>
+    candidate.exceptionPathMatches > 0,
+  );
   const pathLocal = ranked.filter((candidate) => candidate.score > 0);
-  const pool = pathLocal.length > 0 ? pathLocal : ranked;
+  const pool = exceptionLocal.length > 0
+    ? exceptionLocal
+    : pathLocal.length > 0
+      ? pathLocal
+      : ranked;
+  const excludedCandidateIds = new Set(
+    Array.isArray(options?.excludedCandidateIds) ? options.excludedCandidateIds : [],
+  );
+  const hasNovelCandidate = pool.some((candidate) =>
+    !excludedCandidateIds.has(candidate.record?.id),
+  );
   pool.sort((left, right) =>
-    (pathLocal.length > 0
+    right.exceptionPathMatches - left.exceptionPathMatches ||
+    Number(right.record?.residualHoleKind === 'nested-generated-shape-mismatch') -
+      Number(left.record?.residualHoleKind === 'nested-generated-shape-mismatch') ||
+    (hasNovelCandidate
+      ? Number(excludedCandidateIds.has(left.record?.id)) -
+        Number(excludedCandidateIds.has(right.record?.id))
+      : 0) ||
+    (pathLocal.length > 0 || exceptionLocal.length > 0
       ? Number(right.exactSmartScalar) - Number(left.exactSmartScalar)
       : 0) ||
-    right.score - left.score,
+    (options?.preferNeural === true &&
+      typeof comparePreviewInspectorNeuralResidualDecisions === 'function'
+      ? comparePreviewInspectorNeuralResidualDecisions(
+          left.neuralResidualDecision,
+          right.neuralResidualDecision,
+        )
+      : 0) ||
+    right.score - left.score ||
+    (options?.preferNeural !== true &&
+      typeof comparePreviewInspectorNeuralResidualDecisions === 'function'
+      ? comparePreviewInspectorNeuralResidualDecisions(
+          left.neuralResidualDecision,
+          right.neuralResidualDecision,
+        )
+      : 0) ||
+    String(left.record?.id ?? '').localeCompare(String(right.record?.id ?? '')),
   );
-  return pool
-    .slice(0, limit)
-    .map((candidate) => candidate.record.id);
+  const explorationLimit = typeof options?.explorationMode === 'string' ? 1 : limit;
+  const selected = pool.slice(0, exceptionLocal.length > 0 ? 1 : explorationLimit);
+  return {
+    ids: selected.map((candidate) => candidate.record.id),
+    neuralResidualDecision: selected[0]?.neuralResidualDecision,
+  };
 }
 
 /**
@@ -199,6 +347,7 @@ function readPreviewInspectorRequirementBatch(
   candidate,
   state,
   preserveUserValues,
+  options = {},
 ) {
   const deferredRenderContract = readPreviewInspectorDeferredRenderContract(
     descriptor,
@@ -209,6 +358,7 @@ function readPreviewInspectorRequirementBatch(
   const evidence = {
     ...readPreviewInspectorTargetPathEvidence(descriptor, candidate, state),
     deferredRenderContract,
+    state,
   };
   const hooks = readPreviewInspectorRuntimeFallbacks()
     .filter((record) =>
@@ -220,17 +370,42 @@ function readPreviewInspectorRequirementBatch(
       record.reachabilityKey === state.key &&
       hasPreviewInspectorPendingDataRequirement(record, preserveUserValues),
     );
-  const hookIds = selectPreviewInspectorRequirementIds(
+  const hookSelection = selectPreviewInspectorRequirementIds(
     hooks,
     evidence,
     PREVIEW_INSPECTOR_REQUIREMENT_HOOK_BATCH_LIMIT,
+    'runtime-fallback',
+    (record) => [...new Set([
+      ...(record?.requiredPaths ?? []),
+      ...(record?.smartPathValues ?? []).map((item) => item?.path),
+    ].filter((path) => typeof path === 'string' && path.length > 0))],
+    options,
   );
-  const requestIds = selectPreviewInspectorRequirementIds(
+  const requestSelection = selectPreviewInspectorRequirementIds(
     requests,
     evidence,
     PREVIEW_INSPECTOR_REQUIREMENT_DATA_BATCH_LIMIT,
+    'data-request',
+    (record) => readPreviewInspectorDataShapePaths(record?.shape),
+    options,
   );
-  return { hookIds, requestIds };
+  let hookIds = hookSelection.ids;
+  let requestIds = requestSelection.ids;
+  if (options?.explorationMode === 'data-first' && requestIds.length > 0) hookIds = [];
+  if (options?.explorationMode === 'hook-first' && hookIds.length > 0) requestIds = [];
+  const batch = {
+    hookIds,
+    requestIds,
+    ...(typeof options?.explorationMode === 'string'
+      ? { explorationMode: options.explorationMode }
+      : {}),
+  };
+  const neuralResidualDecision = hookIds.length > 0
+    ? hookSelection.neuralResidualDecision
+    : requestSelection.neuralResidualDecision;
+  return neuralResidualDecision === undefined
+    ? batch
+    : { ...batch, neuralResidualDecision };
 }
 
 /** Canonicalizes only actionable IDs and shapes so registry refresh order cannot restart traversal. */
@@ -316,11 +491,23 @@ function schedulePreviewInspectorTargetRequirementContinuation(reachabilityKey) 
       return;
     }
     const preserveUserValues = current?.origin !== 'user';
+    const preferNeural = current?.origin === 'user-neural' ||
+      current?.origin === 'automatic-neural' ||
+      (
+        typeof readPreviewInspectorNeuralLearningModelUpdates === 'function' &&
+        readPreviewInspectorNeuralLearningModelUpdates() > 0
+      );
     const batch = readPreviewInspectorRequirementBatch(
       descriptor,
       candidate,
       state,
       preserveUserValues,
+      {
+        excludedCandidateIds: current?.excludedCandidateIds,
+        explorationMode: current?.explorationMode,
+        explorationOrdinal: current?.explorationOrdinal,
+        preferNeural,
+      },
     );
     if (batch.hookIds.length === 0 && batch.requestIds.length === 0) return;
     const signature = createPreviewInspectorActionableRequirementSignature(batch);
@@ -436,6 +623,26 @@ function advancePreviewInspectorTargetFailureRequirement(state) {
     completePreviewInspectorRequirementFrontier(search, frontier, false, state);
     return false;
   }
+  const neuralResidualDecision = typeof createPreviewInspectorNeuralResidualDecision === 'function'
+    ? createPreviewInspectorNeuralResidualDecision({
+        blockerKind: 'target-error',
+        holeKind: 'blocker-exception-target-props',
+        numbers: {
+          changedPathCount: mutation.changedPaths.length,
+          targetMounted: state.targetMounted === true ? 1 : 0,
+        },
+        texts: [
+          failure.headline,
+          failure.blockedComponentName,
+          failure.sourcePath,
+          mutation.changedPaths.join(' '),
+        ],
+        tokens: [
+          'strategy:compiler-proven-props',
+          ...mutation.changedPaths.slice(0, 16).map((path) => 'required:' + path),
+        ],
+      })
+    : undefined;
   let traceId;
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     traceId = recordPreviewInspectorBlockerAutoDecision({
@@ -445,6 +652,7 @@ function advancePreviewInspectorTargetFailureRequirement(state) {
       blockerName: 'Component error · ' + failure.blockedComponentName,
       generatedPaths: mutation.changedPaths,
       mode: 'target-prop-repair-auto',
+      neuralResidualDecision,
       ownerName: failure.exportName,
       reason: failure.headline,
       selectedValue: {
@@ -455,6 +663,12 @@ function advancePreviewInspectorTargetFailureRequirement(state) {
       sourcePath: failure.sourcePath,
       startsRenderAttempt: true,
       targetReachabilityKey: state.key,
+      summary: {
+        neuralResidual:
+          typeof summarizePreviewInspectorNeuralResidualDecision === 'function'
+            ? summarizePreviewInspectorNeuralResidualDecision(neuralResidualDecision)
+            : undefined,
+      },
     });
   }
   if (rollbackSnapshot !== undefined) rollbackSnapshot.mode = 'target-prop-repair-auto';

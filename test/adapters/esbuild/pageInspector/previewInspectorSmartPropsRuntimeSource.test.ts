@@ -45,6 +45,16 @@ interface TargetPropFailureRuntime {
   readonly paths: readonly string[];
 }
 
+/** Result of recovering one exhaustive scalar branch from compiler-proven finite values. */
+interface FinitePropChoiceRuntime {
+  readonly applied: boolean;
+  readonly choiceOwnerName?: string;
+  readonly choices: readonly Readonly<Record<string, unknown>>[];
+  readonly manualOverride: Readonly<Record<string, unknown>>;
+  readonly mutation?: Readonly<Record<string, unknown>>;
+  readonly resolverOverride: Readonly<Record<string, unknown>>;
+}
+
 /** Optional runtime layers used to reproduce pre-commit nullish prop failures. */
 interface SmartPropsFixtureOptions {
   readonly observedProps?: Readonly<Record<string, unknown>>;
@@ -134,18 +144,18 @@ describe('Preview Inspector Smart props runtime source', () => {
 
     expect(runtime.path).toBe('show');
     expect(runtime.repeatedPath).toBeUndefined();
-    expect(runtime.fallbackEnabled).toBe(true);
+    expect(runtime.fallbackEnabled).toBe(false);
     expect(runtime.manualOverride).toEqual({});
     expect(runtime.storedOverride).toEqual({ show: true });
-    expect(runtime.fallbackCommitModes).toEqual([false]);
-    expect(runtime.propsCommitModes).toEqual([false]);
-    expect(runtime).toMatchObject({ commits: 1, persists: 1, updates: 1 });
+    expect(runtime.fallbackCommitModes).toEqual([]);
+    expect(runtime.propsCommitModes).toEqual([true]);
+    expect(runtime).toMatchObject({ commits: 1, persists: 0, updates: 1 });
     expect(runtime.decisions).toEqual([
       expect.objectContaining({
         blockerId: 'target-overlay:DeleteModal',
         generatedPaths: ['show'],
         mode: 'target-overlay-auto',
-        selectedValue: { show: true },
+        selectedValue: true,
         startsRenderAttempt: true,
         targetReachabilityKey: 'page:DeleteModal',
       }),
@@ -159,7 +169,7 @@ describe('Preview Inspector Smart props runtime source', () => {
     expect(runtime.path).toBe('show');
     expect(runtime.repeatedPath).toBeUndefined();
     expect(runtime.decisions).toHaveLength(1);
-    expect(runtime).toMatchObject({ commits: 1, persists: 1, updates: 1 });
+    expect(runtime).toMatchObject({ commits: 1, persists: 0, updates: 1 });
   });
 
   /** Uses the exact mounted facade's false show prop when a styled export erased static prop types. */
@@ -173,10 +183,10 @@ describe('Preview Inspector Smart props runtime source', () => {
       expect.objectContaining({
         generatedPaths: ['show'],
         mode: 'target-overlay-auto',
-        selectedValue: { show: true },
+        selectedValue: true,
       }),
     ]);
-    expect(runtime).toMatchObject({ commits: 1, persists: 1, updates: 1 });
+    expect(runtime).toMatchObject({ commits: 1, persists: 0, updates: 1 });
   });
 
   /** Reads descriptors only, so an observed visibility accessor cannot run during auto reveal. */
@@ -232,7 +242,7 @@ describe('Preview Inspector Smart props runtime source', () => {
     expect(runtime.path).toBe('show');
     expect(runtime.manualOverride).toEqual({ title: 'Delete account' });
     expect(runtime.storedOverride).toEqual({ show: true });
-    expect(runtime).toMatchObject({ commits: 1, persists: 1, updates: 1 });
+    expect(runtime).toMatchObject({ commits: 1, persists: 0, updates: 1 });
   });
 
   /** Leaves two independent visibility switches for the user because neither is uniquely proven. */
@@ -271,7 +281,227 @@ describe('Preview Inspector Smart props runtime source', () => {
 
     expect(runtime.paths).toEqual([]);
   });
+
+  /** Replaces a field-name placeholder with the first authored exhaustive branch value. */
+  it('recovers an Unreachable target from one finite source-proven prop domain', () => {
+    const runtime = evaluateFinitePropChoiceRuntime();
+
+    expect(runtime.choices).toEqual([
+      expect.objectContaining({
+        candidates: ['heavy_tax', 'fixed_tax', 'normal_tax', 'reduced_tax', 'exempted', 'none'],
+        currentValue: 'taxType',
+        path: 'taxType',
+        userControlled: false,
+      }),
+    ]);
+    expect(runtime.mutation).toMatchObject({
+      automatic: true,
+      changedPaths: ['taxType'],
+      draft: {
+        generatedValue: { taxType: 'heavy_tax' },
+        value: { taxType: 'heavy_tax' },
+      },
+    });
+    expect(runtime.applied).toBe(true);
+    expect(runtime.resolverOverride).toEqual({ taxType: 'heavy_tax' });
+  });
+
+  /** Attributes an anonymous styled-component stack location to its selected export conditions. */
+  it('canonicalizes a URL-like exhaustive failure owner before reconciling finite branches', () => {
+    const runtime = evaluateFinitePropChoiceRuntime(
+      undefined,
+      false,
+      undefined,
+      'https://vscode-resource/chunks/TaxTypeBadge.js:247:13',
+      false,
+    );
+
+    expect(runtime.applied).toBe(true);
+    expect(runtime.choiceOwnerName).toBe('TaxTypeBadge');
+  });
+
+  /** Advances to the requested source-authored value instead of resetting to candidate A. */
+  it('applies a later finite choice ordinal during neural exploration', () => {
+    const runtime = evaluateFinitePropChoiceRuntime(undefined, false, 3);
+
+    expect(runtime.mutation).toMatchObject({
+      finiteChoiceOrdinal: 3,
+      selectedValue: 'normal_tax',
+    });
+    expect(runtime.applied).toBe(true);
+    expect(runtime.resolverOverride).toEqual({ taxType: 'normal_tax' });
+  });
+
+  /** Repairs a stale generated/manual placeholder but keeps unrelated user JSON and later choice. */
+  it('repairs one invalid user-layer exhaustive prop without losing sibling values', () => {
+    const runtime = evaluateFinitePropChoiceRuntime({ label: 'keep me', taxType: 'taxType' });
+
+    expect(runtime.choices).toEqual([
+      expect.objectContaining({ path: 'taxType', userControlled: true }),
+    ]);
+    expect(runtime.mutation).toMatchObject({
+      automatic: true,
+      repairUserOverride: true,
+    });
+    expect(runtime.applied).toBe(true);
+    expect(runtime.manualOverride).toEqual({ label: 'keep me', taxType: 'heavy_tax' });
+    expect(runtime.resolverOverride).toEqual({});
+  });
+
+  /** Retries authored finite branches even when an earlier pass already stored a valid value. */
+  it('reconciles stale automatic conditions around one valid finite prop', () => {
+    const runtime = evaluateFinitePropChoiceRuntime({ label: 'keep me', taxType: 'heavy_tax' });
+
+    expect(runtime.choices).toEqual([]);
+    expect(runtime.mutation).toMatchObject({
+      automatic: true,
+      changedPaths: [],
+      conditionReconciliation: true,
+      repairUserOverride: true,
+    });
+    expect(runtime.applied).toBe(true);
+    expect(runtime.manualOverride).toEqual({ label: 'keep me', taxType: 'heavy_tax' });
+    expect(runtime.resolverOverride).toEqual({});
+  });
+
+  /** Hands two independently invalid finite domains to the existing source-choice editor. */
+  it('hands ambiguous exhaustive prop domains to the choice UI', () => {
+    const runtime = evaluateFinitePropChoiceRuntime(
+      { regions: 'regions', taxType: 'taxType' },
+      true,
+    );
+
+    expect(runtime.choices.map((choice) => choice.path)).toEqual(['regions', 'taxType']);
+    expect(runtime.mutation).toBeUndefined();
+    expect(runtime.applied).toBe(false);
+    expect(runtime.manualOverride).toEqual({ regions: 'regions', taxType: 'taxType' });
+    expect(runtime.resolverOverride).toEqual({});
+  });
 });
+
+/** Evaluates finite branch recovery without mounting the authored component. */
+function evaluateFinitePropChoiceRuntime(
+  overrideProps?: Readonly<Record<string, unknown>>,
+  includeSecondDomain = false,
+  finiteChoiceOrdinal?: number,
+  blockedComponentName = 'TaxTypeBadge',
+  automatic = true,
+): FinitePropChoiceRuntime {
+  const context: { __finitePropChoice?: FinitePropChoiceRuntime } = {};
+  vm.runInNewContext(
+    `
+      const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
+      let manualOverride = ${JSON.stringify(overrideProps ?? {})};
+      let resolverOverride = {};
+      const previewInspectorSession = {
+        basePropsByExport: new Map([['TaxTypeBadge', ${JSON.stringify({
+          ...(includeSecondDomain ? { regions: 'regions' } : {}),
+          taxType: 'taxType',
+        })}]]),
+        descriptors: [{
+          exportName: 'TaxTypeBadge',
+          inspector: {
+            pageCandidates: [],
+            target: { exportName: 'TaxTypeBadge' },
+            targetInferredPropShape: {
+              kind: 'object',
+              properties: {
+                ${
+                  includeSecondDomain
+                    ? `regions: {
+                  candidateValues: ['seoul', 'busan'],
+                  exactValue: true,
+                  kind: 'string',
+                  value: 'seoul',
+                },`
+                    : ''
+                }
+                taxType: {
+                  candidateValues: [
+                    'heavy_tax',
+                    'fixed_tax',
+                    'normal_tax',
+                    'reduced_tax',
+                    'exempted',
+                    'none',
+                  ],
+                  exactValue: true,
+                  kind: 'string',
+                  value: 'heavy_tax',
+                },
+              },
+            },
+            targetInferredProps: [{ kind: 'string', path: 'taxType', source: 'usage' }],
+          },
+        }],
+        directTargetRuntimeOwnerNamesByExport: new Map([[
+          'TaxTypeBadge',
+          new Set(['TaxTypeBadge']),
+        ]]),
+        fallbackValuesEnabled: false,
+        overridesByExport: new Map(${JSON.stringify(
+          overrideProps === undefined ? [] : [['TaxTypeBadge', overrideProps]],
+        )}),
+        resolverPropsByExport: new Map(),
+      };
+      const readSelectedPreviewInspectorPageCandidate = () => undefined;
+      const createPreviewInspectorRootName = (root) => root.exportName;
+      const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
+      const setPreviewInspectorFallbackValuesEnabled = (value) => {
+        previewInspectorSession.fallbackValuesEnabled = value;
+        return true;
+      };
+      const setPreviewInspectorResolverPropsOverride = (exportName, value) => {
+        resolverOverride = value;
+        previewInspectorSession.resolverPropsByExport.set(exportName, value);
+        return true;
+      };
+      const setPreviewInspectorPropsOverride = (exportName, value) => {
+        manualOverride = value;
+        previewInspectorSession.overridesByExport.set(exportName, value);
+        return true;
+      };
+      ${createPreviewAutomaticPropsRuntimeSource()}
+      ${createPreviewInspectorFailureEvidenceRuntimeSource()}
+      ${createPreviewInspectorGeneratedValueRuntimeSource()}
+      ${createPreviewInspectorBlockerValueRuntimeSource()}
+      ${createPreviewInspectorSmartPropsRuntimeSource()}
+      const failure = {
+        blockedComponentName: ${JSON.stringify(blockedComponentName)},
+        error: new Error('Unreachable'),
+        exportName: 'TaxTypeBadge',
+        failureKind: 'component-error',
+        headline: 'Error: Unreachable',
+        sourcePath: '/workspace/tax-type-badge.tsx',
+        targetPropRequiredPaths: [],
+      };
+      const choices = readPreviewInspectorTargetFailurePropChoices(failure);
+      const mutation = createPreviewInspectorTargetFailurePropMutation(failure, {
+        automatic: ${JSON.stringify(automatic)},
+        finiteChoiceOrdinal: ${JSON.stringify(finiteChoiceOrdinal)},
+        state: {
+          targetExportName: 'TaxTypeBadge',
+          targetSourcePath: '/workspace/tax-type-badge.tsx',
+        },
+      });
+      const result = applyPreviewInspectorTargetFailurePropMutation(mutation);
+      globalThis.__finitePropChoice = {
+        applied: result.changed === true,
+        choiceOwnerName: previewInspectorSession.sourceProvenPropChoicesByExport
+          ?.get('TaxTypeBadge')?.get('taxType')?.ownerName,
+        choices,
+        manualOverride,
+        mutation,
+        resolverOverride,
+      };
+    `,
+    context,
+  );
+  if (context.__finitePropChoice === undefined) {
+    throw new Error('Finite prop choice runtime fixture did not initialize.');
+  }
+  return context.__finitePropChoice;
+}
 
 /** Inputs for the selected-export owner and error-path correlation fixture. */
 interface TargetPropFailureFixtureOptions {
@@ -389,6 +619,11 @@ function evaluateOverlayRevealRuntime(
         propsCommitModes.push(commit);
         storedOverride = value;
         previewInspectorSession.resolverPropsByExport.set(exportName, value);
+        if (commit) {
+          commits += 1;
+          updates += 1;
+        }
+        return true;
       };
       const persistPreviewInspectorState = () => { persists += 1; };
       const notifyPreviewInspector = () => { updates += 1; };

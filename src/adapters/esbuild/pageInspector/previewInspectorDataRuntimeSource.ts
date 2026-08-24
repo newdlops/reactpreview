@@ -380,6 +380,34 @@ function generatePreviewInspectorDataValue(shape, fieldName = '', mode = 'auto')
   );
 }
 
+/** Lets the neural residual expand only collections proven to feed a rendered GraphQL consumer. */
+function resolvePreviewInspectorRenderedCollectionAutoPayload(metadata, payload, profile) {
+  if (
+    profile !== 'corridor-auto' ||
+    metadata?.kind !== 'graphql' ||
+    typeof resolvePreviewInspectorHookGraphqlRenderedCollectionData !== 'function'
+  ) return undefined;
+  try {
+    return resolvePreviewInspectorHookGraphqlRenderedCollectionData(metadata, payload);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Stores only transparent recommendation metadata; model features remain in the causal trace. */
+function summarizePreviewInspectorRenderedCollectionRecommendation(recommendation) {
+  if (recommendation === undefined) return undefined;
+  const neuralResidual = typeof summarizePreviewInspectorNeuralResidualDecision === 'function'
+    ? summarizePreviewInspectorNeuralResidualDecision(recommendation.decision)
+    : undefined;
+  return Object.freeze({
+    candidateId: recommendation.candidateId,
+    collectionPaths: Object.freeze([...recommendation.collectionPaths]),
+    neuralResidual,
+    rowCount: recommendation.rowCount,
+  });
+}
+
 /** Creates a useful root shape when an untyped REST endpoint is the only available evidence. */
 function inferPreviewInspectorEndpointShape(metadata) {
   const endpoint = String(metadata?.url ?? metadata?.label ?? '').split('?')[0] ?? '';
@@ -428,6 +456,9 @@ function normalizePreviewInspectorDataRequest(metadata, seedPayload) {
       : kind === 'graphql'
         ? 'GraphQL selection and field-name inference'
         : 'endpoint and field-name inference',
+    graphqlSourceIdentity: typeof source.graphqlSourceIdentity === 'string'
+      ? source.graphqlSourceIdentity.slice(0, 32)
+      : undefined,
     id,
     kind,
     label,
@@ -509,11 +540,19 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
   // Auto and Corridor Auto intentionally materialize arrays differently. Include the profile in
   // the cache identity so opening/closing target traversal cannot reuse a broad gallery payload in
   // a guarded page corridor (or keep a corridor payload empty after returning to the gallery).
-  const autoPayload =
+  const inferredAutoPayload =
     previous?.shapeFingerprint === shapeFingerprint &&
     previous?.autoPayloadProfile === autoPayloadProfile
     ? previous.autoPayload
     : generatePreviewInspectorDataValue(normalized.shape, '', autoPayloadProfile);
+  const renderedCollectionResolution = resolvePreviewInspectorRenderedCollectionAutoPayload(
+    normalized,
+    inferredAutoPayload,
+    autoPayloadProfile,
+  );
+  const autoPayload = renderedCollectionResolution?.payload ?? inferredAutoPayload;
+  const renderedCollectionRecommendation =
+    summarizePreviewInspectorRenderedCollectionRecommendation(renderedCollectionResolution);
   const next = {
     ...normalized,
     autoPayload,
@@ -525,11 +564,16 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
         : undefined,
     seedPayload,
     shapeFingerprint,
+    renderedCollectionRecommendation,
   };
   const override = previewInspectorSession.dataPayloadOverrides.get(normalized.id);
   if (
     previous !== undefined &&
-    previous.autoPayloadProfile !== autoPayloadProfile &&
+    (
+      previous.autoPayloadProfile !== autoPayloadProfile ||
+      stringifyPreviewInspectorProps(previous.renderedCollectionRecommendation) !==
+        stringifyPreviewInspectorProps(renderedCollectionRecommendation)
+    ) &&
     override === undefined &&
     previewInspectorSession.dataAutoEnabled
   ) {
@@ -596,6 +640,18 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
       sourcePath: normalized.sourcePath,
       summary: { kind: normalized.kind, method: normalized.method, url: normalized.url },
     });
+  }
+  if (
+    previous === undefined &&
+    payloadMode === 'auto' &&
+    renderedCollectionResolution !== undefined &&
+    backendResult.scenario === 'success'
+  ) {
+    recordPreviewInspectorHookGraphqlRenderedCollectionRecommendation(
+      renderedCollectionResolution,
+      { ...normalized, reachabilityKey: next.reachabilityKey },
+      normalized.id + ':rendered-collection',
+    );
   }
   return { ...backendResult, payload };
 }
@@ -676,12 +732,23 @@ function setPreviewInspectorDataListSampleCount(value) {
     resetPreviewInspectorGeneratedRuntimeFallbackValues();
   }
   for (const [requestId, record] of previewInspectorSession.dataRequests) {
-    const autoPayload = generatePreviewInspectorDataValue(
+    const inferredAutoPayload = generatePreviewInspectorDataValue(
       record.shape,
       '',
       record.autoPayloadProfile ?? 'auto',
     );
-    previewInspectorSession.dataRequests.set(requestId, { ...record, autoPayload });
+    const renderedCollectionResolution = resolvePreviewInspectorRenderedCollectionAutoPayload(
+      record,
+      inferredAutoPayload,
+      record.autoPayloadProfile ?? 'auto',
+    );
+    const autoPayload = renderedCollectionResolution?.payload ?? inferredAutoPayload;
+    previewInspectorSession.dataRequests.set(requestId, {
+      ...record,
+      autoPayload,
+      renderedCollectionRecommendation:
+        summarizePreviewInspectorRenderedCollectionRecommendation(renderedCollectionResolution),
+    });
     const override = previewInspectorSession.dataPayloadOverrides.get(requestId);
     if (override?.mode === 'lorem') {
       previewInspectorSession.dataPayloadOverrides.set(requestId, {
@@ -793,7 +860,7 @@ function setPreviewInspectorDataPayload(requestId, payload, mode = 'custom') {
 function smartFillPreviewInspectorDataPayload(requestId) {
   initializePreviewInspectorDataState();
   const record = previewInspectorSession.dataRequests.get(requestId);
-  if (record === undefined) return;
+  if (record === undefined) return false;
   const current = previewInspectorSession.dataPayloadOverrides.get(requestId);
   const minimum = generatePreviewInspectorDataValue(record.shape, '', 'smart');
   const retainUserPayload = current?.mode === 'custom' || current?.mode === 'smart-custom';
@@ -828,6 +895,7 @@ function smartFillPreviewInspectorDataPayload(requestId) {
     selectedPayload,
     retainUserPayload ? 'smart-custom' : 'smart',
   );
+  return true;
 }
 
 ${reachabilityRuntimeSource}
@@ -919,6 +987,9 @@ function readPreviewInspectorGraphqlFetchMetadata(init) {
     const operationName = typeof body.operationName === 'string' ? body.operationName : '';
     const anonymousIdentity = body.query.slice(0, 256) + ':' + body.query.slice(-256);
     return {
+      graphqlSourceIdentity: typeof hashPreviewInspectorHookGraphqlRequestIdentity === 'function'
+        ? hashPreviewInspectorHookGraphqlRequestIdentity(operationName + '\0' + body.query)
+        : undefined,
       kind: 'graphql',
       label: operationName || 'GraphQL request',
       operationName: operationName || undefined,
@@ -967,7 +1038,11 @@ async function previewInspectorFetch(input, init, compilerMetadata) {
     body: init?.body,
     rawUrl: url,
   });
-  await waitForPreviewInspectorVirtualBackendLatency(result.latencyMs);
+  await waitForPreviewInspectorVirtualBackendLatency(
+    result.latencyMs,
+    result.scenario === 'pending',
+    result.requestId,
+  );
   const wirePayload = result.scenario === 'error'
     ? createPreviewInspectorVirtualBackendErrorPayload(result, metadata.kind)
     : metadata.kind === 'graphql'
@@ -997,7 +1072,11 @@ async function previewInspectorAxiosRequest(method, url, extraArguments, compile
     body: requestBody,
     rawUrl: metadata.url,
   });
-  await waitForPreviewInspectorVirtualBackendLatency(result.latencyMs);
+  await waitForPreviewInspectorVirtualBackendLatency(
+    result.latencyMs,
+    result.scenario === 'pending',
+    result.requestId,
+  );
   const response = {
     config: Array.isArray(extraArguments) ? extraArguments.at(-1) ?? {} : {},
     data: result.scenario === 'error'

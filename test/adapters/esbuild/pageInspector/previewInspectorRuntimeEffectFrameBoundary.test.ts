@@ -64,6 +64,24 @@ describe('Preview Inspector runtime effect frame boundary', () => {
     expect(fixture.warnings).toEqual([]);
   });
 
+  /** A hidden VS Code webview may expose rAF while withholding every frame callback. */
+  it('uses the timer fallback when the animation frame remains suspended', () => {
+    const fixture = createRuntimeFallbackFixture(true, { animationFrameStalls: true });
+    const metadata = createAnimationEffectMetadata();
+    let executions = 0;
+
+    fixture.api.effect(() => {
+      executions += 1;
+    }, metadata);
+    fixture.flushEffectFrame();
+    fixture.api.effect(() => {
+      executions += 1;
+    }, metadata);
+
+    expect(executions).toBe(2);
+    expect(fixture.warnings).toEqual([]);
+  });
+
   /** The safety boundary still cuts an effect/update burst that cannot yield to one paint. */
   it('isolates repeated executions within one browser frame', () => {
     const fixture = createRuntimeFallbackFixture(true);

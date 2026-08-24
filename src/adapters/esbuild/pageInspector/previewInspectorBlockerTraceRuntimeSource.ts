@@ -5,6 +5,7 @@
  * next warning or error without retaining project objects. It posts bounded plain data to the
  * extension host, where committed-graph authorization and source excerpt reads are performed.
  */
+import { PREVIEW_BLOCKER_KIND_CATEGORIES } from '../../../domain/previewBlocker';
 
 /**
  * Creates browser source for blocker discovery, Auto decision, render-diff, and error correlation.
@@ -14,8 +15,6 @@
  *
  * @returns Plain JavaScript source concatenated before project modules are imported.
  */
-import { PREVIEW_BLOCKER_KIND_CATEGORIES } from '../../../domain/previewBlocker';
-
 export function createPreviewInspectorBlockerTraceRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_BLOCKER_CATEGORY_BY_KIND = ${JSON.stringify(PREVIEW_BLOCKER_KIND_CATEGORIES)};
@@ -72,13 +71,106 @@ function reconcilePreviewInspectorBlockerTraceFatalErrors(records) {
   for (const [fingerprint, fatalError] of previewInspectorSession.blockerTraceRecentFatalErrors) {
     const stillActive = activeTargetErrors.some((record) => {
       const headline = record?.summary?.state?.error;
-      const sameOwner = typeof fatalError?.exportName !== 'string' ||
+      /*
+       * A selected-target exception is first owned by the Router error boundary and is later
+       * re-attributed to the selected export. Its stable identity is the target-scoped message;
+       * requiring the transient boundary owner here deletes the baseline immediately before Auto
+       * starts and makes the byte-identical exception look new again.
+       */
+      const sameOwner = record?.kind === 'target-error' ||
+        typeof fatalError?.exportName !== 'string' ||
         record?.ownerName === fatalError.exportName;
       return sameOwner && typeof headline === 'string' &&
         headline.includes(String(fatalError?.message ?? ''));
     });
     if (!stillActive) previewInspectorSession.blockerTraceRecentFatalErrors.delete(fingerprint);
   }
+}
+
+/**
+ * Canonicalizes one mounted failure independently of the browser transport that reported it.
+ *
+ * React can forward the same exception through a target boundary and then through window.onerror.
+ * Source, phase, and generated chunk location differ between those reports even though the render
+ * hole did not change. Treating those transport fields as causal identity rolls back every
+ * incremental requirement value and prevents the resolver from ever composing a multi-value fix.
+ */
+function createPreviewInspectorBlockerTraceFatalErrorFingerprint(target, entry) {
+  const exportName = typeof entry?.exportName === 'string' && entry.exportName.length > 0
+    ? entry.exportName
+    : target?.exportName;
+  return [
+    target?.pageCandidateId,
+    target?.renderScenario,
+    target?.revision,
+    entry?.level,
+    exportName,
+    String(entry?.message ?? '[' + String(entry?.level ?? 'error') + ']'),
+  ].join('\0');
+}
+
+/** Extracts bounded property names from common missing-shape TypeErrors without retaining stacks. */
+function readPreviewInspectorBlockerTraceErrorProperties(message) {
+  const text = String(message ?? '');
+  const properties = [];
+  const append = (value) => {
+    if (
+      typeof value === 'string' &&
+      value.length > 0 &&
+      value.length <= 120 &&
+      !properties.includes(value) &&
+      properties.length < 8
+    ) properties.push(value);
+  };
+  for (const match of text.matchAll(/(?:reading|property)\s+['"]([^'"]+)['"]/gu)) {
+    append(match[1]);
+  }
+  for (const match of text.matchAll(/\b([A-Za-z_$][\w$]*)\s+is not (?:a function|iterable)\b/gu)) {
+    append(match[1]);
+  }
+  return properties;
+}
+
+/** Reports whether one generated path contains the exact property segment named by an exception. */
+function hasPreviewInspectorBlockerTraceGeneratedProperty(generatedPaths, property) {
+  return (Array.isArray(generatedPaths) ? generatedPaths : []).some((path) =>
+    String(path)
+      .replaceAll('()', '')
+      .split(/[^A-Za-z0-9_$]+/u)
+      .includes(property),
+  );
+}
+
+/**
+ * Recognizes forward exception progress made by a compiler-admitted minimum-shape transaction.
+ *
+ * A value that repairs warnings.some can legitimately expose the next missing field deeper in the
+ * same render. Keep that value only when its generated path addressed the old exception and the new
+ * exception names a different missing property. Unrelated failures still use the ordinary rollback.
+ */
+function isPreviewInspectorComposableRequirementSuccessorError(activeAttempt, entry) {
+  if (
+    !['deterministic-minimum-auto', 'minimum-requirement-dfs'].includes(activeAttempt?.autoMode) ||
+    !Array.isArray(activeAttempt?.knownFatalErrorMessages) ||
+    activeAttempt.knownFatalErrorMessages.length === 0
+  ) return false;
+  const message = String(entry?.message ?? '');
+  if (
+    !/Cannot read propert(?:y|ies) of (?:undefined|null)|\bis not (?:a function|iterable)\b/u.test(
+      message,
+    )
+  ) return false;
+  const baselineProperties = activeAttempt.knownFatalErrorMessages
+    .flatMap((knownMessage) => readPreviewInspectorBlockerTraceErrorProperties(knownMessage));
+  if (
+    baselineProperties.length === 0 ||
+    !baselineProperties.some((property) =>
+      hasPreviewInspectorBlockerTraceGeneratedProperty(activeAttempt.generatedPaths, property),
+    )
+  ) return false;
+  const baselinePropertySet = new Set(baselineProperties);
+  const successorProperties = readPreviewInspectorBlockerTraceErrorProperties(message);
+  return successorProperties.some((property) => !baselinePropertySet.has(property));
 }
 
 /** Requests one later tree observation so a disappearing error boundary is not called resolved. */
@@ -644,6 +736,19 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
     next,
   );
   previewInspectorSession.blockerTraceRecords = next;
+  try {
+    if (
+      discoveredBlockerIds.length > 0 &&
+      typeof schedulePreviewInspectorAutomaticNeuralAssistanceFromHealth === 'function'
+    ) {
+      schedulePreviewInspectorAutomaticNeuralAssistanceFromHealth('blocker-discovered', {
+        blockerCount: discoveredBlockerIds.length,
+        blockerIds: discoveredBlockerIds.slice(0, 16),
+      });
+    }
+  } catch {
+    /* Blocker tracing remains observational when automatic assistance is unavailable. */
+  }
 }
 
 /** Builds a blocker record for an Auto decision that occurred before the next tree snapshot. */
@@ -741,6 +846,12 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
     typeof copyPreviewInspectorNeuralResidualDecision === 'function'
       ? copyPreviewInspectorNeuralResidualDecision(candidate?.neuralResidualDecision)
       : undefined;
+  const neuralDataFlowSignal =
+    candidate?.neuralDataFlowSignal !== null &&
+    typeof candidate?.neuralDataFlowSignal === 'object' &&
+    candidate.neuralDataFlowSignal.paths instanceof Set
+      ? candidate.neuralDataFlowSignal
+      : undefined;
   const startsRenderAttempt = candidate?.startsRenderAttempt === true;
   const generatedPaths = Array.isArray(candidate?.generatedPaths)
     ? candidate.generatedPaths.filter((value) => typeof value === 'string').slice(0, 128)
@@ -750,6 +861,10 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
       .slice(0, PREVIEW_INSPECTOR_BLOCKER_TRACE_TEXT_LIMIT),
     generatedPaths,
     mode: String(candidate?.mode ?? 'auto').slice(0, 120),
+    ...(neuralResidualDecision === undefined ||
+      typeof summarizePreviewInspectorNeuralResidualDecision !== 'function'
+      ? {}
+      : { neuralResidual: summarizePreviewInspectorNeuralResidualDecision(neuralResidualDecision) }),
     reason:
       typeof candidate?.reason === 'string'
         ? candidate.reason.slice(0, PREVIEW_INSPECTOR_BLOCKER_TRACE_TEXT_LIMIT)
@@ -776,7 +891,11 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
         previewInspectorSession.blockerTraceDecisionFingerprints.keys().next().value,
       );
     }
-    return queuePreviewInspectorBlockerTraceAutoDecision(auto, blocker);
+    const traceId = queuePreviewInspectorBlockerTraceAutoDecision(auto, blocker);
+    if (typeof recordPreviewInspectorNeuralResidualSelection === 'function') {
+      recordPreviewInspectorNeuralResidualSelection(neuralResidualDecision, auto, traceId);
+    }
+    return traceId;
   }
   const traceId = createPreviewInspectorBlockerTraceId();
   if (auto.startsRenderAttempt) {
@@ -811,13 +930,21 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
     }
   }
   postPreviewInspectorBlockerTraceEvent('auto-selection', traceId, { auto, blocker });
+  if (typeof recordPreviewInspectorNeuralResidualSelection === 'function') {
+    recordPreviewInspectorNeuralResidualSelection(neuralResidualDecision, auto, traceId);
+  }
   if (auto.startsRenderAttempt) {
     const recentErrorCutoff = now - PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS;
     const knownFatalErrors = new Set();
+    const knownFatalErrorMessages = [];
     for (const [errorFingerprint, fatalError] of previewInspectorSession.blockerTraceRecentFatalErrors) {
       const observedAt = fatalError?.observedAt;
       if (typeof observedAt === 'number' && observedAt >= recentErrorCutoff) {
         knownFatalErrors.add(errorFingerprint);
+        const message = String(fatalError?.message ?? '');
+        if (message.length > 0 && !knownFatalErrorMessages.includes(message)) {
+          knownFatalErrorMessages.push(message);
+        }
       } else {
         previewInspectorSession.blockerTraceRecentFatalErrors.delete(errorFingerprint);
       }
@@ -829,8 +956,11 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
     const attempt = {
       autoMode: auto.mode,
       blocker,
+      generatedPaths: auto.generatedPaths,
       knownFatalErrors,
+      knownFatalErrorMessages,
       ...(neuralResidualDecision === undefined ? {} : { neuralResidualDecision }),
+      ...(neuralDataFlowSignal === undefined ? {} : { neuralDataFlowSignal }),
       observedSnapshotCount: 0,
       startedAt: now,
       ...(targetReachabilityKey === undefined ? {} : { targetReachabilityKey }),
@@ -881,22 +1011,31 @@ function recordPreviewInspectorBlockerTraceError(entry) {
       activeAttempt.settledAt === undefined ||
       now - activeAttempt.settledAt <= settledErrorGrace
     );
+  const attemptWasSettledBeforeError = activeAttempt?.settledAt !== undefined;
   const target = readPreviewInspectorBlockerTraceTarget();
-  const fatalErrorFingerprint = [
-    target.exportName,
-    target.pageCandidateId,
-    target.renderScenario,
-    target.revision,
-    entry.level,
-    entry.source,
-    entry.exportName,
-    entry.location,
-    entry.phase,
-    entry.message,
-  ].join('\0');
+  const fatalErrorFingerprint = createPreviewInspectorBlockerTraceFatalErrorFingerprint(
+    target,
+    entry,
+  );
   const errorWasKnownAtAttemptStart =
     active && activeAttempt.knownFatalErrors instanceof Set &&
     activeAttempt.knownFatalErrors.has(fatalErrorFingerprint);
+  const errorAdvancesRequirementComposition =
+    active &&
+    !errorWasKnownAtAttemptStart &&
+    isPreviewInspectorComposableRequirementSuccessorError(activeAttempt, entry);
+  if (
+    (errorWasKnownAtAttemptStart || errorAdvancesRequirementComposition) &&
+    ['deterministic-minimum-auto', 'minimum-requirement-dfs'].includes(
+      activeAttempt?.autoMode,
+    )
+  ) {
+    activeAttempt.retainedBaselineFatalError = {
+      fingerprint: fatalErrorFingerprint,
+      message: String(entry?.message ?? ''),
+      observedAt: now,
+    };
+  }
   previewInspectorSession.blockerTraceRecentFatalErrors.set(fatalErrorFingerprint, {
     exportName:
       typeof entry.exportName === 'string' ? entry.exportName : target.exportName,
@@ -925,7 +1064,7 @@ function recordPreviewInspectorBlockerTraceError(entry) {
   // gallery generation modes remain diagnostic-only even when they share this trace machinery.
   let conditionRolledBack = false;
   let requirementRolledBack = false;
-  if (active && !errorWasKnownAtAttemptStart) {
+  if (active && !errorWasKnownAtAttemptStart && !errorAdvancesRequirementComposition) {
     if (
       activeAttempt.autoMode === 'target-guided-auto' &&
       typeof rollbackPreviewInspectorFailedAutoDecision === 'function'
@@ -977,6 +1116,14 @@ function recordPreviewInspectorBlockerTraceError(entry) {
       }),
       result: createPreviewInspectorBlockerTraceAttemptResult(activeAttempt, 'rolled-back'),
     });
+  }
+  if (
+    (conditionRolledBack || requirementRolledBack) &&
+    active &&
+    attemptWasSettledBeforeError &&
+    typeof rejectPreviewInspectorNeuralResidualAttempt === 'function'
+  ) {
+    rejectPreviewInspectorNeuralResidualAttempt(activeAttempt);
   }
 }
 `;

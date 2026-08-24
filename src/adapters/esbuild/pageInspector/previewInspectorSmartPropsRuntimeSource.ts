@@ -1,3 +1,5 @@
+import { createPreviewInspectorFinitePropChoiceRuntimeSource } from './previewInspectorFinitePropChoiceRuntimeSource';
+
 /**
  * Generates the Page Inspector's descriptor-aware Smart props runtime.
  *
@@ -23,6 +25,7 @@ export const PREVIEW_INSPECTOR_SMART_PROP_SCAN_LIMIT = 256;
  * @returns Plain JavaScript source concatenated into the isolated Page Inspector runtime.
  */
 export function createPreviewInspectorSmartPropsRuntimeSource(): string {
+  const finitePropChoiceRuntimeSource = createPreviewInspectorFinitePropChoiceRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_SMART_PROP_PATH_LIMIT = ${PREVIEW_INSPECTOR_SMART_PROP_PATH_LIMIT};
 const PREVIEW_INSPECTOR_SMART_PROP_SCAN_LIMIT = ${PREVIEW_INSPECTOR_SMART_PROP_SCAN_LIMIT};
@@ -428,6 +431,54 @@ function readPreviewInspectorSmartPropPathValue(value, rawPath) {
   return current;
 }
 
+/** Reports whether a preview-owned record explicitly contains one safe property path. */
+function hasPreviewInspectorSmartPropPath(value, rawPath) {
+  const parsed = parsePreviewInspectorRequiredPath(rawPath);
+  if (
+    parsed === undefined || parsed.callable || parsed.collection || parsed.path.length === 0
+  ) return false;
+  let current = value;
+  for (const propertyName of parsed.path) {
+    if (
+      current === null || typeof current !== 'object' || Array.isArray(current) ||
+      previewInspectorSmartPropBlockedNames.has(propertyName)
+    ) return false;
+    let descriptor;
+    try { descriptor = Object.getOwnPropertyDescriptor(current, propertyName); } catch { return false; }
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return false;
+    current = descriptor.value;
+  }
+  return true;
+}
+
+/** Copies a JSON-visible prop record and replaces exactly one prototype-safe object path. */
+function setPreviewInspectorSmartPropPathValue(value, rawPath, nextValue) {
+  const parsed = parsePreviewInspectorRequiredPath(rawPath);
+  if (parsed === undefined || parsed.path.length === 0) return undefined;
+  const copied = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
+  const root = copied !== null && typeof copied === 'object' && !Array.isArray(copied)
+    ? copied
+    : {};
+  let current = root;
+  for (let index = 0; index < parsed.path.length; index += 1) {
+    const propertyName = parsed.path[index];
+    if (previewInspectorSmartPropBlockedNames.has(propertyName)) return undefined;
+    if (index === parsed.path.length - 1) {
+      current[propertyName] = nextValue;
+      return root;
+    }
+    const child = current[propertyName];
+    const next = child !== null && typeof child === 'object' && !Array.isArray(child)
+      ? { ...child }
+      : {};
+    current[propertyName] = next;
+    current = next;
+  }
+  return root;
+}
+
+${finitePropChoiceRuntimeSource}
+
 /** Produces a deterministic, getter-free value token for prop-repair convergence. */
 function fingerprintPreviewInspectorSmartPropValue(value) {
   if (typeof fingerprintPreviewInspectorRequirementValue === 'function') {
@@ -569,6 +620,17 @@ function createPreviewInspectorTargetFailurePropMutation(failure, options = {}) 
     stateSourcePath.length === 0 ||
     stateSourcePath !== failureSourcePath
   )) return undefined;
+  const finiteChoiceMutation = createPreviewInspectorFinitePropChoiceMutation(failure, options);
+  if (finiteChoiceMutation !== undefined) return finiteChoiceMutation;
+  if (
+    Number.isSafeInteger(options?.finiteChoiceOrdinal) &&
+    readPreviewInspectorTargetFailurePropChoiceDomains(failure).length > 0
+  ) return undefined;
+  if (readPreviewInspectorTargetFailurePropChoices(failure).length > 0) {
+    // Multiple invalid finite domains stay visible rather than letting a broad Smart draft guess
+    // which independent choice caused the exhaustive-branch failure.
+    return undefined;
+  }
   const correlatedPaths = readPreviewInspectorTargetPropFailurePaths(
     failure.exportName,
     failure.blockedComponentName,
@@ -693,7 +755,19 @@ function applyPreviewInspectorTargetFailurePropMutation(mutation, options = {}) 
     return { ...mutation, changed };
   }
   setPreviewInspectorFallbackValuesEnabled(true, false);
-  const applied = mutation.automatic === true
+  if (mutation.choice !== undefined) {
+    rememberPreviewInspectorSmartPropChoice(
+      mutation.failure.exportName,
+      mutation.choice.path,
+      mutation.selectedValue ?? mutation.choice.candidates[0],
+      {
+        origin: 'automatic-repair',
+        ownerName: mutation.failure.blockedComponentName,
+        sourcePath: mutation.failure.sourcePath,
+      },
+    );
+  }
+  const applied = mutation.automatic === true && mutation.repairUserOverride !== true
     ? setPreviewInspectorResolverPropsOverride(
         mutation.failure.exportName,
         mutation.draft.value,
@@ -703,14 +777,23 @@ function applyPreviewInspectorTargetFailurePropMutation(mutation, options = {}) 
         mutation.failure.exportName,
         mutation.draft.value,
         commit,
+        mutation.choice !== undefined,
       );
   if (!applied) return { ...mutation, changed: false };
   return mutation;
 }
 
-/** Shared manual Smart Fill action retained by the blocker UI. */
-function smartFillPreviewInspectorTargetFailure(failure, commit = true) {
-  const mutation = createPreviewInspectorTargetFailurePropMutation(failure);
+/** Shared Smart Fill action retained by the blocker UI and neural exception sweep. */
+function smartFillPreviewInspectorTargetFailure(
+  failure,
+  commit = true,
+  neuralResidualDecision,
+  options = {},
+) {
+  const mutation = createPreviewInspectorTargetFailurePropMutation(failure, {
+    finiteChoiceOrdinal: options?.finiteChoiceOrdinal,
+    finiteChoiceSignature: options?.finiteChoiceSignature,
+  });
   const result = applyPreviewInspectorTargetFailurePropMutation(mutation, { commit });
   if (result.changed !== true) return false;
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
@@ -723,6 +806,7 @@ function smartFillPreviewInspectorTargetFailure(failure, commit = true) {
       blockerName: 'Component error · ' + failure.blockedComponentName,
       generatedPaths: result.changedPaths,
       mode: result.fallbackOnly === true ? 'automatic-values' : 'smart-props',
+      ...(neuralResidualDecision === undefined ? {} : { neuralResidualDecision }),
       occurrenceStart: failure.occurrenceStart,
       ownerName: failure.exportName,
       reason: failure.headline,
@@ -730,6 +814,14 @@ function smartFillPreviewInspectorTargetFailure(failure, commit = true) {
       sourcePath: failure.sourcePath,
       startsRenderAttempt: true,
       summary: {
+        ...(neuralResidualDecision === undefined
+          ? {}
+          : {
+              neuralResidual:
+                typeof summarizePreviewInspectorNeuralResidualDecision === 'function'
+                  ? summarizePreviewInspectorNeuralResidualDecision(neuralResidualDecision)
+                  : undefined,
+            }),
         preservedObservedOrUserProps: true,
         requiredPaths: failure.targetPropRequiredPaths,
       },
@@ -822,24 +914,6 @@ function setPreviewInspectorSmartBooleanProp(value, rawPath) {
     current = current[propertyName];
   }
   return false;
-}
-
-/** Reports whether one own, prototype-safe prop path is already controlled by a value layer. */
-function hasPreviewInspectorSmartPropPath(value, rawPath) {
-  const parsed = parsePreviewInspectorRequiredPath(rawPath);
-  if (parsed === undefined || parsed.callable || parsed.collection || parsed.path.length === 0) {
-    return false;
-  }
-  let current = value;
-  for (const propertyName of parsed.path) {
-    if (
-      current === null || typeof current !== 'object' || Array.isArray(current) ||
-      previewInspectorSmartPropBlockedNames.has(propertyName) ||
-      !Object.prototype.hasOwnProperty.call(current, propertyName)
-    ) return false;
-    current = current[propertyName];
-  }
-  return true;
 }
 
 /**

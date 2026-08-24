@@ -67,6 +67,158 @@ interface ReachabilityResult {
 }
 
 describe('Preview Inspector target reachability runtime source', () => {
+  it.each(['deterministic-minimum-auto', 'minimum-requirement-dfs'])(
+    'layers the next %s requirement through one retained baseline exception',
+    (mode) => {
+      const context: { __result?: Record<string, unknown> } = {};
+      vm.runInNewContext(
+        `
+          let advances = 0;
+          const state = {
+            key: 'page:Target',
+            targetExportName: 'Target',
+            targetOutputError: { message: 'existing missing value' },
+          };
+          const attempt = {
+            autoMode: ${JSON.stringify(mode)},
+            retainedBaselineFatalError: { message: 'existing missing value' },
+            settledAt: 200,
+            targetReachabilityKey: state.key,
+            traceId: 'trace-requirement',
+          };
+          const previewInspectorSession = {
+            blockerTraceActiveAttempt: attempt,
+            renderConditionAutoAttempts: new Map(),
+            renderConditions: new Map(),
+          };
+          const schedulePreviewInspectorTreeRefresh = () => undefined;
+          ${createTargetReachabilityFixtureSource()}
+          hasMountedPreviewInspectorTarget = () => false;
+          hasPreviewInspectorTargetRenderError = () => true;
+          hasPreviewInspectorTargetHostOutput = () => false;
+          advancePreviewInspectorMinimumRequirementSearch = () => {
+            advances += 1;
+            return true;
+          };
+          evaluatePreviewInspectorTargetReachability({}, {}, state);
+          globalThis.__result = { advances };
+        `,
+        context,
+      );
+
+      expect(context.__result).toEqual({ advances: 1 });
+    },
+  );
+
+  /** A learned exact-source state can revive the original target after contextual probing began. */
+  it('rechecks exact target boundaries after neural state supersedes contextual fallback', () => {
+    const context: { __result?: readonly string[] } = {};
+    vm.runInNewContext(
+      `
+        const exactBoundary = {
+          props: { exportName: 'Panel', sourcePath: '/workspace/Panel.tsx' },
+        };
+        const previewInspectorSession = {
+          boundariesByExport: new Map([['Panel', new Set([exactBoundary])]]),
+          runtimeFallbackSharedNeuralRecommendationsByContract: new Map([['Panel#usePanel', {
+            sharedGuardPaths: ['state.status'],
+            smartPathCandidateId: 'render-state:string:open',
+            sourcePath: '/workspace/Panel.tsx',
+            value: { state: { status: 'open' } },
+          }]]),
+        };
+        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        globalThis.__result = [...readPreviewInspectorTargetResolutionBoundaries({
+          contextualTargetFallbackRequested: true,
+          targetExportName: 'Panel',
+          targetSourcePath: '/workspace/Panel.tsx',
+        })].map((boundary) => boundary.props.sourcePath);
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual(['/workspace/Panel.tsx']);
+  });
+
+  /** Keeps condition DFS consistent with the scalar state selected by the neural residual head. */
+  it('does not activate a JSX branch that contradicts the learned render state', () => {
+    const context: {
+      __result?: {
+        readonly iframe: boolean;
+        readonly loading: boolean;
+        readonly selectedGate: string;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        const previewInspectorSession = {
+          boundariesByExport: new Map(),
+          renderConditionOverrides: new Map(),
+          renderConditions: new Map(),
+          runtimeFallbackSharedNeuralRecommendationsByContract: new Map([['panel#usePanel', {
+            sharedGuardPaths: ['state.status'],
+            smartPathCandidateId: 'render-state:string:open',
+            sourcePath: '/workspace/Panel.tsx',
+            value: { state: { status: 'open' } },
+          }]]),
+          selectedExportName: 'Panel',
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const readPreviewInspectorRuntimeFallbacks = () => [];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        ${createTargetReachabilityFixtureSource()}
+        const descriptor = { inspector: {
+          renderChainsByExport: { Panel: { paths: [] } },
+          target: { exportName: 'Panel', sourcePath: '/workspace/Panel.tsx' },
+        } };
+        const candidate = {
+          edges: [], id: 'panel-page',
+          renderPath: { id: 'path', steps: [
+            { label: 'Panel', sourcePath: '/workspace/Panel.tsx', wrapperNames: [] },
+          ] },
+          root: { exportName: 'Panel' },
+        };
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        const comparison = (value) => ({
+          kind: 'comparison', operator: '===', path: 'state.status', value,
+        });
+        const loading = {
+          effectiveEnabled: false,
+          id: 'loading',
+          kind: 'logical-and',
+          ownerName: 'Panel',
+          reachabilityDiscoveryOrder: 1,
+          reachabilityKey: state.key,
+          scalarExpression: comparison('loading'),
+          sourcePath: '/workspace/Panel.tsx',
+        };
+        const iframe = {
+          ...loading,
+          effectiveEnabled: true,
+          id: 'iframe',
+          scalarExpression: { kind: 'or', left: comparison('open'), right: comparison('closing') },
+        };
+        previewInspectorSession.renderConditions.set(loading.id, loading);
+        previewInspectorSession.renderConditions.set(iframe.id, iframe);
+        const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
+        globalThis.__result = {
+          iframe: readPreviewInspectorTargetConditionValue(iframe, evidence),
+          loading: readPreviewInspectorTargetConditionValue(loading, evidence),
+          selectedGate:
+            selectPreviewInspectorNextTargetGate(descriptor, candidate, state)?.condition?.id ?? 'none',
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      iframe: true,
+      loading: false,
+      selectedGate: 'none',
+    });
+  });
+
   /** Selects a modal passed through a render-local component alias without opening its sibling. */
   it('keeps nested local component owners on the exact overlay corridor', () => {
     const context: {
@@ -468,6 +620,7 @@ describe('Preview Inspector target reachability runtime source', () => {
     expect(source).toContain('PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT = 8');
     expect(source).toContain('PREVIEW_INSPECTOR_TARGET_INITIAL_PROBE_DELAY_MS = 160');
     expect(source).toContain('PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS = 48');
+    expect(source).toContain('PREVIEW_INSPECTOR_TARGET_NEURAL_RENDER_SETTLE_DELAY_MS = 96');
     expect(source).toContain('PREVIEW_INSPECTOR_TARGET_VIEWPORT_REVEAL_DELAY_MS = 900');
     expect(source).toContain('hasMountedPreviewInspectorTarget(state)');
     expect(source).toContain('activatePreviewInspectorDirectTarget(state)');
@@ -480,12 +633,53 @@ describe('Preview Inspector target reachability runtime source', () => {
     );
     expect(source).not.toContain('OVERLAY_TARGET_NAME_PATTERN');
     expect(source).toContain('startPreviewInspectorDeterministicRequirementSearch');
+    expect(source).toContain('readPreviewInspectorNeuralLearningModelUpdates() > 0');
+    expect(source).toContain("search.origin === 'automatic-neural'");
+    expect(source).toContain('settlePreviewInspectorNeuralRenderStateTarget(state)');
     expect(source).toContain('requestPreviewInspectorPageExecutionRetry(descriptor, candidate)');
     expect(source).toContain("state.status = 'retrying-page-execution'");
     expect(source).toContain(
       'revealPreviewInspectorMountedTargetViewport(descriptor, candidate, state)',
     );
     expect(source).toContain('retryPreviewInspectorTargetApplicationPath');
+  });
+
+  it('hands a settled empty contextual fallback back to Page Execution retry', () => {
+    const context: { __result?: boolean } = {};
+    vm.runInNewContext(
+      `
+        const owner = {};
+        const roleToken = {};
+        const state = {
+          contextualTargetFallbackRequested: true,
+          directTarget: false,
+          idlePasses: 2,
+          key: 'page:Skeleton',
+          pageRootCommitted: true,
+          targetHasOutput: false,
+          targetMounted: true,
+        };
+        const previewInspectorSession = {
+          activeTargetReachabilityKey: state.key,
+          boundariesByExport: new Map(),
+          contextualTargetFallbackCapabilitiesByKey: new Map([
+            [state.key, new Map([['ordinary-contextual-fallback', 1]])],
+          ]),
+          contextualTargetFallbackClaimsByKey: new Map([
+            [state.key, { key: state.key, owner, roleToken, status: 'committed' }],
+          ]),
+          contextualTargetFallbackCountByKey: new Map([[state.key, 1]]),
+          contextualTargetFallbackRolesByKey: new Map([
+            [state.key, new Map([[roleToken, owner]])],
+          ]),
+        };
+        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        globalThis.__result = requestPreviewInspectorContextualTargetFallback(state);
+      `,
+      context,
+    );
+
+    expect(context.__result).toBe(false);
   });
 
   /** Reveals only exact mounted target DOM waiting behind authored scroll-triggered animation. */
@@ -1330,6 +1524,135 @@ describe('Preview Inspector target reachability runtime source', () => {
       targetMounted: true,
       targetOutputKind: 'target-output',
       targetRenderedEmpty: true,
+    });
+  });
+
+  /** Reopens an exhausted authored corridor without discarding its proven branch history. */
+  it('resumes page traversal after a neural recommendation supersedes the target error', () => {
+    const context: {
+      __result?: {
+        readonly appliedConditionCount: number;
+        readonly attempt: number;
+        readonly clearedExport: string;
+        readonly exhausted: boolean;
+        readonly probeRevision: number;
+        readonly resumed: boolean;
+        readonly status: string;
+        readonly targetWasMounted: boolean;
+        readonly targetOutputError: unknown;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        ${createEmptyPageTargetRuntimePreambleSource()}
+        let clearedExport = '';
+        const clearPreviewInspectorRuntimeHealthTargetError = (exportName) => {
+          clearedExport = exportName;
+          return true;
+        };
+        ${createTargetReachabilityFixtureSource()}
+        const state = {
+          appliedConditions: [{ id: 'page-gate' }],
+          attempt: 16,
+          blockedWarningReported: true,
+          directTarget: false,
+          exhausted: true,
+          idlePasses: 2,
+          key: 'page:Target',
+          pageRootCommitted: false,
+          probeRevision: 4,
+          status: 'retrying-page-execution',
+          targetExportName: 'Target',
+          targetHasOutput: false,
+          targetOutputError: { message: 'stale failure' },
+          targetOutputRecoveryPending: true,
+          targetWasMounted: true,
+        };
+        previewInspectorSession.activeTargetReachabilityKey = state.key;
+        previewInspectorSession.targetReachabilityByKey = new Map([[state.key, state]]);
+        const resumed = resumePreviewInspectorTargetReachabilityAfterNeuralRecommendation(state.key);
+        globalThis.__result = {
+          appliedConditionCount: state.appliedConditions.length,
+          attempt: state.attempt,
+          clearedExport,
+          exhausted: state.exhausted,
+          probeRevision: state.probeRevision,
+          resumed,
+          status: state.status,
+          targetOutputError: state.targetOutputError,
+          targetWasMounted: state.targetWasMounted,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      appliedConditionCount: 1,
+      attempt: 0,
+      clearedExport: 'Target',
+      exhausted: false,
+      probeRevision: 5,
+      resumed: true,
+      status: 'probing-after-neural-recommendation',
+      targetOutputError: undefined,
+      targetWasMounted: false,
+    });
+  });
+
+  /** Lets the transaction that discovered a recommendation settle before restarting its corridor. */
+  it('commits a deferred neural retry from the settled Auto attempt', () => {
+    const context: {
+      __result?: {
+        readonly committedExport: string;
+        readonly committedKey: string;
+        readonly handled: boolean;
+        readonly resumed: boolean;
+        readonly retryCleared: boolean;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        let committedExport = '';
+        let committedKey = '';
+        const state = { key: 'page:Target' };
+        const attempt = {
+          autoMode: 'deterministic-minimum-auto',
+          runtimeFallbackNeuralRetry: {
+            exportName: 'Target',
+            reachabilityKey: state.key,
+          },
+          settledAt: Date.now(),
+          targetReachabilityKey: state.key,
+          traceId: 'trace-neural',
+        };
+        const previewInspectorSession = {
+          blockerTraceActiveAttempt: attempt,
+          targetReachabilityByKey: new Map([[state.key, state]]),
+        };
+        const commitPreviewInspectorRuntimeNeuralRecommendationRetry = (exportName, key) => {
+          committedExport = exportName;
+          committedKey = key;
+          return true;
+        };
+        ${createPreviewInspectorTargetAttemptRuntimeSource()}
+        const resumed = resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt);
+        globalThis.__result = {
+          committedExport,
+          committedKey,
+          handled: attempt.targetReachabilityResumeHandled,
+          resumed,
+          retryCleared: attempt.runtimeFallbackNeuralRetry === undefined,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      committedExport: 'Target',
+      committedKey: 'page:Target',
+      handled: true,
+      resumed: true,
+      retryCleared: true,
     });
   });
 

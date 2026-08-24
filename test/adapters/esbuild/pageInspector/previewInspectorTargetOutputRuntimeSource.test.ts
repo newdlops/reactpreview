@@ -22,6 +22,7 @@ interface TestFiber {
 interface TestTargetOutputState {
   readonly targetDeferredCallbackPending?: boolean;
   readonly targetExportName: string;
+  readonly targetLayoutClippedOutput?: boolean;
   readonly targetOutputError?: { readonly message: string; readonly ownerName?: string };
   readonly targetOutputKind?: string;
   readonly targetRenderedEmpty?: boolean;
@@ -47,6 +48,7 @@ function evaluateResolvedOutput(
       readonly timestamp: number;
     };
     readonly directElementOutput?: boolean;
+    readonly directHost?: Record<string, unknown>;
     readonly exactOwnership?: boolean;
     readonly host?: boolean;
     readonly includePlan?: boolean;
@@ -82,6 +84,7 @@ function evaluateResolvedOutput(
       | undefined;
     __cleared: number;
     __directElementOutput: boolean;
+    __directHost: Record<string, unknown>;
     __exactOwnership: boolean;
     __outcome: typeof outcome;
     __ownedHost: Record<string, unknown>;
@@ -97,6 +100,11 @@ function evaluateResolvedOutput(
     __activeError: options.activeError,
     __cleared: 0,
     __directElementOutput: options.directElementOutput === true,
+    __directHost: options.directHost ?? {
+      closest: () => null,
+      isConnected: true,
+      nodeType: 1,
+    },
     __exactOwnership: options.exactOwnership !== false,
     __host: options.host !== false,
     __includePlan: options.includePlan !== false,
@@ -118,11 +126,7 @@ function evaluateResolvedOutput(
       const outcome = globalThis.__outcome;
       const liveChild = globalThis.__liveChild;
       const directTargetType = {};
-      const directHost = {
-        closest: () => null,
-        isConnected: true,
-        nodeType: 1,
-      };
+      const directHost = globalThis.__directHost;
       const boundaryChild = globalThis.__directElementOutput
         ? {
             child: { child: liveChild, kind: 'host', name: 'div', stateNode: directHost },
@@ -209,6 +213,7 @@ function hasResolvedOutput(
       readonly timestamp: number;
     };
     readonly directElementOutput?: boolean;
+    readonly directHost?: Record<string, unknown>;
     readonly exactOwnership?: boolean;
     readonly host?: boolean;
     readonly includePlan?: boolean;
@@ -648,6 +653,98 @@ describe('Preview Inspector target output runtime source', () => {
         },
       ),
     ).toBe(false);
+  });
+
+  /** A wide authored table remains valid output when a narrow positive-size pane clips its badge. */
+  it('accepts an exact target host clipped only by a genuinely overflowing layout pane', () => {
+    const clippingParent = {
+      clientHeight: 100,
+      clientWidth: 260,
+      getBoundingClientRect: () => ({ bottom: 100, left: 0, right: 260, top: 0 }),
+      parentElement: null,
+      scrollHeight: 100,
+      scrollWidth: 660,
+      style: {
+        display: 'block',
+        opacity: '1',
+        overflowX: 'hidden',
+        transform: 'none',
+        visibility: 'visible',
+      },
+    };
+    const evaluation = evaluateResolvedOutput([], undefined, {
+      directElementOutput: true,
+      directHost: {
+        closest: () => null,
+        getBoundingClientRect: () => ({ bottom: 50, left: -100, right: -40, top: 20 }),
+        isConnected: true,
+        nodeType: 1,
+        parentElement: clippingParent,
+        style: { display: 'inline-flex', opacity: '1', transform: 'none', visibility: 'visible' },
+      },
+      host: false,
+      includePlan: false,
+    });
+
+    expect(evaluation.resolved).toBe(true);
+    expect(evaluation.state.targetOutputKind).toBe('target-output');
+    expect(evaluation.state.targetLayoutClippedOutput).toBe(true);
+  });
+
+  /** Exact-target clipping must not reopen collapsed drawers or transformed off-screen panels. */
+  it('rejects clipped exact target hosts in collapsed, transparent, or transformed containers', () => {
+    const evaluateClippedHost = (
+      parentOverrides: Record<string, unknown>,
+    ): TestTargetOutputEvaluation =>
+      evaluateResolvedOutput([], undefined, {
+        directElementOutput: true,
+        directHost: {
+          closest: () => null,
+          getBoundingClientRect: () => ({ bottom: 50, left: -100, right: -40, top: 20 }),
+          isConnected: true,
+          nodeType: 1,
+          parentElement: {
+            clientHeight: 100,
+            clientWidth: 260,
+            getBoundingClientRect: () => ({ bottom: 100, left: 0, right: 260, top: 0 }),
+            parentElement: null,
+            scrollHeight: 100,
+            scrollWidth: 660,
+            style: {
+              display: 'block',
+              opacity: '1',
+              overflowX: 'hidden',
+              transform: 'none',
+              visibility: 'visible',
+            },
+            ...parentOverrides,
+          },
+          style: { display: 'inline-flex', opacity: '1', transform: 'none', visibility: 'visible' },
+        },
+        host: false,
+        includePlan: false,
+      });
+
+    const collapsed = evaluateClippedHost({
+      clientWidth: 0,
+      getBoundingClientRect: () => ({ bottom: 100, left: 0, right: 0, top: 0 }),
+    });
+    const transparent = evaluateClippedHost({
+      style: { display: 'block', opacity: '0', overflowX: 'hidden', transform: 'none' },
+    });
+    const transformed = evaluateClippedHost({
+      style: {
+        display: 'block',
+        opacity: '1',
+        overflowX: 'hidden',
+        transform: 'translateX(-300px)',
+      },
+    });
+
+    expect(collapsed.resolved).toBe(false);
+    expect(transparent.resolved).toBe(false);
+    expect(transformed.resolved).toBe(false);
+    expect(collapsed.state.targetLayoutClippedOutput).toBe(false);
   });
 
   /** A committed application error page cannot turn target reachability green as its DOM grows. */

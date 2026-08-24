@@ -140,7 +140,9 @@ class PreviewInspectorXmlHttpRequest {
       dispatchPreviewInspectorXmlHttpRequestEvent(this, 'load');
       dispatchPreviewInspectorXmlHttpRequestEvent(this, 'loadend');
     };
-    if (this.async && result.latencyMs > 0 && typeof previewInspectorBackendSetTimeout === 'function') {
+    if (this.async && result.scenario === 'pending') {
+      void waitForPreviewInspectorVirtualBackendLatency(0, true, result.requestId).then(complete);
+    } else if (this.async && result.latencyMs > 0 && typeof previewInspectorBackendSetTimeout === 'function') {
       previewInspectorBackendSetTimeout(complete, result.latencyMs);
     } else if (this.async) previewInspectorDataScheduleMicrotask(complete);
     else complete();

@@ -40,6 +40,12 @@ function initializePreviewInspectorVirtualBackendState() {
   if (!(previewInspectorSession.virtualBackendFixtureFingerprints instanceof Map)) {
     previewInspectorSession.virtualBackendFixtureFingerprints = new Map();
   }
+  if (!(previewInspectorSession.temporalBackendScenarioOverrides instanceof Map)) {
+    previewInspectorSession.temporalBackendScenarioOverrides = new Map();
+  }
+  if (!(previewInspectorSession.virtualBackendPendingWaiters instanceof Map)) {
+    previewInspectorSession.virtualBackendPendingWaiters = new Map();
+  }
   if (!(previewInspectorSession.virtualBackendScenarios instanceof Map)) {
     const persisted = readPersistedPreviewInspectorState();
     const rawScenarios = persisted.virtualBackendScenarios;
@@ -59,7 +65,9 @@ function initializePreviewInspectorVirtualBackendState() {
 /** Converts untrusted persisted/UI scenario input into finite transport-compatible values. */
 function normalizePreviewInspectorVirtualBackendScenario(value) {
   const source = value !== null && typeof value === 'object' ? value : {};
-  const mode = ['empty', 'error', 'success'].includes(source.mode) ? source.mode : 'success';
+  const mode = ['empty', 'error', 'success'].includes(source.mode)
+    ? source.mode
+    : 'success';
   const fallbackStatus = mode === 'error' ? 500 : 200;
   const numericStatus = Number(source.status);
   const numericLatency = Number(source.latencyMs);
@@ -86,10 +94,26 @@ function serializePreviewInspectorVirtualBackendScenarios() {
   );
 }
 
-/** Reads one request's scenario, returning the default immediate-success policy when absent. */
-function readPreviewInspectorVirtualBackendScenario(requestId) {
+/** Reads one request's scenario, arming transient target time before its first response settles. */
+function readPreviewInspectorVirtualBackendScenario(requestId, request) {
   initializePreviewInspectorVirtualBackendState();
-  return previewInspectorSession.virtualBackendScenarios.get(requestId) ?? {
+  const temporal = previewInspectorSession.temporalBackendScenarioOverrides.get(requestId);
+  if (temporal !== undefined) return temporal;
+  const configured = previewInspectorSession.virtualBackendScenarios.get(requestId);
+  if (configured !== undefined) return configured;
+  if (
+    typeof shouldHoldPreviewInspectorNeuralTransientTargetRequest === 'function' &&
+    shouldHoldPreviewInspectorNeuralTransientTargetRequest(request)
+  ) {
+    const pending = {
+      latencyMs: 0,
+      mode: 'pending',
+      status: 200,
+    };
+    previewInspectorSession.temporalBackendScenarioOverrides.set(requestId, pending);
+    return pending;
+  }
+  return {
     latencyMs: 0,
     mode: 'success',
     status: 200,
@@ -102,19 +126,24 @@ function setPreviewInspectorVirtualBackendScenario(requestId, scenario) {
   if (!previewInspectorSession.dataRequests.has(requestId)) return;
   const normalized = normalizePreviewInspectorVirtualBackendScenario(scenario);
   const previous = readPreviewInspectorVirtualBackendScenario(requestId);
+  const temporal = previewInspectorSession.temporalBackendScenarioOverrides.delete(requestId);
   if (stringifyPreviewInspectorProps(previous) === stringifyPreviewInspectorProps(normalized)) return;
   if (normalized.mode === 'success' && normalized.status === 200 && normalized.latencyMs === 0) {
     previewInspectorSession.virtualBackendScenarios.delete(requestId);
   } else {
     previewInspectorSession.virtualBackendScenarios.set(requestId, normalized);
   }
+  if (temporal) releasePreviewInspectorVirtualBackendPendingRequests([requestId]);
   commitPreviewInspectorDataChange();
 }
 
 /** Removes a request-specific transport scenario and restores an immediate 200 response. */
 function resetPreviewInspectorVirtualBackendScenario(requestId) {
   initializePreviewInspectorVirtualBackendState();
-  if (!previewInspectorSession.virtualBackendScenarios.delete(requestId)) return;
+  const temporal = previewInspectorSession.temporalBackendScenarioOverrides.delete(requestId);
+  const stored = previewInspectorSession.virtualBackendScenarios.delete(requestId);
+  if (!temporal && !stored) return;
+  if (temporal) releasePreviewInspectorVirtualBackendPendingRequests([requestId]);
   commitPreviewInspectorDataChange();
 }
 
@@ -570,7 +599,7 @@ function resolvePreviewInspectorVirtualBackendRequest(
 ) {
   initializePreviewInspectorVirtualBackendState();
   const descriptor = createPreviewInspectorVirtualBackendDescriptor(record, requestContext);
-  const scenario = readPreviewInspectorVirtualBackendScenario(record.id);
+  const scenario = readPreviewInspectorVirtualBackendScenario(record.id, record);
   let payload;
   if (scenario.mode === 'empty') {
     payload = createPreviewInspectorVirtualBackendEmptyPayload(record.shape);
@@ -608,6 +637,7 @@ function resolvePreviewInspectorVirtualBackendRequest(
     resourceKey: descriptor.resourceKey,
     mutationKey: descriptor.mutationKey,
     payloadMode,
+    requestId: record.id,
     scenario: scenario.mode,
     stateful: record.kind === 'rest',
     status: scenario.status,
@@ -645,8 +675,36 @@ function resetPreviewInspectorVirtualBackendResource(requestId) {
   if (changed) commitPreviewInspectorDataChange();
 }
 
-/** Waits for a configured preview latency without using a project-supplied timer implementation. */
-async function waitForPreviewInspectorVirtualBackendLatency(latencyMs) {
+/** Releases held viewer requests when a time contract changes path or the user resumes the app. */
+function releasePreviewInspectorVirtualBackendPendingRequests(requestIds) {
+  initializePreviewInspectorVirtualBackendState();
+  const ids = Array.isArray(requestIds)
+    ? requestIds
+    : [...previewInspectorSession.virtualBackendPendingWaiters.keys()];
+  let released = 0;
+  for (const requestId of ids) {
+    const waiters = previewInspectorSession.virtualBackendPendingWaiters.get(requestId);
+    if (!(waiters instanceof Set)) continue;
+    previewInspectorSession.virtualBackendPendingWaiters.delete(requestId);
+    for (const resolve of waiters) {
+      try { resolve(); } catch { /* A released preview waiter is best-effort. */ }
+      released += 1;
+    }
+  }
+  return released;
+}
+
+/** Waits for configured latency or holds a viewer-owned request at its loading checkpoint. */
+async function waitForPreviewInspectorVirtualBackendLatency(latencyMs, pending, requestId) {
+  if (pending === true && typeof requestId === 'string' && requestId.length > 0) {
+    initializePreviewInspectorVirtualBackendState();
+    await new Promise((resolve) => {
+      const waiters = previewInspectorSession.virtualBackendPendingWaiters.get(requestId) ?? new Set();
+      waiters.add(resolve);
+      previewInspectorSession.virtualBackendPendingWaiters.set(requestId, waiters);
+    });
+    return;
+  }
   if (!(latencyMs > 0) || typeof previewInspectorBackendSetTimeout !== 'function') return;
   await new Promise((resolve) => previewInspectorBackendSetTimeout(resolve, latencyMs));
 }

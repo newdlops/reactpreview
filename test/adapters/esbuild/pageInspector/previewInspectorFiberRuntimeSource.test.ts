@@ -19,6 +19,7 @@ interface FakeHostElement {
 /** Private fields represented by the fixtures; production code deliberately accepts unknown Fiber. */
 interface FakeFiber {
   _debugSource?: Record<string, unknown>;
+  alternate?: FakeFiber;
   child?: FakeFiber;
   elementType?: unknown;
   memoizedProps?: unknown;
@@ -85,6 +86,7 @@ interface FiberRuntimeApi {
     snapshot: FiberTreeSnapshot,
     host: FakeHostElement,
   ) => FiberTreeSelection | undefined;
+  readonly readBoundary: (boundary: unknown) => unknown;
   readonly select: (snapshot: FiberTreeSnapshot, id: string) => FiberTreeSelection | undefined;
 }
 
@@ -102,6 +104,32 @@ interface FiberFixture {
 }
 
 describe('preview Inspector Fiber runtime source', () => {
+  /** Uses the HostRoot current pointer instead of accepting a populated but stale alternate. */
+  it('reads the currently committed boundary Fiber after alternating React updates', () => {
+    const runtime = evaluateFiberRuntime();
+    const boundary: Record<string, unknown> = {};
+    const staleBoundary = createFiber(1, namedComponent('PreviewInspectorTargetBoundary'));
+    const currentBoundary = createFiber(1, namedComponent('PreviewInspectorTargetBoundary'));
+    staleBoundary.stateNode = boundary;
+    currentBoundary.stateNode = boundary;
+    staleBoundary.alternate = currentBoundary;
+    currentBoundary.alternate = staleBoundary;
+    connectChildren(staleBoundary, [createFiber(0, namedComponent('StaleEmptyTarget'))]);
+    connectChildren(currentBoundary, [createFiber(0, namedComponent('CommittedBadge'))]);
+    const staleRoot = createFiber(3);
+    const currentRoot = createFiber(3);
+    const rootState = { current: currentRoot };
+    staleRoot.stateNode = rootState;
+    currentRoot.stateNode = rootState;
+    staleRoot.alternate = currentRoot;
+    currentRoot.alternate = staleRoot;
+    connectChildren(staleRoot, [staleBoundary]);
+    connectChildren(currentRoot, [currentBoundary]);
+    boundary._reactInternals = staleBoundary;
+
+    expect(runtime.readBoundary(boundary)).toBe(currentBoundary);
+  });
+
   /** Collects parents, siblings, descendants, static source fallback, props, and hook state. */
   it('creates a bounded project tree with the exact target selected', () => {
     const runtime = evaluateFiberRuntime();
@@ -310,7 +338,7 @@ describe('preview Inspector Fiber runtime source', () => {
   });
 
   it('does not reserve a compiler-authenticated boundary without Fiber or hosts', () => {
-    const collect = (authenticatedBoundary: boolean) =>
+    const collect = (authenticatedBoundary: boolean): FiberTreeSnapshot =>
       evaluateFiberRuntime([], authenticatedBoundary).collect(
         [{ boundary: {}, exportName: 'SelectedPage', sourcePath: '/workspace/SelectedPage.ts' }],
         undefined,
@@ -794,6 +822,7 @@ globalThis.__fiberRuntime = {
   collect: collectPreviewInspectorFiberTree,
   collectElements: collectPreviewInspectorFiberElements,
   findByHost: findPreviewInspectorFiberTreeNodeByHost,
+  readBoundary: readPreviewInspectorBoundaryFiber,
   select: selectPreviewInspectorFiberTreeNode,
 };`;
   vm.runInNewContext(source, context);
@@ -942,6 +971,7 @@ function findTreeNode(nodes: readonly FiberTreeNode[], name: string): FiberTreeN
   return undefined;
 }
 
+/** Flattens one bounded fixture tree for concise descendant assertions. */
 function flattenTree(nodes: readonly FiberTreeNode[]): readonly FiberTreeNode[] {
   return nodes.flatMap((node) => [node, ...flattenTree(node.children)]);
 }

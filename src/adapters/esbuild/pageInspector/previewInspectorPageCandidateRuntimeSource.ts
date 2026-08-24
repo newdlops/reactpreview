@@ -3,6 +3,10 @@
  * Candidate modules stay behind dynamic imports, so discovering several caller paths does not make
  * initial preview evaluation proportional to the number of possible pages.
  */
+import { createPreviewInspectorNeuralPageContextRuntimeSource } from './previewInspectorNeuralPageContextRuntimeSource';
+import { createPreviewInspectorPageContextExecutionContractRuntimeSource } from './previewInspectorPageContextExecutionContractRuntimeSource';
+import { createPreviewInspectorPageContextPathSurfaceRuntimeSource } from './previewInspectorPageContextPathSurfaceRuntimeSource';
+import { createPreviewInspectorPageCandidateSelectionRuntimeSource } from './previewInspectorPageCandidateSelectionRuntimeSource';
 
 /**
  * Creates candidate selection, persistence, lazy loading, and root-prop composition helpers.
@@ -13,7 +17,17 @@
  * @returns Plain JavaScript source concatenated into the browser-owned Inspector runtime.
  */
 export function createPreviewInspectorPageCandidateRuntimeSource(): string {
+  const neuralPageContextRuntimeSource = createPreviewInspectorNeuralPageContextRuntimeSource();
+  const pageContextExecutionContractRuntimeSource =
+    createPreviewInspectorPageContextExecutionContractRuntimeSource();
+  const pageContextPathSurfaceRuntimeSource =
+    createPreviewInspectorPageContextPathSurfaceRuntimeSource();
+  const pageCandidateSelectionRuntimeSource =
+    createPreviewInspectorPageCandidateSelectionRuntimeSource();
   return String.raw`
+${neuralPageContextRuntimeSource}
+${pageContextExecutionContractRuntimeSource}
+${pageContextPathSurfaceRuntimeSource}
 /** Returns selectable page roots, synthesizing the legacy single-root contract when necessary. */
 function readPreviewInspectorPageCandidates(descriptor) {
   const inspector = descriptor?.inspector;
@@ -139,8 +153,14 @@ function selectPreviewInspectorRouteBranch(branch) {
 /** Resolves the persisted candidate id against the current descriptor after every hot rebuild. */
 function readSelectedPreviewInspectorPageCandidate(descriptor) {
   const candidates = readPreviewInspectorPageCandidates(descriptor);
-  return candidates.find((candidate) => candidate?.id === previewInspectorSession.selectedPageCandidateId) ??
-    candidates[0];
+  const selected = candidates.find(
+    (candidate) => candidate?.id === previewInspectorSession.selectedPageCandidateId,
+  );
+  if (
+    selected === undefined && candidates.length > 0 &&
+    typeof schedulePreviewInspectorNeuralPageContextSelection === 'function'
+  ) schedulePreviewInspectorNeuralPageContextSelection();
+  return selected ?? candidates[0];
 }
 
 /** Returns the candidate-local hook/HOC context before the legacy plan-wide fallback. */
@@ -167,6 +187,10 @@ function readSelectedPreviewInspectorPageExecutionCandidate(descriptor) {
 /** Reconciles browser state with the single caller path actually compiled into this artifact. */
 function reconcilePreviewInspectorPageCandidateSelection(candidateIds) {
   const descriptor = findSelectedPreviewInspectorDescriptor();
+  const neuralSelection =
+    typeof reconcilePreviewInspectorNeuralPageContextSelection === 'function'
+      ? reconcilePreviewInspectorNeuralPageContextSelection(descriptor)
+      : undefined;
   const executableCandidateId = descriptor?.inspector?.executablePageCandidateId;
   if (typeof executableCandidateId === 'string' && candidateIds.includes(executableCandidateId)) {
     if (previewInspectorSession.selectedPageCandidateId === executableCandidateId) return false;
@@ -176,7 +200,7 @@ function reconcilePreviewInspectorPageCandidateSelection(candidateIds) {
   const userSelection = previewInspectorSession.userSelectedPageCandidateId;
   const nextId = typeof userSelection === 'string' && candidateIds.includes(userSelection)
     ? userSelection
-    : candidateIds[0] ?? '';
+    : neuralSelection?.candidate?.id ?? candidateIds[0] ?? '';
   if (previewInspectorSession.selectedPageCandidateId === nextId) return false;
   previewInspectorSession.selectedPageCandidateId = nextId;
   return true;
@@ -479,50 +503,12 @@ function createPreviewInspectorPageCandidateHealthSummary(candidate) {
   };
 }
 
-/** Selects one authored caller path and asks the root, tree, and highlight layers to reconcile. */
-function selectPreviewInspectorPageCandidate(candidateId) {
-  if (typeof candidateId !== 'string' || candidateId.length === 0) return;
-  const descriptor = findSelectedPreviewInspectorDescriptor();
-  if (!readPreviewInspectorPageCandidates(descriptor).some((candidate) => candidate?.id === candidateId)) {
-    return;
-  }
-  const preferenceChanged = previewInspectorSession.userSelectedPageCandidateId !== candidateId;
-  previewInspectorSession.userSelectedPageCandidateId = candidateId;
-  const executableCandidateId = descriptor?.inspector?.executablePageCandidateId;
-  if (
-    candidateId !== executableCandidateId &&
-    typeof previewInspectorPostHostMessage === 'function'
-  ) {
-    previewInspectorSession.pendingPageCandidateId = candidateId;
-    previewInspectorSession.pendingPageCandidateInteractionId =
-      'page:' + String(readPreviewInspectorHostRuntimeRevision()) + ':' +
-      String(++previewInspectorSession.interactionSequence);
-    previewInspectorSession.pendingPageCandidateRevision = previewEntryRevision;
-    if (preferenceChanged) persistPreviewInspectorState();
-    notifyPreviewInspector();
-    previewInspectorPostHostMessage({
-      candidateId,
-      interactionId: previewInspectorSession.pendingPageCandidateInteractionId,
-      runtimeRevision: readPreviewInspectorHostRuntimeRevision(),
-      type: 'react-preview-inspector-page-candidate-selected',
-    });
-    return;
-  }
-  if (previewInspectorSession.selectedPageCandidateId === candidateId) {
-    if (preferenceChanged) persistPreviewInspectorState();
-    return;
-  }
-  resetPreviewInspectorTargetReachability();
-  previewInspectorSession.selectedPageCandidateId = candidateId;
-  previewInspectorSession.selectedTreeNodeId = undefined;
-  persistPreviewInspectorState();
-  notifyPreviewInspector();
-  schedulePreviewInspectorCommitRefresh();
-}
+${pageCandidateSelectionRuntimeSource}
 
 /** Applies host transaction outcomes without treating a new entry module as proof of success. */
 function handlePreviewInspectorSelectionStatus(message) {
   if (message?.type === 'react-preview-progress') {
+    handlePreviewInspectorPageCandidateProgress(message);
     if (
       previewInspectorSession.pendingRouteBranchId !== undefined &&
       Number.isSafeInteger(message.revision) &&
@@ -573,22 +559,7 @@ function handlePreviewInspectorSelectionStatus(message) {
     notifyPreviewInspector();
     return;
   }
-  if (message?.type !== 'react-preview-inspector-page-candidate-selection-status') return;
-  if (message.interactionId !== previewInspectorSession.pendingPageCandidateInteractionId) return;
-  if (message.status === 'committed') {
-    previewInspectorSession.pendingPageCandidateId = undefined;
-    previewInspectorSession.pendingPageCandidateInteractionId = undefined;
-    previewInspectorSession.pendingPageCandidateRevision = undefined;
-  } else if (
-    message.status === 'failed' ||
-    message.status === 'cancelled' ||
-    message.status === 'rejected'
-  ) {
-    previewInspectorSession.pendingPageCandidateId = undefined;
-    previewInspectorSession.pendingPageCandidateInteractionId = undefined;
-    previewInspectorSession.pendingPageCandidateRevision = undefined;
-  }
-  notifyPreviewInspector();
+  handlePreviewInspectorPageCandidateSelectionStatus(message);
 }
 
 /**

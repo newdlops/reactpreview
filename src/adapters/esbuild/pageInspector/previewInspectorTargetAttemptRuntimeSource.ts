@@ -72,6 +72,30 @@ function isPreviewInspectorTargetAutoAttemptPending(state) {
     Date.now() - attempt.settledAt <= PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS;
 }
 
+/**
+ * Allows a minimum-shape search to layer another admitted value through the error it inherited.
+ * The trace recorder marks this only when the same semantic failure was already mounted before
+ * the transaction began, or when a compiler-proven repair exposed a deeper retained exception;
+ * an unrelated new error still follows the ordinary rollback path.
+ */
+function canContinuePreviewInspectorMinimumRequirementsThroughBaselineError(state) {
+  const attempt = previewInspectorSession.blockerTraceActiveAttempt;
+  if (
+    !['deterministic-minimum-auto', 'minimum-requirement-dfs'].includes(
+      attempt?.autoMode,
+    ) ||
+    attempt?.settledAt === undefined ||
+    readPreviewInspectorTargetAutoAttemptReachabilityKey(attempt) !== state?.key ||
+    typeof attempt?.retainedBaselineFatalError?.message !== 'string'
+  ) return false;
+  const currentError = state?.targetOutputError ??
+    (typeof readPreviewInspectorRuntimeHealthTargetError === 'function'
+      ? readPreviewInspectorRuntimeHealthTargetError(state?.targetExportName)
+      : undefined);
+  return typeof currentError?.message === 'string' &&
+    currentError.message === attempt.retainedBaselineFatalError.message;
+}
+
 /** Compatibility bridge for generated entries cached before the generic lock was introduced. */
 function isPreviewInspectorTargetConditionAttemptPending(state) {
   return isPreviewInspectorTargetAutoAttemptPending(state);
@@ -165,7 +189,18 @@ function resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt) {
   const state = previewInspectorSession.targetReachabilityByKey?.get?.(reachabilityKey);
   if (state === undefined) return false;
   const rolledBack = rollbackPreviewInspectorNoProgressTargetAutoAttempt(attempt, state);
+  const neuralRetry = attempt.runtimeFallbackNeuralRetry;
+  attempt.runtimeFallbackNeuralRetry = undefined;
   attempt.targetReachabilityResumeHandled = true;
+  if (
+    neuralRetry !== undefined &&
+    typeof commitPreviewInspectorRuntimeNeuralRecommendationRetry === 'function'
+  ) {
+    return commitPreviewInspectorRuntimeNeuralRecommendationRetry(
+      neuralRetry.exportName,
+      neuralRetry.reachabilityKey,
+    );
+  }
   if (rolledBack) {
     /*
      * A no-progress JSX gate was removed and session-rejected successfully. That rollback changes

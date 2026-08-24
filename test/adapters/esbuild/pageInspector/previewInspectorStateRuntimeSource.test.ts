@@ -12,6 +12,13 @@ describe('Preview Inspector state runtime source', () => {
     expect(source).toContain(
       'userSelectedPageCandidateId: previewInspectorSession.userSelectedPageCandidateId',
     );
+    expect(source).toContain(
+      'verifiedPageCandidateId: previewInspectorSession.verifiedPageCandidateId',
+    );
+    expect(source).toContain(
+      'verifiedPageContextScope: previewInspectorSession.verifiedPageContextScope',
+    );
+    expect(source).toContain('serializePreviewInspectorNeuralResidualModel()');
     expect(source).not.toContain('resolverPropsByExport');
     expect(source).not.toContain('resolverPropsRevision');
   });

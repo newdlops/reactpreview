@@ -322,6 +322,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
       badge: 'NOT VISIBLE',
       description:
         'The page reached this file, but its current branch returned no visible element. Common causes are an OFF condition, missing data, or an intentional null return.',
+      icon: '?',
       revealed: 'target-reachability:fixture',
       selected: 'target-reachability:fixture',
       steps: ['Page loaded', 'File ran', 'Nothing visible'],
@@ -371,14 +372,33 @@ describe('Preview Inspector page-candidate runtime source', () => {
         targetMounted: true,
       }),
     ).toMatchObject({ badge: 'PAGE READY' });
+    expect(
+      evaluatePageCandidateUiStatus(
+        {
+          pageRootCommitted: true,
+          status: 'page-blocked',
+          targetHasOutput: false,
+          targetMounted: true,
+        },
+        { collecting: true, successCount: 2 },
+      ),
+    ).toMatchObject({
+      action: '2 path(s) saved',
+      icon: '◇',
+      title: 'Collecting rendered paths',
+    });
   });
 });
 
 /** Executes the pure page-status helpers without mounting the companion UI or project React tree. */
-function evaluatePageCandidateUiStatus(reachability: Record<string, unknown>): {
+function evaluatePageCandidateUiStatus(
+  reachability: Record<string, unknown>,
+  neuralStatus?: Record<string, unknown>,
+): {
   readonly action?: string;
   readonly badge: string;
   readonly description: string;
+  readonly icon: string;
   readonly revealed?: string;
   readonly selected?: string;
   readonly steps?: readonly string[];
@@ -386,11 +406,13 @@ function evaluatePageCandidateUiStatus(reachability: Record<string, unknown>): {
 } {
   const context: {
     __result?: ReturnType<typeof evaluatePageCandidateUiStatus>;
+    neuralStatus?: Record<string, unknown>;
     reachability: Record<string, unknown>;
-  } = { reachability };
+  } = neuralStatus === undefined ? { reachability } : { neuralStatus, reachability };
   vm.runInNewContext(
     `${createPreviewInspectorPageCandidateUiRuntimeSource()}
 function readPreviewInspectorRenderScenario() { return 'authored-page'; }
+function readPreviewInspectorNeuralLearningStatus() { return globalThis.neuralStatus; }
 function readPreviewInspectorActiveBlockerSummary() {
   return {
     active: [{ blockerKind: 'target-reachability', id: 'target' }],
@@ -414,6 +436,16 @@ function readPreviewInspectorTargetReachabilityBlockers() {
 function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
   return { id: blocker.id, name: 'Target output' };
 }
+function isPreviewInspectorTargetReachabilityResolving(blocker) {
+  return ['searching', 'resolving'].includes(blocker?.status);
+}
+function readPreviewInspectorResolutionKind(node) {
+  return node?.blockerKind === 'target-reachability' &&
+    isPreviewInspectorTargetReachabilityResolving(node?.blocker)
+    ? 'automatic'
+    : 'choice';
+}
+function selectPreviewInspectorMainComponent() { selected = 'main-component'; }
 function requestPreviewInspectorTreeReveal(nodeId) { revealed = nodeId; }
 function selectPreviewInspectorUiNode(node) { selected = node.id; }
 const status = readPreviewInspectorFriendlyPageStatus(globalThis.reachability);
@@ -422,6 +454,7 @@ globalThis.__result = {
   action: status.action,
   badge: formatPreviewInspectorPageCorridorStatus(globalThis.reachability),
   description: status.description,
+  icon: status.icon,
   revealed,
   selected,
   steps: status.steps?.map((step) => step.label),

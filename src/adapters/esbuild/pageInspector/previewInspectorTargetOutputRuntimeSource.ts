@@ -634,7 +634,7 @@ function isPreviewInspectorTargetElementType(type) {
  * tag it. Element-type identity is stronger than a display-name match: the target boundary received
  * this exact compiler-selected value and the live Fiber using the same value committed DOM below it.
  */
-function hasPreviewInspectorDirectTargetElementOutput(boundary) {
+function hasPreviewInspectorDirectTargetElementOutput(boundary, state) {
   const boundaryProps = readPreviewInspectorOwnData(boundary, 'props');
   const targetElement = readPreviewInspectorOwnData(boundaryProps, 'children');
   const targetType = readPreviewInspectorOwnData(targetElement, 'type');
@@ -665,12 +665,14 @@ function hasPreviewInspectorDirectTargetElementOutput(boundary) {
   const isConnectedProjectHost = (fiber) => {
     if (classifyPreviewInspectorFiber(fiber) !== 'host') return false;
     const node = readPreviewInspectorOwnData(fiber, 'stateNode');
-    return (
-      node?.nodeType === 1 &&
-      node.isConnected === true &&
-      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null &&
-      hasPreviewInspectorRenderableHostGeometry(node)
-    );
+    if (
+      node?.nodeType !== 1 || node.isConnected !== true ||
+      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') !== null
+    ) return false;
+    if (hasPreviewInspectorRenderableHostGeometry(node)) return true;
+    if (!hasPreviewInspectorStableClippedHostGeometry(node)) return false;
+    state.targetLayoutClippedOutput = true;
+    return true;
   };
   if (isConnectedProjectHost(targetFiber)) return true;
   const targetChild = readPreviewInspectorFiberLink(targetFiber, 'child');
@@ -868,7 +870,8 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
     boundary,
     expected,
   );
-  const directTargetElementOutput = hasPreviewInspectorDirectTargetElementOutput(boundary);
+  state.targetLayoutClippedOutput = false;
+  const directTargetElementOutput = hasPreviewInspectorDirectTargetElementOutput(boundary, state);
   const detachedBoundaryOutput = hasPreviewInspectorDetachedTargetBoundaryOutput(boundary, state);
   state.targetProjectedCompatibilityOutput = projectedCompatibilityOutput;
   state.targetDirectElementOutput = directTargetElementOutput;

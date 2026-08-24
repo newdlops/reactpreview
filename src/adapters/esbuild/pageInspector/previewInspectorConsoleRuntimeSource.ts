@@ -244,6 +244,9 @@ function recordPreviewInspectorConsoleEntry(candidate = {}) {
   if (typeof recordPreviewInspectorRuntimeHealthError === 'function') {
     recordPreviewInspectorRuntimeHealthError(entry);
   }
+  if (typeof observePreviewInspectorNeuralPageContextConsoleEntry === 'function') {
+    observePreviewInspectorNeuralPageContextConsoleEntry(entry);
+  }
   schedulePreviewInspectorConsoleNotification();
   return entry;
 }

@@ -34,6 +34,7 @@ const PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT = 8;
 const PREVIEW_INSPECTOR_TARGET_INITIAL_PROBE_DELAY_MS = 160;
 const PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS = 48;
 const PREVIEW_INSPECTOR_TARGET_DIRECT_PROBE_DELAY_MS = 32;
+const PREVIEW_INSPECTOR_TARGET_NEURAL_RENDER_SETTLE_DELAY_MS = 96;
 ${requirementFrontierRuntimeSource}
 ${requirementConvergenceRuntimeSource}
 ${pageTabActivationRuntimeSource}
@@ -251,7 +252,7 @@ function requestPreviewInspectorContextualTargetFallback(state) {
   const claim = previewInspectorSession.contextualTargetFallbackClaimsByKey.get(state.key);
   const [roleToken, owner] = roles?.entries?.().next().value ?? [];
   if (state.contextualTargetFallbackRequested === true) {
-    return state.directTarget !== true &&
+    const committedFallback = state.directTarget !== true &&
       state.pageRootCommitted === true &&
       state.targetHasOutput !== true &&
       state.pendingTargetRepairFailure === undefined &&
@@ -262,6 +263,17 @@ function requestPreviewInspectorContextualTargetFallback(state) {
       (previewInspectorSession.contextualTargetFallbackCountByKey.get(state.key) ?? 0) === 1 &&
       claim?.status === 'committed' && claim.key === state.key &&
       claim.owner === owner && claim.roleToken === roleToken;
+    // A committed fallback is only a bounded probe. Once its target has mounted without host
+    // output for the normal idle budget, return control to the Page Execution retry lane instead
+    // of permanently masking a compiler-proven contextual execution candidate.
+    if (
+      committedFallback &&
+      (state.targetMounted === true || state.targetWasMounted === true) &&
+      state.idlePasses >= PREVIEW_INSPECTOR_TARGET_REACHABILITY_IDLE_LIMIT
+    ) {
+      return false;
+    }
+    return committedFallback;
   }
   const mountedTransparentChildren = state?.targetMounted === true;
   const mountedDecision = mountedTransparentChildren
@@ -431,6 +443,41 @@ function resumePreviewInspectorTargetReachabilityAfterManualCondition(conditionI
     search.pass < PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT
   ) {
     search.status = 'searching';
+  }
+  return true;
+}
+
+/**
+ * Reopens the same authored-page corridor after a neural hook recommendation changes its inputs.
+ *
+ * A failed target may already have exhausted its page-execution lane by the time the nested hook
+ * shape is learned. Refreshing only the selected export cannot remount an ancestor gate that the
+ * failed transaction rolled back. This reset retains every proven branch/value decision, clears
+ * only the superseded target error, and gives the existing bounded traversal a fresh probe budget.
+ */
+function resumePreviewInspectorTargetReachabilityAfterNeuralRecommendation(reachabilityKey) {
+  initializePreviewInspectorTargetReachabilityState();
+  if (
+    typeof reachabilityKey !== 'string' || reachabilityKey.length === 0 ||
+    previewInspectorSession.activeTargetReachabilityKey !== reachabilityKey
+  ) return false;
+  const state = previewInspectorSession.targetReachabilityByKey.get(reachabilityKey);
+  if (
+    state === undefined || state.directTarget === true || state.targetHasOutput === true ||
+    ['resolver-cycle-detected', 'resolver-limit-reached'].includes(state.status)
+  ) return false;
+  state.attempt = 0;
+  state.blockedWarningReported = false;
+  state.exhausted = false;
+  state.idlePasses = 0;
+  state.status = 'probing-after-neural-recommendation';
+  state.targetMounted = false;
+  state.targetOutputError = undefined;
+  state.targetOutputRecoveryPending = false;
+  state.targetWasMounted = false;
+  state.probeRevision = (Number.isSafeInteger(state.probeRevision) ? state.probeRevision : 0) + 1;
+  if (typeof clearPreviewInspectorRuntimeHealthTargetError === 'function') {
+    clearPreviewInspectorRuntimeHealthTargetError(state.targetExportName);
   }
   return true;
 }
@@ -604,6 +651,14 @@ function readPreviewInspectorStandaloneTargetReachabilityState(descriptor) {
   state.pageRootCommitted = state.targetMounted;
   if (state.targetMounted) {
     state.targetHasOutput = hasPreviewInspectorTargetHostOutput(state);
+  }
+  if (
+    state.targetHasOutput === true &&
+    typeof recordPreviewInspectorNeuralSuccessfulPath === 'function'
+  ) {
+    recordPreviewInspectorNeuralSuccessfulPath(state);
+  } else if (typeof handlePreviewInspectorNeuralSuccessfulPathRestorationFailure === 'function') {
+    handlePreviewInspectorNeuralSuccessfulPathRestorationFailure(state);
   }
   state.status = state.targetHasOutput
     ? 'reached'
@@ -875,7 +930,11 @@ function markPreviewInspectorTargetReachabilityMount(exportName) {
   if (typeof key !== 'string') return;
   const state = previewInspectorSession.targetReachabilityByKey.get(key);
   if (state === undefined || state.targetExportName !== exportName) return;
+  state.targetMounted = hasMountedPreviewInspectorTarget(state);
   state.targetWasMounted = true;
+  if (typeof settlePreviewInspectorNeuralRenderStateTarget === 'function') {
+    settlePreviewInspectorNeuralRenderStateTarget(state);
+  }
 }
 /**
  * Reads the target-output verifier's static proof for a selected export that only navigates.
@@ -887,6 +946,22 @@ function hasPreviewInspectorIntentionalNavigationTargetOutput(state) {
   const detector = hasPreviewInspectorResolvedTargetOutput.hasIntentionalNavigationOutput;
   return typeof detector === 'function' && detector(state) === true;
 }
+
+/**
+ * Lets an exact target revived by a learned render-state value supersede an older contextual probe.
+ * Contextual fallback normally stays fail-closed around its one retained-route boundary. Once the
+ * neural head has selected state for this exact source, however, that original boundary can acquire
+ * authored output in place and must be evaluated again instead of remaining permanently shadowed.
+ */
+function readPreviewInspectorTargetResolutionBoundaries(state) {
+  const exactBoundaries = readPreviewInspectorTargetBoundaries(state);
+  if (state?.contextualTargetFallbackRequested !== true) return exactBoundaries;
+  if (
+    typeof hasPreviewInspectorNeuralRenderStateForSource === 'function' &&
+    hasPreviewInspectorNeuralRenderStateForSource(state.targetSourcePath)
+  ) return exactBoundaries;
+  return new Set([readPreviewInspectorContextualTargetBoundary(state)].filter(Boolean));
+}
 /**
  * Requires the selected boundary to own connected host output and to remain error-free.
  * A HOC can mount the facade boundary and immediately return Navigate/null before invoking the
@@ -895,9 +970,7 @@ function hasPreviewInspectorIntentionalNavigationTargetOutput(state) {
  * the route and therefore cannot retain either a host node or its boundary at settled observation.
  */
 function hasPreviewInspectorTargetHostOutput(state) {
-  const boundaries = state.contextualTargetFallbackRequested === true
-    ? new Set([readPreviewInspectorContextualTargetBoundary(state)].filter(Boolean))
-    : readPreviewInspectorTargetBoundaries(state);
+  const boundaries = readPreviewInspectorTargetResolutionBoundaries(state);
   state.targetHasAnyHostOutput = false;
   state.targetDeferredCallbackPending = false;
   state.targetOutputKind = 'none';
@@ -929,9 +1002,7 @@ function hasPreviewInspectorTargetHostOutput(state) {
 }
 /** Stops automatic branch traversal while the selected target owns a contained render failure. */
 function hasPreviewInspectorTargetRenderError(state) {
-  const boundaries = state.contextualTargetFallbackRequested === true
-    ? new Set([readPreviewInspectorContextualTargetBoundary(state)].filter(Boolean))
-    : readPreviewInspectorTargetBoundaries(state);
+  const boundaries = readPreviewInspectorTargetResolutionBoundaries(state);
   return boundaries instanceof Set &&
     [...boundaries].some((boundary) => boundary?.state?.error !== undefined);
 }
@@ -947,7 +1018,15 @@ function hasReachedPreviewInspectorPageCorridor(state) {
  * hooks stay interactive unless the compiler also proved one exact target-visible scalar.
  */
 function readPreviewInspectorDeterministicRequirementEvidence(descriptor, candidate, state) {
-  const batch = readPreviewInspectorRequirementBatch(descriptor, candidate, state, true);
+  const preferNeural = typeof readPreviewInspectorNeuralLearningModelUpdates === 'function' &&
+    readPreviewInspectorNeuralLearningModelUpdates() > 0;
+  const batch = readPreviewInspectorRequirementBatch(
+    descriptor,
+    candidate,
+    state,
+    true,
+    { preferNeural },
+  );
   const admittedHookIds = new Set(batch.hookIds);
   const admittedRequestIds = new Set(batch.requestIds);
   const hookIds = readPreviewInspectorRuntimeFallbacks()
@@ -969,7 +1048,11 @@ function readPreviewInspectorDeterministicRequirementEvidence(descriptor, candid
     )
     .map((record) => record.id)
     .slice(0, 24);
-  return { hookIds, requestIds };
+  const narrowed = { hookIds, requestIds };
+  return batch.neuralResidualDecision === undefined ||
+    (hookIds.length === 0 && requestIds.length === 0)
+    ? narrowed
+    : { ...narrowed, neuralResidualDecision: batch.neuralResidualDecision };
 }
 
 /**
@@ -1011,7 +1094,19 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
   const preserveUserValues = search.origin !== 'user';
   const batch = search.origin === 'deterministic-auto'
     ? readPreviewInspectorDeterministicRequirementEvidence(descriptor, candidate, state)
-    : readPreviewInspectorRequirementBatch(descriptor, candidate, state, preserveUserValues);
+    : readPreviewInspectorRequirementBatch(
+        descriptor,
+        candidate,
+        state,
+        preserveUserValues,
+        {
+          excludedCandidateIds: search.excludedCandidateIds,
+          explorationMode: search.explorationMode,
+          explorationOrdinal: search.explorationOrdinal,
+          preferNeural: search.origin === 'user-neural' ||
+            search.origin === 'automatic-neural',
+        },
+      );
   search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
   const frontier = beginPreviewInspectorRequirementFrontier(state, search, batch);
   if (frontier === undefined) return state.exhausted === true;
@@ -1033,6 +1128,12 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
       recordIds: batch.requestIds,
     },
   );
+  const neuralDataFlowEntry = batch.hookIds
+    .map((id) => ({
+      decision: previewInspectorSession.runtimeFallbackNeuralDecisions?.get?.(id),
+      signal: previewInspectorSession.runtimeFallbackDataFlowSignals?.get?.(id),
+    }))
+    .find((entry) => entry.decision !== undefined && entry.signal !== undefined);
   if (!runtimeChanged && !dataChanged) {
     completePreviewInspectorRequirementFrontier(search, frontier, false, state);
     return false;
@@ -1074,12 +1175,21 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
       mode: search.origin === 'deterministic-auto'
         ? 'deterministic-minimum-auto'
         : 'minimum-requirement-dfs',
+      neuralResidualDecision:
+        neuralDataFlowEntry?.decision ?? batch.neuralResidualDecision,
+      neuralDataFlowSignal: neuralDataFlowEntry?.signal,
       ownerName: sourceGate?.ownerName ?? state.rootName,
       reason: 'Downstream hook and backend reads were discovered during the previous DFS pass',
       selectedValue: { backendPayloads, hookValues, nextPass: search.pass + 1 },
       sourcePath: sourceGate?.sourcePath,
       startsRenderAttempt: true,
-      summary: { applicationPath: state.applicationPath },
+      summary: {
+        applicationPath: state.applicationPath,
+        neuralResidual:
+          typeof summarizePreviewInspectorNeuralResidualDecision === 'function'
+            ? summarizePreviewInspectorNeuralResidualDecision(batch.neuralResidualDecision)
+            : undefined,
+      },
     });
   }
   if (runtimeChanged || dataChanged) {
@@ -1220,6 +1330,51 @@ function activatePreviewInspectorDirectTarget(state) {
   notifyPreviewInspector();
   schedulePreviewInspectorTreeRefresh();
 }
+
+/**
+ * Gives a newly selected render state one bounded effect/animation window before more DFS writes.
+ * A drawer commonly commits at width zero and becomes visible on its next animation frame. Advancing
+ * the requirement frontier during that transient frame can remount away an otherwise solved target.
+ */
+function settlePreviewInspectorNeuralRenderStateTarget(state) {
+  const neuralRevision = previewInspectorSession.runtimeFallbackNeuralRevision ?? 0;
+  if (
+    state?.targetMounted !== true || state.targetHasOutput === true || neuralRevision <= 0 ||
+    typeof hasPreviewInspectorNeuralRenderStateForSource !== 'function' ||
+    !hasPreviewInspectorNeuralRenderStateForSource(state.targetSourcePath) ||
+    state.neuralRenderStateSettledRevision === neuralRevision
+  ) return false;
+  if (
+    state.neuralRenderStateSettlingRevision === neuralRevision &&
+    state.neuralRenderStateSettleTimer !== undefined
+  ) {
+    state.status = 'settling-neural-render-state';
+    return true;
+  }
+  if (state.neuralRenderStateSettleTimer !== undefined) {
+    clearTimeout(state.neuralRenderStateSettleTimer);
+  }
+  state.neuralRenderStateSettlingRevision = neuralRevision;
+  state.status = 'settling-neural-render-state';
+  state.neuralRenderStateSettleTimer = setTimeout(() => {
+    state.neuralRenderStateSettleTimer = undefined;
+    if (
+      previewInspectorSession.activeTargetReachabilityKey !== state.key ||
+      state.neuralRenderStateSettlingRevision !== neuralRevision
+    ) return;
+    state.neuralRenderStateSettledRevision = neuralRevision;
+    state.neuralRenderStateSettlingRevision = undefined;
+    state.status = 'probing';
+    state.probeRevision = Number.isSafeInteger(state.probeRevision)
+      ? state.probeRevision + 1
+      : 1;
+    notifyPreviewInspector();
+    schedulePreviewInspectorTreeRefresh();
+    schedulePreviewInspectorCommitRefresh();
+  }, PREVIEW_INSPECTOR_TARGET_NEURAL_RENDER_SETTLE_DELAY_MS);
+  return true;
+}
+
 /** Evaluates one settled commit and advances at most one path gate. */
 function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state) {
   state.targetMounted = hasMountedPreviewInspectorTarget(state);
@@ -1229,6 +1384,14 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   state.targetHasOutput = targetRenderError
     ? false
     : hasPreviewInspectorTargetHostOutput(state);
+  if (
+    state.targetHasOutput === true &&
+    typeof recordPreviewInspectorNeuralSuccessfulPath === 'function'
+  ) {
+    recordPreviewInspectorNeuralSuccessfulPath(state);
+  } else if (typeof handlePreviewInspectorNeuralSuccessfulPathRestorationFailure === 'function') {
+    handlePreviewInspectorNeuralSuccessfulPathRestorationFailure(state);
+  }
   if (
     state.targetMounted !== true &&
     state.targetWasMounted === true &&
@@ -1255,12 +1418,18 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
       schedulePreviewInspectorTreeRefresh();
       return;
     }
+    if (
+      typeof canContinuePreviewInspectorMinimumRequirementsThroughBaselineError === 'function' &&
+      canContinuePreviewInspectorMinimumRequirementsThroughBaselineError(state) &&
+      advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)
+    ) return;
     if (advancePreviewInspectorTargetFailureRequirement(state)) return;
     state.status = 'target-error';
     state.idlePasses = 0;
     schedulePreviewInspectorTreeRefresh();
     return;
   }
+  if (settlePreviewInspectorNeuralRenderStateTarget(state)) return;
   if (
     (state.targetMounted || state.targetWasMounted) &&
     !state.targetHasOutput
@@ -1730,11 +1899,11 @@ function readPreviewInspectorTargetReachabilityBlockers() {
 }
 
 /** Starts bounded convergence across hook/data edges without discarding proven branch choices. */
-function smartFillPreviewInspectorTargetApplicationPath(blocker) {
+function smartFillPreviewInspectorTargetApplicationPath(blocker, options = {}) {
   const reachabilityKey = typeof blocker?.key === 'string' ? blocker.key : '';
   if (reachabilityKey.length === 0) {
     retryPreviewInspectorTargetApplicationPath();
-    return;
+    return true;
   }
   initializePreviewInspectorTargetReachabilityState();
   const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
@@ -1767,8 +1936,22 @@ function smartFillPreviewInspectorTargetApplicationPath(blocker) {
     });
   }
   previewInspectorSession.minimumRequirementSearchByKey.set(reachabilityKey, {
+    excludedCandidateIds: Array.isArray(options?.excludedCandidateIds)
+      ? options.excludedCandidateIds.slice(0, 12)
+      : [],
+    explorationMode: typeof previewInspectorNeuralExplorationModes !== 'undefined' &&
+      previewInspectorNeuralExplorationModes.includes(options?.explorationMode)
+      ? options.explorationMode
+      : undefined,
+    explorationOrdinal: Number.isSafeInteger(options?.explorationOrdinal)
+      ? Math.max(0, options.explorationOrdinal)
+      : 0,
     observedPathCount: state === undefined ? 0 : readPreviewInspectorTargetReachabilityRequiredPaths(state).length,
-    origin: 'user',
+    origin: options?.origin === 'automatic-neural'
+      ? 'automatic-neural'
+      : options?.origin === 'user-neural'
+        ? 'user-neural'
+        : 'user',
     pass: 0,
     status: 'searching',
   });
@@ -1779,7 +1962,7 @@ function smartFillPreviewInspectorTargetApplicationPath(blocker) {
     state.idlePasses = 0;
     state.status = 'searching-requirements';
     state.probeRevision += 1;
-    if (advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)) return;
+    if (advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)) return true;
   }
   previewInspectorSession.renderConditionRevision =
     (previewInspectorSession.renderConditionRevision ?? 0) + 1;
@@ -1787,6 +1970,7 @@ function smartFillPreviewInspectorTargetApplicationPath(blocker) {
   notifyPreviewInspector();
   schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorCommitRefresh();
+  return true;
 }
 
 /** Restarts selected application-path traversal and discards only its automatic branch choices. */

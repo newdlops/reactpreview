@@ -2,6 +2,8 @@
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorDataRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorDataRuntimeSource';
+import { createPreviewInspectorHookGraphqlRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorHookGraphqlRuntimeSource';
+import { createPreviewInspectorNeuralResidualRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorNeuralResidualRuntimeSource';
 import { createPreviewGeneratedListRuntimeSource } from '../../../../src/adapters/esbuild/previewGeneratedListRuntimeSource';
 
 describe('Page Inspector data runtime source', () => {
@@ -176,6 +178,135 @@ describe('Page Inspector data runtime source', () => {
     expect(runtime.smartReachability('page:Target')).toBe(true);
     expect(cloneJson(runtime.requests())[0]).toMatchObject({
       payload: { meetings: [{ id: 'preview-1', status: 'ACTIVE' }] },
+    });
+  });
+
+  /** Fills only the table-bound array and keeps exact filter literals to one diverse exemplar. */
+  it('uses the neural residual to fill compiler-rendered GraphQL table rows in the page corridor', () => {
+    const runtime = evaluateDataRuntime(undefined, 'page:DirectorChangeLogPanel', 'authored-page');
+    const source = `
+      query DirectorPageDirector {
+        director {
+          userActivities { eventType date appointmentDirectorType }
+          auditLogs { id message }
+        }
+      }
+    `;
+    const document = graphqlOperationDocument('DirectorPageDirector', source);
+    runtime.registerGraphqlDemand(
+      document,
+      [
+        'data.director.userActivities.[]',
+        'data.director.userActivities.[].appointmentDirectorType',
+        'data.director.userActivities.[].date',
+        'data.director.userActivities.[].eventType',
+      ],
+      [
+        {
+          path: 'data.director.userActivities.[].eventType',
+          value: 'directorcompensationdecisionevent',
+        },
+      ],
+    );
+    const shape = runtime.inferGraphql(source, 'DirectorPageDirector');
+    const metadata = {
+      id: 'director-page',
+      kind: 'graphql',
+      label: 'DirectorPageDirector',
+      operationName: 'DirectorPageDirector',
+      shape,
+    };
+
+    expect(cloneJson(runtime.resolve(metadata, {}))).toEqual({
+      director: {
+        auditLogs: [],
+        userActivities: [
+          {
+            appointmentDirectorType: 'PREVIEW',
+            date: '2026-01-15T09:00:00.000Z',
+            eventType: 'directorcompensationdecisionevent',
+          },
+          {
+            appointmentDirectorType: 'PREVIEW',
+            date: '2026-01-16T09:00:00.000Z',
+            eventType: 'PREVIEW',
+          },
+          {
+            appointmentDirectorType: 'PREVIEW',
+            date: '2026-01-17T09:00:00.000Z',
+            eventType: 'PREVIEW',
+          },
+        ],
+      },
+    });
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      renderedCollectionRecommendation: {
+        candidateId: 'configured-samples',
+        collectionPaths: ['data.director.userActivities.[]'],
+        neuralResidual: {
+          holeKind: 'rendered-empty-collection-data',
+          score: 0.5,
+          version: 4,
+        },
+        rowCount: 3,
+      },
+    });
+    expect(runtime.setListSampleCount(5)).toBe(true);
+    const resized = cloneJson(runtime.resolve(metadata, {})) as {
+      director: { auditLogs: unknown[]; userActivities: unknown[] };
+    };
+    expect(resized.director.auditLogs).toEqual([]);
+    expect(resized.director.userActivities).toHaveLength(5);
+    expect(
+      (resized.director.userActivities as { eventType: string }[]).filter(
+        ({ eventType }) => eventType !== 'directorcompensationdecisionevent',
+      ),
+    ).toHaveLength(4);
+  });
+
+  /** Places alternative renderer discriminator values in separate rows instead of overwriting row 0. */
+  it('covers every compiler-proven table branch with a distinct generated row', () => {
+    const runtime = evaluateDataRuntime(undefined, 'page:HistoryPanel', 'authored-page');
+    const source = `
+      query HistoryPanel {
+        history { events { eventType date } }
+      }
+    `;
+    const document = graphqlOperationDocument('HistoryPanel', source);
+    runtime.registerGraphqlDemand(
+      document,
+      [
+        'data.history.events.[]',
+        'data.history.events.[].date',
+        'data.history.events.[].eventType',
+      ],
+      ['appointed', 'ended', 'co-ceo'].map((value) => ({
+        path: 'data.history.events.[].eventType',
+        value,
+      })),
+    );
+    const shape = runtime.inferGraphql(source, 'HistoryPanel');
+    const metadata = {
+      id: 'history-panel',
+      kind: 'graphql',
+      label: 'HistoryPanel',
+      operationName: 'HistoryPanel',
+      shape,
+    };
+
+    const payload = cloneJson(runtime.resolve(metadata, {})) as {
+      history: { events: { eventType: string }[] };
+    };
+
+    expect(payload.history.events.map(({ eventType }) => eventType)).toEqual([
+      'appointed',
+      'ended',
+      'co-ceo',
+    ]);
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      renderedCollectionRecommendation: {
+        rowCount: 3,
+      },
     });
   });
 
@@ -967,6 +1098,97 @@ describe('Page Inspector data runtime source', () => {
     expect(nativeFetchCalls).toBe(0);
   });
 
+  /** Holds a loading checkpoint without leaking it into persisted user response scenarios. */
+  it('releases a temporal pending response when the user resumes with a normal scenario', async () => {
+    const runtime = evaluateDataRuntime();
+    const metadata = {
+      id: 'temporal-cards',
+      kind: 'rest',
+      method: 'GET',
+      shape: { fields: { id: { kind: 'string' } }, kind: 'object' },
+      url: '/api/cards',
+    };
+    await runtime.fetch('/api/cards', undefined, metadata);
+    runtime.temporalScenario('temporal-cards');
+    expect(runtime.scenarios()).toEqual({});
+
+    let settled = false;
+    const held = runtime.fetch('/api/cards', undefined, metadata).then((response) => {
+      settled = true;
+      return response;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    runtime.scenario('temporal-cards', { latencyMs: 0, mode: 'success', status: 200 });
+    const response = await held;
+    expect(response.status).toBe(200);
+    expect(settled).toBe(true);
+  });
+
+  it('holds a transient target request before its first loading render settles', async () => {
+    const runtime = evaluateDataRuntime(undefined, 'page:Skeleton', 'authored-page', true);
+    const metadata = {
+      id: 'initial-skeleton-request',
+      kind: 'rest',
+      method: 'GET',
+      shape: { fields: { id: { kind: 'string' } }, kind: 'object' },
+      url: '/api/skeleton',
+    };
+    let settled = false;
+    const held = runtime.fetch('/api/skeleton', undefined, metadata).then((response) => {
+      settled = true;
+      return response;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      virtualBackend: { mode: 'pending' },
+    });
+
+    runtime.scenario('initial-skeleton-request', {
+      latencyMs: 0,
+      mode: 'success',
+      status: 200,
+    });
+    expect((await held).status).toBe(200);
+    expect(settled).toBe(true);
+  });
+
+  it('holds and releases XMLHttpRequest consumers with the same request time contract', async () => {
+    const runtime = evaluateDataRuntime();
+    const initial = runtime.createXhr();
+    initial.open('GET', '/api/temporal-xhr');
+    initial.send();
+    await Promise.resolve();
+    await Promise.resolve();
+    const request = (
+      runtime.requests() as readonly { readonly id: string; readonly url: string }[]
+    ).find((record) => record.url === '/api/temporal-xhr');
+    if (request === undefined) throw new Error('Expected the temporal XHR request to register.');
+    runtime.temporalScenario(request.id);
+
+    let loaded = false;
+    const held = runtime.createXhr();
+    held.onloadend = () => {
+      loaded = true;
+    };
+    held.open('GET', '/api/temporal-xhr');
+    held.send();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(loaded).toBe(false);
+
+    runtime.scenario(request.id, { latencyMs: 0, mode: 'success', status: 200 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(loaded).toBe(true);
+    expect(held.status).toBe(200);
+  });
+
   /** Rejects direct Axios instrumentation with a familiar local error object for error scenarios. */
   it('maps virtual backend failures to Axios-compatible rejections', async () => {
     const runtime = evaluateDataRuntime();
@@ -1015,6 +1237,20 @@ describe('Page Inspector data runtime source', () => {
   });
 });
 
+/** Creates the bounded DocumentNode evidence emitted by graphql-tag for one named query. */
+function graphqlOperationDocument(operationName: string, source: string): object {
+  return {
+    definitions: [
+      {
+        kind: 'OperationDefinition',
+        name: { value: operationName },
+        selectionSet: { selections: [] },
+      },
+    ],
+    loc: { source: { body: source } },
+  };
+}
+
 /** Callable subset exposed from one generated-runtime VM fixture. */
 interface EvaluatedDataRuntime {
   readonly auto: (enabled: boolean) => void;
@@ -1038,18 +1274,28 @@ interface EvaluatedDataRuntime {
     metadata?: unknown,
   ) => Promise<{ readonly ok: boolean; readonly status: number; json(): Promise<unknown> }>;
   readonly generate: (shape: unknown) => unknown;
-  readonly generatedCacheState: () => { readonly hookResets: number; readonly resolverProps: number };
+  readonly generatedCacheState: () => {
+    readonly hookResets: number;
+    readonly resolverProps: number;
+  };
   readonly inferGraphql: (source: string, operationName: string) => unknown;
   readonly lorem: (id: string) => void;
   readonly listSampleCount: () => number;
   readonly paths: (shape: unknown) => readonly string[];
+  readonly registerGraphqlDemand: (
+    document: object,
+    paths: readonly string[],
+    literalDemands: readonly unknown[],
+  ) => unknown;
   readonly requests: () => readonly unknown[];
   readonly resolve: (metadata: unknown, seed: unknown, requestContext?: unknown) => unknown;
   readonly scenario: (id: string, scenario: unknown) => void;
+  readonly scenarios: () => Readonly<Record<string, unknown>>;
   readonly set: (id: string, payload: unknown, mode: string) => void;
   readonly setListSampleCount: (value: number) => boolean;
   readonly smart: (id: string) => void;
   readonly target: (reachabilityKey?: string) => void;
+  readonly temporalScenario: (id: string) => void;
   readonly smartReachability: (
     reachabilityKey: string,
     options?: {
@@ -1064,6 +1310,7 @@ function evaluateDataRuntime(
   nativeFetch?: (...arguments_: unknown[]) => unknown,
   activeTargetReachabilityKey?: string,
   renderScenario = 'file-components',
+  transientTarget = false,
 ): EvaluatedDataRuntime {
   const source = `
 const previewHotRuntime = { inspectorNativeFetch: globalThis.__nativeFetch };
@@ -1079,12 +1326,17 @@ function persistPreviewInspectorState() {}
 function notifyPreviewInspector() {}
 function schedulePreviewInspectorTreeRefresh() {}
 function readPreviewInspectorRenderScenario() { return ${JSON.stringify(renderScenario)}; }
+function shouldHoldPreviewInspectorNeuralTransientTargetRequest() {
+  return ${JSON.stringify(transientTarget)};
+}
 let generatedRuntimeFallbackResetCount = 0;
 function resetPreviewInspectorGeneratedRuntimeFallbackValues() {
   generatedRuntimeFallbackResetCount += 1;
 }
 ${createPreviewGeneratedListRuntimeSource()}
 ${createPreviewInspectorDataRuntimeSource()}
+${createPreviewInspectorNeuralResidualRuntimeSource()}
+${createPreviewInspectorHookGraphqlRuntimeSource()}
 globalThis.__dataRuntime = {
   auto: setPreviewInspectorDataAutoEnabled,
   axios: previewInspectorAxiosRequest,
@@ -1099,15 +1351,25 @@ globalThis.__dataRuntime = {
   lorem: generatePreviewInspectorLoremPayload,
   listSampleCount: readPreviewInspectorDataListSampleCount,
   paths: readPreviewInspectorDataShapePaths,
+  registerGraphqlDemand: registerPreviewInspectorGraphqlRenderPropUsage,
   requests: readPreviewInspectorDataRequests,
   resolve: resolvePreviewInspectorDataPayload,
   scenario: setPreviewInspectorVirtualBackendScenario,
+  scenarios: serializePreviewInspectorVirtualBackendScenarios,
   set: setPreviewInspectorDataPayload,
   setListSampleCount: setPreviewInspectorDataListSampleCount,
   smart: smartFillPreviewInspectorDataPayload,
   smartReachability: smartFillPreviewInspectorDataPayloadsForReachability,
   target: (reachabilityKey) => {
     previewInspectorSession.activeTargetReachabilityKey = reachabilityKey;
+  },
+  temporalScenario: (id) => {
+    initializePreviewInspectorVirtualBackendState();
+    previewInspectorSession.temporalBackendScenarioOverrides.set(id, {
+      latencyMs: 0,
+      mode: 'pending',
+      status: 200,
+    });
   },
 };`;
   const context = vm.createContext({

@@ -1,6 +1,7 @@
 /** Exercises target-local requirement admission without mounting project React components. */
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { createPreviewInspectorNeuralResidualRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorNeuralResidualRuntimeSource';
 import { createPreviewInspectorRequirementFrontierRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRequirementFrontierRuntimeSource';
 
 describe('Preview Inspector requirement frontier runtime source', () => {
@@ -102,6 +103,251 @@ describe('Preview Inspector requirement frontier runtime source', () => {
         'shell-5',
         'shell-6',
       ],
+      requestIds: [],
+    });
+  });
+
+  /** Learned ranking changes order only when a safe automatic or explicit caller opts into it. */
+  it('prefers current neural scores for an opted-in admitted requirement search', () => {
+    const context: { __result?: unknown } = {};
+    vm.runInNewContext(
+      `
+        const records = [
+          {
+            id: 'deterministic-first', mode: 'auto', ownerName: 'ExactTarget',
+            reachabilityKey: 'page:Target', requiredPaths: ['data.primary'],
+          },
+          {
+            id: 'learned-first', mode: 'auto', ownerName: 'TargetShell',
+            reachabilityKey: 'page:Target', requiredPaths: ['data.secondary'],
+          },
+        ];
+        const previewInspectorSession = {
+          runtimeFallbackNeuralDecisions: new Map([
+            ['deterministic-first', { score: 0.1 }],
+            ['learned-first', { score: 0.9 }],
+          ]),
+          runtimeFallbackSmartPathSignatures: new Map(),
+        };
+        const comparePreviewInspectorNeuralResidualDecisions = (left, right) =>
+          Number(right?.score ?? 0.5) - Number(left?.score ?? 0.5);
+        const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
+        const createPreviewInspectorRuntimeFallbackSmartSignature = (_record, paths) =>
+          JSON.stringify(paths);
+        const readPreviewInspectorTargetPathEvidence = () => ({
+          ambiguousNames: new Set(),
+          nameScores: new Map([['ExactTarget', 1000], ['TargetShell', 500]]),
+          pathScores: new Map(), paths: [], runtimeOwnerNames: new Set(),
+        });
+        const readPreviewInspectorRuntimeFallbacks = () => records;
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        const readPreviewInspectorTargetRenderPath = () => undefined;
+        ${createPreviewInspectorRequirementFrontierRuntimeSource()}
+        globalThis.__result = {
+          automatic: readPreviewInspectorRequirementBatch(
+            {}, {}, { key: 'page:Target' }, false,
+          ).hookIds,
+          requested: readPreviewInspectorRequirementBatch(
+            {}, {}, { key: 'page:Target' }, false, { preferNeural: true },
+          ).hookIds,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      automatic: ['deterministic-first', 'learned-first'],
+      requested: ['learned-first', 'deterministic-first'],
+    });
+  });
+
+  /** Each retry isolates a different admitted axis instead of replaying one broad mutation batch. */
+  it('alternates novel, data-first, and hook-first exploration portfolios', () => {
+    const context: { __result?: unknown } = {};
+    vm.runInNewContext(
+      `
+        const hooks = [
+          {
+            id: 'hook-a', mode: 'auto', ownerName: 'Target',
+            reachabilityKey: 'page:Target', requiredPaths: ['state.primary'],
+          },
+          {
+            id: 'hook-b', mode: 'auto', ownerName: 'Target',
+            reachabilityKey: 'page:Target', requiredPaths: ['state.secondary'],
+          },
+        ];
+        const requests = [
+          {
+            id: 'data-a', mode: 'auto', ownerName: 'Target',
+            reachabilityKey: 'page:Target', shape: { primary: 'string' },
+          },
+          {
+            id: 'data-b', mode: 'auto', ownerName: 'Target',
+            reachabilityKey: 'page:Target', shape: { secondary: 'string' },
+          },
+        ];
+        const previewInspectorSession = { runtimeFallbackSmartPathSignatures: new Map() };
+        const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
+        const createPreviewInspectorRuntimeFallbackSmartSignature = (_record, paths) =>
+          JSON.stringify(paths);
+        const readPreviewInspectorTargetPathEvidence = () => ({
+          ambiguousNames: new Set(), nameScores: new Map([['Target', 1000]]),
+          pathScores: new Map(), paths: [], runtimeOwnerNames: new Set(),
+        });
+        const readPreviewInspectorRuntimeFallbacks = () => hooks;
+        const readPreviewInspectorDataRequests = () => requests;
+        const readPreviewInspectorDataShapePaths = (shape) => Object.keys(shape ?? {});
+        const readPreviewInspectorTargetRenderPath = () => undefined;
+        ${createPreviewInspectorRequirementFrontierRuntimeSource()}
+        const state = { key: 'page:Target', targetExportName: 'Target', targetMounted: false };
+        globalThis.__result = {
+          dataFirst: readPreviewInspectorRequirementBatch(
+            {}, {}, state, false,
+            { explorationMode: 'data-first', explorationOrdinal: 2 },
+          ),
+          hookFirst: readPreviewInspectorRequirementBatch(
+            {}, {}, state, false,
+            { explorationMode: 'hook-first', explorationOrdinal: 3 },
+          ),
+          novel: readPreviewInspectorRequirementBatch(
+            {}, {}, state, false,
+            {
+              excludedCandidateIds: ['hook-a', 'data-a'],
+              explorationMode: 'novel-candidate',
+              explorationOrdinal: 1,
+            },
+          ),
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      dataFirst: {
+        explorationMode: 'data-first',
+        hookIds: [],
+        requestIds: ['data-a'],
+      },
+      hookFirst: {
+        explorationMode: 'hook-first',
+        hookIds: ['hook-a'],
+        requestIds: [],
+      },
+      novel: {
+        explorationMode: 'novel-candidate',
+        hookIds: ['hook-b'],
+        requestIds: ['data-b'],
+      },
+    });
+  });
+
+  /** A uniquely correlated exception hole gets one reversible typed-value attempt of its own. */
+  it('prioritizes a neural blocker-exception recommendation for an unrendered target', () => {
+    const context: { __result?: unknown } = {};
+    vm.runInNewContext(
+      `
+        const previewInspectorSession = {
+          runtimeFallbackSmartPathSignatures: new Map(),
+          targetReachabilityByKey: new Map(),
+        };
+        const persistPreviewInspectorState = () => undefined;
+        const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
+        const createPreviewInspectorRuntimeFallbackSmartSignature = (_record, paths) =>
+          JSON.stringify([...new Set(paths)].sort());
+        const readPreviewInspectorTargetPathEvidence = () => ({
+          ambiguousNames: new Set(), nameScores: new Map([['DirectorPage', 1000]]),
+          pathScores: new Map(), paths: [], runtimeOwnerNames: new Set(),
+        });
+        const records = [
+          ...Array.from({ length: 8 }, (_, index) => ({
+            id: 'page-data-' + index, mode: 'auto', ownerName: 'DirectorPage',
+            reachabilityKey: 'page:Target', requiredPaths: ['data.items.' + index],
+          })),
+          {
+            evidence: 'nested generated hook result', hookName: 'useAiChatPanel',
+            id: 'panel-context-hole', mode: 'auto', ownerName: 'ChatLayoutFrame',
+            reachabilityKey: 'page:Target', reason: 'neural-candidate',
+            requiredPaths: ['state.status'],
+            residualHoleKind: 'nested-generated-shape-mismatch',
+            neuralRecommendation: { strategy: 'shape-only' },
+            smartPathValues: [{ path: 'state.status', value: 'open' }],
+            sourcePath: '/workspace/chat-layout-frame.tsx',
+          },
+        ];
+        const readPreviewInspectorRuntimeFallbacks = () => records;
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        const readPreviewInspectorTargetRenderPath = () => undefined;
+        const readPreviewInspectorRuntimeHealthTargetError = () => ({
+          message: "Cannot read properties of undefined (reading 'status')",
+        });
+        const readPreviewInspectorErrorPropertyPaths = () => ['status'];
+        ${createPreviewInspectorNeuralResidualRuntimeSource()}
+        ${createPreviewInspectorRequirementFrontierRuntimeSource()}
+        globalThis.__result = readPreviewInspectorRequirementBatch(
+          {}, {}, {
+            key: 'page:Target', targetExportName: 'DirectorChangeLogPanel',
+            targetMounted: false,
+          }, false,
+        );
+      `,
+      context,
+    );
+
+    expect(context.__result).toMatchObject({
+      hookIds: ['panel-context-hole'],
+      neuralResidualDecision: {
+        holeKind: 'blocker-exception-runtime-value',
+        score: 0.5,
+      },
+      requestIds: [],
+    });
+  });
+
+  it('repairs a compiler-admitted shell collection before unrelated target-path hooks', () => {
+    const context: { __result?: unknown } = {};
+    vm.runInNewContext(
+      `
+        const previewInspectorSession = { runtimeFallbackSmartPathSignatures: new Map() };
+        const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
+        const createPreviewInspectorRuntimeFallbackSmartSignature = (_record, paths) =>
+          JSON.stringify(paths);
+        const readPreviewInspectorTargetPathEvidence = () => ({
+          ambiguousNames: new Set(), nameScores: new Map([['MeetingPaymentPage', 1000]]),
+          pathScores: new Map(), paths: [], runtimeOwnerNames: new Set(),
+        });
+        const readPreviewInspectorRuntimeFallbacks = () => [
+          {
+            hookName: 'useInvestmentContractAnalysisStatus', id: 'target-hook', mode: 'auto',
+            ownerName: 'MeetingPaymentPage', reachabilityKey: 'page:TaxTypeBadge',
+            requiredPaths: ['loaded', 'status', 'runId', 'isInProgress'],
+          },
+          {
+            hookName: 'getFragmentData', id: 'owner-menubar-fragment', mode: 'auto',
+            ownerName: 'UnreadNotificationSection', reachabilityKey: 'page:TaxTypeBadge',
+            requiredPaths: ['warnings', 'warnings.some()', 'warnings[].isStaffOnly'],
+          },
+        ];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        const readPreviewInspectorTargetRenderPath = () => undefined;
+        const readPreviewInspectorErrorPropertyPaths = () => ['some'];
+        ${createPreviewInspectorRequirementFrontierRuntimeSource()}
+        globalThis.__result = readPreviewInspectorRequirementBatch(
+          {}, {}, {
+            key: 'page:TaxTypeBadge', targetExportName: 'TaxTypeBadge', targetMounted: false,
+            targetOutputError: {
+              message: "Cannot read properties of undefined (reading 'some')",
+            },
+          }, false,
+        );
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      hookIds: ['owner-menubar-fragment'],
       requestIds: [],
     });
   });

@@ -16,6 +16,12 @@ interface ConditionRuntimeHarness {
     sourcePath: string,
     candidates: readonly Record<string, unknown>[],
   ) => boolean;
+  readonly registerSourceProvenPropChoice: (
+    exportName: string,
+    path: string,
+    value: unknown,
+    metadata?: Record<string, unknown>,
+  ) => boolean;
   readonly isAutoConditionRejected: (conditionId: string, reachabilityKey: string) => boolean;
   readonly observeChoice: (
     choiceId: string,
@@ -550,6 +556,78 @@ describe('Preview Inspector condition runtime source', () => {
     });
   });
 
+  /** The verified checkpoint owns automatic gates until its rendered output is re-observed. */
+  it('does not let target-guided DFS overwrite an active neural success restoration', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn(), {
+      neuralSuccessfulPathRestorationActive: true,
+    });
+    const metadata = {
+      expression: '<Application> gate: !session',
+      fallbackBranch: 'truthy',
+      falsyLabel: 'continue <Application>',
+      kind: 'early-return',
+      ownerName: 'Application',
+      sourcePath: '/workspace/Application.tsx',
+      targetBranch: 'falsy',
+      truthyLabel: '<LoginPage>',
+    };
+
+    harness.session.activeTargetReachabilityKey = 'candidate:Target';
+    expect(harness.resolveCondition('login-gate', true, metadata)).toBe(true);
+    expect(harness.setAutoCondition('login-gate', false)).toBe(false);
+    expect(harness.resolveCondition('login-gate', true, metadata)).toBe(true);
+    expect(harness.readConditions()[0]).toMatchObject({
+      autoOverride: undefined,
+      effectiveEnabled: true,
+    });
+  });
+
+  /** Lets a valid finite prop drive its authored branches after stale DFS overrides are removed. */
+  it('reconciles automatic conditions with a source-proven prop choice', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn(), {
+      selectedExportName: 'TaxTypeBadge',
+    });
+    const metadata = {
+      expression: '<TaxTypeBadge> gate: taxType === "heavy_tax"',
+      fallbackBranch: 'truthy',
+      falsyLabel: 'continue <TaxTypeBadge>',
+      kind: 'early-return',
+      ownerName: 'TaxTypeBadge',
+      scalarExpression: {
+        kind: 'comparison',
+        operator: '===',
+        path: 'taxType',
+        value: 'heavy_tax',
+      },
+      sourcePath: '/workspace/tax-type-badge.tsx',
+      targetBranch: 'falsy',
+      truthyLabel: '<Badge>',
+    };
+
+    expect(harness.resolveCondition('heavy-tax', true, metadata)).toBe(true);
+    expect(harness.setAutoCondition('heavy-tax', false)).toBe(true);
+    expect(harness.resolveCondition('heavy-tax', true, metadata)).toBe(false);
+
+    expect(
+      harness.registerSourceProvenPropChoice('TaxTypeBadge', 'taxType', 'heavy_tax', {
+        ownerName: 'TaxTypeBadge',
+        sourcePath: '/workspace/tax-type-badge.tsx',
+      }),
+    ).toBe(true);
+    expect(harness.resolveCondition('heavy-tax', true, metadata)).toBe(true);
+    expect(harness.readConditions()[0]).toMatchObject({
+      autoOverride: undefined,
+      effectiveEnabled: true,
+      override: undefined,
+    });
+    expect(harness.setAutoCondition('heavy-tax', false)).toBe(false);
+
+    // A deliberate user branch decision remains authoritative over the selected prop.
+    harness.setCondition('heavy-tax', false);
+    expect(harness.resolveCondition('heavy-tax', true, metadata)).toBe(false);
+    expect(harness.readConditions()[0]).toMatchObject({ override: false });
+  });
+
   /** Never substitutes a Boolean for state that the continuation passes into a child component. */
   it('keeps an authored-state gate read-only for automatic and manual branch controls', () => {
     const harness = createConditionRuntimeHarness({}, vi.fn());
@@ -994,6 +1072,8 @@ function createConditionRuntimeHarness(
       const schedulePreviewInspectorCommitRefresh = () => undefined;
       const schedulePreviewInspectorHighlight = () => undefined;
       const schedulePreviewInspectorTreeRefresh = () => undefined;
+      const isPreviewInspectorNeuralSuccessfulPathRestorationActive = () =>
+        previewInspectorSession.neuralSuccessfulPathRestorationActive === true;
       const findSelectedPreviewInspectorDescriptor = () =>
         previewInspectorSession.descriptors?.[0];
       const readSelectedPreviewInspectorPageCandidate = () =>
@@ -1026,6 +1106,7 @@ function createConditionRuntimeHarness(
         readConsoleEntries: () => recordedConsoleEntries.slice(),
         readFallbackValuesEnabled: readPreviewInspectorFallbackValuesEnabled,
         registerDefinitions: registerPreviewInspectorRenderConditionDefinitions,
+        registerSourceProvenPropChoice: registerPreviewInspectorSourceProvenPropChoice,
         registerVirtualPageSource: registerPreviewInspectorVirtualPageSource,
         isAutoConditionRejected: isPreviewInspectorTargetGuidedConditionRejected,
         observeChoice: observePreviewInspectorRenderChoiceCase,

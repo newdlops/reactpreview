@@ -31,6 +31,10 @@ interface TraceMessage {
 /** Pure trace functions deliberately exposed only inside the VM fixture. */
 interface TraceRuntime {
   readonly advance: (milliseconds: number) => void;
+  readonly automaticAssistanceEvents: {
+    readonly detail: { readonly blockerCount: number; readonly blockerIds: readonly string[] };
+    readonly event: string;
+  }[];
   readonly decide: (candidate: Record<string, unknown>) => string | undefined;
   readonly error: (entry: Record<string, unknown>) => void;
   readonly flush: () => void;
@@ -45,6 +49,25 @@ interface TraceRuntime {
 }
 
 describe('Preview Inspector blocker trace runtime source', () => {
+  /** Starts proactive repair only after the active blocker has entered the committed tree. */
+  it('starts automatic neural assistance from a newly discovered blocker', () => {
+    const runtime = createTraceRuntime();
+    const snapshot = createTargetErrorSnapshot('ProfileForm', 'variant is unsupported');
+
+    runtime.snapshot(snapshot);
+    runtime.snapshot(snapshot);
+
+    expect(runtime.automaticAssistanceEvents).toEqual([
+      {
+        detail: {
+          blockerCount: 1,
+          blockerIds: ['target-error:ProfileForm'],
+        },
+        event: 'blocker-discovered',
+      },
+    ]);
+  });
+
   /** Links discovery, Auto choice, blocker-set change, and the following error by attempt identity. */
   it('emits one deduplicated chronological resolver flow', () => {
     const runtime = createTraceRuntime();
@@ -201,6 +224,106 @@ describe('Preview Inspector blocker trace runtime source', () => {
       );
     },
   );
+
+  it.each(['deterministic-minimum-auto', 'minimum-requirement-dfs'])(
+    'keeps composing %s requirements when one baseline error crosses transports',
+    (mode) => {
+      const runtime = createTraceRuntime();
+      const message = "TypeError: Cannot read properties of undefined (reading 'some')";
+      runtime.error({
+        exportName: 'ProfileForm',
+        level: 'error',
+        location: '/generated/first.js:100:20',
+        message,
+        phase: 'React export render or lifecycle',
+        source: 'target-reachability',
+      });
+      runtime.snapshot(createTargetErrorSnapshot('PreviewCandidateRouterErrorBoundary', message));
+      const traceId = runtime.decide({
+        action: 'Fill another page-path requirement',
+        blockerId: 'target-reachability:payment:TaxTypeBadge',
+        mode,
+        startsRenderAttempt: true,
+      });
+      runtime.error({
+        level: 'error',
+        location: '/generated/second.js:200:40',
+        message,
+        phase: 'unhandled browser error',
+        source: 'preview-runtime',
+      });
+
+      expect(traceId).toBeTypeOf('string');
+      expect(runtime.requirementRollbackCalls).toEqual([]);
+      expect(runtime.rollbackCalls).toEqual([]);
+      expect(runtime.messages.filter((message) => message.event.event === 'render-result')).toEqual(
+        [],
+      );
+    },
+  );
+
+  it.each(['deterministic-minimum-auto', 'minimum-requirement-dfs'])(
+    'keeps a %s repair when it exposes a deeper missing property',
+    (mode) => {
+      const runtime = createTraceRuntime();
+      runtime.error({
+        level: 'error',
+        message: "TypeError: Cannot read properties of undefined (reading 'some')",
+        source: 'target-reachability',
+      });
+      runtime.snapshot(
+        createTargetErrorSnapshot(
+          'ProfileForm',
+          "TypeError: Cannot read properties of undefined (reading 'some')",
+        ),
+      );
+      const traceId = runtime.decide({
+        action: 'Fill the compiler-admitted collection',
+        blockerId: 'target-reachability:profile',
+        generatedPaths: ['getFragmentData.warnings.some()'],
+        mode,
+        startsRenderAttempt: true,
+      });
+      runtime.error({
+        level: 'error',
+        message: "TypeError: Cannot read properties of undefined (reading 'isStaffOnly')",
+        source: 'preview-runtime',
+      });
+
+      expect(traceId).toBeTypeOf('string');
+      expect(runtime.requirementRollbackCalls).toEqual([]);
+      expect(runtime.rollbackCalls).toEqual([]);
+    },
+  );
+
+  it('rolls back a successor exception when the generated requirement missed the old hole', () => {
+    const runtime = createTraceRuntime();
+    runtime.error({
+      level: 'error',
+      message: "TypeError: Cannot read properties of undefined (reading 'some')",
+      source: 'target-reachability',
+    });
+    runtime.snapshot(
+      createTargetErrorSnapshot(
+        'ProfileForm',
+        "TypeError: Cannot read properties of undefined (reading 'some')",
+      ),
+    );
+    const traceId = runtime.decide({
+      action: 'Fill an unrelated compiler value',
+      blockerId: 'target-reachability:profile',
+      generatedPaths: ['useProfile.loaded'],
+      mode: 'deterministic-minimum-auto',
+      startsRenderAttempt: true,
+    });
+    runtime.error({
+      level: 'error',
+      message: "TypeError: Cannot read properties of undefined (reading 'isStaffOnly')",
+      source: 'preview-runtime',
+    });
+
+    expect(runtime.requirementRollbackCalls).toEqual([traceId]);
+  });
 
   it('deduplicates eligible requirement rollback across duplicate fatal transports', () => {
     const runtime = createTraceRuntime();
@@ -923,12 +1046,17 @@ function createTraceRuntime(): TraceRuntime {
       const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
       const PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS = 160;
       const messages = [];
+      const automaticAssistanceEvents = [];
       const rollbackCalls = [];
       const requirementRollbackCalls = [];
       const rollbacks = [];
       const resumeHandledAtCall = [];
       const resumeEffects = [];
       const previewInspectorPostHostMessage = (message) => { messages.push(message); };
+      const schedulePreviewInspectorAutomaticNeuralAssistanceFromHealth = (event, detail) => {
+        automaticAssistanceEvents.push({ detail, event });
+        return true;
+      };
       const readPreviewInspectorRuntimeCorrelation = () => ({
         artifactId: '0123456789abcdef',
         runtimeRevision: 2,
@@ -961,6 +1089,7 @@ function createTraceRuntime(): TraceRuntime {
       ${createPreviewInspectorBlockerTraceRuntimeSource()}
       globalThis.__runtime = {
         advance: advanceClock,
+        automaticAssistanceEvents,
         decide: recordPreviewInspectorBlockerAutoDecision,
         error: recordPreviewInspectorBlockerTraceError,
         flush: flushPreviewInspectorBlockerTraceAutoDecisions,

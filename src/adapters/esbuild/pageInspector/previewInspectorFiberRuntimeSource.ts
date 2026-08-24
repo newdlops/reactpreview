@@ -96,22 +96,22 @@ function readPreviewInspectorBoundaryFiber(boundary) {
       : undefined;
   if (primary === undefined) return undefined;
   const alternate = readPreviewInspectorFiberLink(primary, 'alternate');
-  for (const candidate of [primary, alternate]) {
-    const stateNode = readPreviewInspectorOwnData(candidate, 'stateNode');
-    if (
-      candidate !== undefined &&
-      (stateNode === undefined || stateNode === boundary) &&
-      readPreviewInspectorFiberLink(candidate, 'child') !== undefined
-    ) return candidate;
+  const candidates = [primary, alternate].filter((candidate) => candidate !== undefined && (
+    readPreviewInspectorOwnData(candidate, 'stateNode') === undefined ||
+    readPreviewInspectorOwnData(candidate, 'stateNode') === boundary
+  ));
+  for (const candidate of candidates) {
+    let root = candidate;
+    let steps = 0;
+    while (readPreviewInspectorFiberLink(root, 'return') !== undefined && steps < 256) {
+      root = readPreviewInspectorFiberLink(root, 'return');
+      steps += 1;
+    }
+    const current = readPreviewInspectorOwnData(readPreviewInspectorOwnData(root, 'stateNode'), 'current');
+    if (current !== undefined && current === root) return candidate;
   }
-  const primaryStateNode = readPreviewInspectorOwnData(primary, 'stateNode');
-  const alternateStateNode = readPreviewInspectorOwnData(alternate, 'stateNode');
-  return primaryStateNode === undefined || primaryStateNode === boundary
-    ? primary
-    : alternate !== undefined &&
-        (alternateStateNode === undefined || alternateStateNode === boundary)
-      ? alternate
-      : undefined;
+  return candidates.find((candidate) =>
+    readPreviewInspectorFiberLink(candidate, 'child') !== undefined) ?? candidates[0];
 }
 
 /** Returns a descriptor-safe component name through memo, forward-ref, and lazy-like wrappers. */

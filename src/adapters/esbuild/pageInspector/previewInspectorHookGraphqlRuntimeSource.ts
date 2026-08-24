@@ -7,15 +7,19 @@
  * so this adapter deterministically supplies the same selected fields immediately. It never sends
  * a request, imports a project module, or guesses fields that are absent from the document.
  */
+import { createPreviewInspectorRenderedCollectionNeuralRuntimeSource } from './previewInspectorRenderedCollectionNeuralRuntimeSource';
 
 /** Creates browser source that turns an authored GraphQL document into one settled hook result. */
 export function createPreviewInspectorHookGraphqlRuntimeSource(): string {
+  const renderedCollectionNeuralRuntimeSource =
+    createPreviewInspectorRenderedCollectionNeuralRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_HOOK_GRAPHQL_SOURCE_LIMIT = 1_000_000;
 const previewInspectorHookGraphqlDocumentIdentities = new WeakMap();
 const previewInspectorHookGraphqlRenderPropUsages = new WeakMap();
 const previewInspectorHookGraphqlRenderPropLiteralDemands = new WeakMap();
 const previewInspectorHookGraphqlFixedRendererDocuments = new WeakMap();
+${renderedCollectionNeuralRuntimeSource}
 
 /** Registers compiler-proven render-prop demand and returns the same DocumentNode identity. */
 function registerPreviewInspectorGraphqlRenderPropUsage(document, rawPaths, rawLiteralDemands) {
@@ -32,7 +36,10 @@ function registerPreviewInspectorGraphqlRenderPropUsage(document, rawPaths, rawL
   const merged = [...new Set([...(previous ?? []), ...paths])].sort().slice(0, 32);
   previewInspectorHookGraphqlRenderPropUsages.set(document, Object.freeze(merged));
   const previousLiteralDemands = previewInspectorHookGraphqlRenderPropLiteralDemands.get(document) ?? [];
-  const literalDemands = new Map(previousLiteralDemands.map((demand) => [demand.path, demand]));
+  const literalDemands = new Map(previousLiteralDemands.map((demand) => [
+    demand.path + '\0' + typeof demand.value + ':' + String(demand.value),
+    demand,
+  ]));
   if (Array.isArray(rawLiteralDemands)) {
     for (const rawDemand of rawLiteralDemands.slice(0, 32)) {
       const demand = normalizePreviewInspectorGraphqlRenderPropLiteralDemand(
@@ -40,17 +47,27 @@ function registerPreviewInspectorGraphqlRenderPropUsage(document, rawPaths, rawL
       );
       if (
         demand !== undefined &&
-        !literalDemands.has(demand.path) &&
+        !literalDemands.has(
+          demand.path + '\0' + typeof demand.value + ':' + String(demand.value),
+        ) &&
         merged.includes(readPreviewInspectorGraphqlLiteralCollectionPath(demand.path)) &&
         literalDemands.size < 32
       ) {
-        literalDemands.set(demand.path, demand);
+        literalDemands.set(
+          demand.path + '\0' + typeof demand.value + ':' + String(demand.value),
+          demand,
+        );
       }
     }
   }
-  previewInspectorHookGraphqlRenderPropLiteralDemands.set(
+  const mergedLiteralDemands = Object.freeze(
+    [...literalDemands.values()].sort((left, right) => left.path.localeCompare(right.path)),
+  );
+  previewInspectorHookGraphqlRenderPropLiteralDemands.set(document, mergedLiteralDemands);
+  registerPreviewInspectorHookGraphqlOperationDemand(
     document,
-    Object.freeze([...literalDemands.values()].sort((left, right) => left.path.localeCompare(right.path))),
+    Object.freeze(merged),
+    mergedLiteralDemands,
   );
   return document;
 }
@@ -334,7 +351,24 @@ function createPreviewInspectorHookGraphqlData(readDocument, readOptions) {
     ) {
       return undefined;
     }
-    const data = generatePreviewInspectorDataValue(shape, '', 'smart');
+    const generatedData = generatePreviewInspectorDataValue(shape, '', 'smart');
+    if (generatedData === null || typeof generatedData !== 'object') return undefined;
+    const demand = readPreviewInspectorHookGraphqlDocumentDemand(readDocument);
+    const recommendation = createPreviewInspectorHookGraphqlRenderedCollectionRecommendation(
+      shape,
+      generatedData,
+      demand,
+    );
+    if (recommendation !== undefined) {
+      try {
+        const document = readDocument();
+        previewInspectorHookGraphqlPendingRenderedCollectionRecommendations.set(
+          document,
+          recommendation,
+        );
+      } catch { /* The generated data remains valid without trace correlation. */ }
+    }
+    const data = recommendation?.payload ?? generatedData;
     return data !== null && typeof data === 'object'
       ? alignPreviewInspectorHookGraphqlResponseIdentities(data, readOptions)
       : undefined;
@@ -489,6 +523,37 @@ function createPreviewInspectorHookGraphqlFallback(fallback, readDocument, readO
   if (typeof settled.refetch !== 'function') {
     settled.refetch = Object.freeze(() => Promise.resolve({ data: alignedData }));
   }
+  try {
+    const document = readDocument();
+    const recommendation = previewInspectorHookGraphqlPendingRenderedCollectionRecommendations.get(
+      document,
+    );
+    if (
+      recommendation !== undefined &&
+      !previewInspectorHookGraphqlRecordedRenderedCollectionRecommendations.has(document)
+    ) {
+      const requestIdentity = createPreviewInspectorHookGraphqlRequestIdentity(
+        readDocument,
+        readOptions,
+      );
+      const traceId = recordPreviewInspectorHookGraphqlRenderedCollectionRecommendation(
+        recommendation,
+        {
+          label: recommendation.operationName,
+          operationName: recommendation.operationName,
+          reachabilityKey:
+            typeof previewInspectorSession === 'object'
+              ? previewInspectorSession.activeTargetReachabilityKey
+              : undefined,
+        },
+        'graphql-rendered-collection:' +
+          (requestIdentity || recommendation.operationName || 'anonymous'),
+      );
+      if (traceId !== undefined) {
+        previewInspectorHookGraphqlRecordedRenderedCollectionRecommendations.add(document);
+      }
+    }
+  } catch { /* The fallback itself must not depend on diagnostics. */ }
   return Object.freeze(settled);
 }
 
@@ -513,8 +578,15 @@ function overlayPreviewInspectorGraphqlLiteralDemands(fallback, literalDemands) 
       result = fallback;
     }
   }
+  const literalIndexesByPath = new Map();
   for (const literalDemand of literalDemands) {
-    const overlay = createPreviewInspectorHookGraphqlLiteralOverlay(result, literalDemand);
+    const itemIndex = literalIndexesByPath.get(literalDemand.path) ?? 0;
+    literalIndexesByPath.set(literalDemand.path, itemIndex + 1);
+    const overlay = createPreviewInspectorHookGraphqlLiteralOverlay(
+      result,
+      literalDemand,
+      itemIndex,
+    );
     if (overlay === undefined) continue;
     const completion = completePreviewInspectorGeneratedValue(result, overlay.value, {
       renderGuardPaths: [overlay.renderGuardPath],
@@ -525,7 +597,7 @@ function overlayPreviewInspectorGraphqlLiteralDemands(fallback, literalDemands) 
 }
 
 /** Creates a selected-field-only generated overlay for the first structurally completed collection item. */
-function createPreviewInspectorHookGraphqlLiteralOverlay(fallback, literalDemand) {
+function createPreviewInspectorHookGraphqlLiteralOverlay(fallback, literalDemand, itemIndex = 0) {
   const segments = literalDemand.path.split('.');
   let current = fallback;
   const generatedSegments = [];
@@ -533,11 +605,12 @@ function createPreviewInspectorHookGraphqlLiteralOverlay(fallback, literalDemand
   for (const segment of segments) {
     if (segment === '[]') {
       if (!Array.isArray(current)) return undefined;
-      const item = readPreviewInspectorHookGraphqlOwnValue(current, '0');
+      const selectedIndex = Math.min(Math.max(0, itemIndex), Math.max(0, current.length - 1));
+      const item = readPreviewInspectorHookGraphqlOwnValue(current, String(selectedIndex));
       if (item === undefined) return undefined;
       current = item;
-      generatedSegments.push(segment);
-      renderGuardSegments.push('0');
+      generatedSegments.push({ itemIndex: selectedIndex, segment });
+      renderGuardSegments.push(String(selectedIndex));
       continue;
     }
     const descriptor = current !== null && (typeof current === 'object' || typeof current === 'function')
@@ -545,12 +618,20 @@ function createPreviewInspectorHookGraphqlLiteralOverlay(fallback, literalDemand
       : undefined;
     if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return undefined;
     current = descriptor.value;
-    generatedSegments.push(segment);
+    generatedSegments.push({ segment });
     renderGuardSegments.push(segment);
   }
   let generated = literalDemand.value;
   for (let index = generatedSegments.length - 1; index >= 0; index -= 1) {
-    generated = generatedSegments[index] === '[]' ? [generated] : { [generatedSegments[index]]: generated };
+    const generatedSegment = generatedSegments[index];
+    if (generatedSegment?.segment === '[]') {
+      generated = Array.from(
+        { length: (generatedSegment.itemIndex ?? 0) + 1 },
+        (_, itemIndex) => itemIndex === generatedSegment.itemIndex ? generated : {},
+      );
+    } else if (typeof generatedSegment?.segment === 'string') {
+      generated = { [generatedSegment.segment]: generated };
+    }
   }
   return {
     renderGuardPath: renderGuardSegments.join('.'),

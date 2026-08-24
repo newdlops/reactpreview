@@ -65,6 +65,7 @@ function activatePreviewInspectorRuntimeFallbackScope(candidate, directTarget) {
   let clearedCount = 0;
   for (const fallbackId of [...previewInspectorSession.runtimeFallbackValues.keys()]) {
     previewInspectorSession.runtimeFallbackValues.delete(fallbackId);
+    previewInspectorSession.runtimeFallbackNeuralDecisions?.delete?.(fallbackId);
     previewInspectorSession.runtimeFallbackSmartIds.delete(fallbackId);
     previewInspectorSession.runtimeFallbackSmartPathSignatures.delete(fallbackId);
     clearedCount += 1;
@@ -79,8 +80,12 @@ function activatePreviewInspectorRuntimeFallbackScope(candidate, directTarget) {
     previewInspectorSession.runtimeFallbacks.delete(fallbackId);
   }
   previewInspectorSession.runtimeFallbackCompletions = new WeakMap();
+  previewInspectorSession.runtimeFallbackResolutionFrames = [];
   previewInspectorSession.runtimeFallbackAuthoredValues?.clear?.();
   previewInspectorSession.runtimeFallbackSharedSmartPathValues = new WeakMap();
+  previewInspectorSession.runtimeFallbackSharedNeuralRecommendations = new WeakMap();
+  previewInspectorSession.runtimeFallbackSharedNeuralRecommendationsByContract?.clear?.();
+  previewInspectorSession.runtimeFallbackSemanticValueRecommendations?.clear?.();
   previewInspectorSession.localUiControllers?.clear?.();
   previewInspectorSession.localUiControllerAttemptKeys?.clear?.();
   const clearedEffectCount = previewInspectorSession.runtimeEffectIsolations.size;
@@ -156,6 +161,20 @@ function shouldPreservePreviewInspectorOwnedRouterHookValue(metadata) {
   }
 }
 
+/** Subscribes this authored hook consumer to shared neural state without a page-wide remount. */
+function usePreviewInspectorRuntimeFallbackNeuralSubscription() {
+  if (
+    typeof React !== 'object' || React === null ||
+    typeof React.useReducer !== 'function' || typeof React.useEffect !== 'function'
+  ) return;
+  const [, refresh] = React.useReducer((revision) => revision + 1, 0);
+  React.useEffect(() => {
+    initializePreviewInspectorRuntimeFallbackState();
+    previewInspectorSession.runtimeFallbackNeuralListeners.add(refresh);
+    return () => previewInspectorSession.runtimeFallbackNeuralListeners.delete(refresh);
+  }, []);
+}
+
 /**
  * Preserves a successful application Router read, otherwise delegates exactly once to isolation.
  * A manual override deliberately keeps precedence because it represents an explicit user scenario.
@@ -168,6 +187,7 @@ function resolvePreviewInspectorScopedRuntimeHook(
   readGraphqlOptions,
   readHookIdentity,
 ) {
+  usePreviewInspectorRuntimeFallbackNeuralSubscription();
   const fallbackId = typeof rawMetadata?.id === 'string' ? rawMetadata.id : '';
   if (
     fallbackId.length === 0 ||
@@ -183,17 +203,26 @@ function resolvePreviewInspectorScopedRuntimeHook(
       readHookIdentity,
     );
   }
+  const metadata = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
+  const resolutionFrame = beginPreviewInspectorRuntimeFallbackResolutionFrame(metadata);
   let value;
+  let failure;
   try {
     value = readHook();
   } catch (error) {
+    failure = error;
+  } finally {
+    finishPreviewInspectorRuntimeFallbackResolutionFrame(resolutionFrame);
+  }
+  if (failure !== undefined) {
     return resolvePreviewInspectorRuntimeHook(
-      () => { throw error; },
+      () => { throw failure; },
       createFallback,
       rawMetadata,
       readGraphqlDocument,
       readGraphqlOptions,
       readHookIdentity,
+      resolutionFrame,
     );
   }
   if (shouldPreservePreviewInspectorOwnedRouterHookValue(rawMetadata)) {
@@ -209,6 +238,7 @@ function resolvePreviewInspectorScopedRuntimeHook(
     readGraphqlDocument,
     readGraphqlOptions,
     readHookIdentity,
+    resolutionFrame,
   );
 }
 `;

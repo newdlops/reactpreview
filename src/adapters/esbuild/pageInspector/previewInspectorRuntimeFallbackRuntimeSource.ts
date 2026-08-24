@@ -36,20 +36,28 @@ const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_FAL
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT = 1_000;
 const PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT};
 const PREVIEW_INSPECTOR_RUNTIME_EFFECT_FRAME_FALLBACK_MS = 16;
+const PREVIEW_INSPECTOR_RUNTIME_GENERATED_IDENTITY_VALUE = 'preview-id';
 const PREVIEW_INSPECTOR_TARGET_RENDER_CHAIN_BRIDGE = Symbol.for('newdlops.react-file-preview.target-render-chain');
 const previewInspectorScheduleRuntimeFallbackMicrotask =
   typeof globalThis.queueMicrotask === 'function'
     ? globalThis.queueMicrotask.bind(globalThis)
     : (callback) => Promise.resolve().then(callback);
-const previewInspectorScheduleRuntimeEffectFrame =
-  typeof globalThis.requestAnimationFrame === 'function'
-    ? globalThis.requestAnimationFrame.bind(globalThis)
-    : typeof globalThis.setTimeout === 'function'
-      ? (callback) => globalThis.setTimeout(
-          callback,
-          PREVIEW_INSPECTOR_RUNTIME_EFFECT_FRAME_FALLBACK_MS,
-        )
-      : undefined;
+function previewInspectorScheduleRuntimeEffectFrame(callback) {
+  let delivered = false;
+  const deliver = () => {
+    if (delivered) return;
+    delivered = true;
+    callback();
+  };
+  const hasAnimationFrame = typeof globalThis.requestAnimationFrame === 'function';
+  const hasTimer = typeof globalThis.setTimeout === 'function';
+  if (hasAnimationFrame) globalThis.requestAnimationFrame(deliver);
+  if (hasTimer) {
+    globalThis.setTimeout(deliver, PREVIEW_INSPECTOR_RUNTIME_EFFECT_FRAME_FALLBACK_MS);
+  } else if (!hasAnimationFrame) {
+    previewInspectorScheduleRuntimeFallbackMicrotask(deliver);
+  }
+}
 
 /** Lazily initializes ephemeral blocker records and stable fallback identities. */
 function initializePreviewInspectorRuntimeFallbackState() {
@@ -83,11 +91,41 @@ function initializePreviewInspectorRuntimeFallbackState() {
   if (!(previewInspectorSession.runtimeFallbackSharedSmartPathValues instanceof WeakMap)) {
     previewInspectorSession.runtimeFallbackSharedSmartPathValues = new WeakMap();
   }
+  if (!(previewInspectorSession.runtimeFallbackSharedNeuralRecommendations instanceof WeakMap)) {
+    previewInspectorSession.runtimeFallbackSharedNeuralRecommendations = new WeakMap();
+  }
+  if (!(previewInspectorSession.runtimeFallbackSharedNeuralRecommendationsByContract instanceof Map)) {
+    previewInspectorSession.runtimeFallbackSharedNeuralRecommendationsByContract = new Map();
+  }
+  if (!(previewInspectorSession.runtimeFallbackContextIdentityByHook instanceof WeakMap)) {
+    previewInspectorSession.runtimeFallbackContextIdentityByHook = new WeakMap();
+  }
+  if (!(previewInspectorSession.runtimeFallbackAmbiguousContextHooks instanceof WeakSet)) {
+    previewInspectorSession.runtimeFallbackAmbiguousContextHooks = new WeakSet();
+  }
   if (!(previewInspectorSession.runtimeFallbackSmartIds instanceof Set)) {
     previewInspectorSession.runtimeFallbackSmartIds = new Set();
   }
   if (!(previewInspectorSession.runtimeFallbackSmartPathSignatures instanceof Map)) {
     previewInspectorSession.runtimeFallbackSmartPathSignatures = new Map();
+  }
+  if (!(previewInspectorSession.runtimeFallbackNeuralDecisions instanceof Map)) {
+    previewInspectorSession.runtimeFallbackNeuralDecisions = new Map();
+  }
+  if (!(previewInspectorSession.runtimeFallbackSemanticValueRecommendations instanceof Map)) {
+    previewInspectorSession.runtimeFallbackSemanticValueRecommendations = new Map();
+  }
+  if (!(previewInspectorSession.runtimeFallbackNeuralListeners instanceof Set)) {
+    previewInspectorSession.runtimeFallbackNeuralListeners = new Set();
+  }
+  if (!(previewInspectorSession.runtimeFallbackDataFlowRecommendations instanceof Map)) {
+    previewInspectorSession.runtimeFallbackDataFlowRecommendations = new Map();
+  }
+  if (!(previewInspectorSession.runtimeFallbackDataFlowSignals instanceof Map)) {
+    previewInspectorSession.runtimeFallbackDataFlowSignals = new Map();
+  }
+  if (!Array.isArray(previewInspectorSession.runtimeFallbackResolutionFrames)) {
+    previewInspectorSession.runtimeFallbackResolutionFrames = [];
   }
   if (!(previewInspectorSession.runtimeEffectIsolations instanceof Map)) {
     previewInspectorSession.runtimeEffectIsolations = new Map();
@@ -103,10 +141,25 @@ function initializePreviewInspectorRuntimeFallbackState() {
   }
 }
 
+/** Notifies mounted hook consumers after a shared neural decision has committed outside render. */
+function notifyPreviewInspectorRuntimeFallbackNeuralSubscribers() {
+  initializePreviewInspectorRuntimeFallbackState();
+  let notifiedCount = 0;
+  for (const listener of [...previewInspectorSession.runtimeFallbackNeuralListeners]) {
+    try {
+      listener();
+      notifiedCount += 1;
+    } catch {}
+  }
+  return notifiedCount;
+}
+
 /** Drops only cached Auto hook values so a new shared collection size is materialized on remount. */
 function resetPreviewInspectorGeneratedRuntimeFallbackValues() {
   initializePreviewInspectorRuntimeFallbackState();
   previewInspectorSession.runtimeFallbackValues.clear();
+  previewInspectorSession.runtimeFallbackDataFlowRecommendations.clear();
+  previewInspectorSession.runtimeFallbackDataFlowSignals.clear();
   previewInspectorSession.runtimeFallbackCompletions = new WeakMap();
 }
 
@@ -361,8 +414,8 @@ function normalizePreviewInspectorRuntimeLiteralDemands(rawDemands) {
   return Object.freeze(demands);
 }
 
-/** Retains only bounded scalar values statically proven for target-only overlay Smart Fill. */
-function normalizePreviewInspectorRuntimeSmartPathValues(rawValues) {
+/** Retains and ranks bounded scalar values statically proven for target-only Smart Fill. */
+function normalizePreviewInspectorRuntimeSmartPathValues(rawValues, metadata) {
   const values = [];
   const seen = new Set();
   for (const rawValue of Array.isArray(rawValues) ? rawValues.slice(0, 32) : []) {
@@ -370,16 +423,87 @@ function normalizePreviewInspectorRuntimeSmartPathValues(rawValues) {
     const path = normalizePreviewInspectorRequiredPropertyPaths([rawValue.path])[0];
     const value = rawValue.value;
     if (
-      typeof path !== 'string' || path.length === 0 || seen.has(path) ||
+      typeof path !== 'string' || path.length === 0 ||
       !(
         typeof value === 'string' || typeof value === 'boolean' ||
         (typeof value === 'number' && Number.isFinite(value))
       )
     ) continue;
-    seen.add(path);
-    values.push(Object.freeze({ path, value }));
+    const role = ['collection-filter-predicate', 'render-state'].includes(rawValue.role)
+      ? rawValue.role
+      : undefined;
+    const identity = role === 'render-state'
+      ? path + '\0' + typeof value + '\0' + String(value)
+      : path;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    values.push(Object.freeze({
+      deterministicRank: Number.isFinite(rawValue.deterministicRank)
+        ? Math.max(0, Number(rawValue.deterministicRank))
+        : values.length,
+      path,
+      value,
+      ...(role === undefined ? {} : { role }),
+    }));
   }
-  return Object.freeze(values);
+  const selectedValues = values.filter((item) => item.role !== 'render-state');
+  const renderStateGroups = new Map();
+  for (const item of values.filter((candidate) => candidate.role === 'render-state')) {
+    const group = renderStateGroups.get(item.path) ?? [];
+    group.push(item);
+    renderStateGroups.set(item.path, group);
+  }
+  let retainedSelection;
+  for (const [path, group] of renderStateGroups) {
+    const candidates = group.map((item, index) => {
+      const semanticValue = String(item.value).toLowerCase().replace(/[^a-z0-9_-]+/gu, '-').slice(0, 48);
+      return {
+        deterministicRank: item.deterministicRank,
+        id: 'render-state:' + typeof item.value + ':' + (semanticValue || String(index)),
+        numbers: {
+          authoredCandidateCount: group.length,
+          authoredRank: item.deterministicRank,
+        },
+        texts: ['Select authored render state ' + String(item.value), path],
+        tokens: [
+          'role:render-state',
+          'path:' + path,
+          'semantic:' + semanticValue,
+          'value-type:' + typeof item.value,
+        ],
+        value: item,
+      };
+    });
+    const selection = typeof selectPreviewInspectorNeuralResidualCandidate === 'function'
+      ? selectPreviewInspectorNeuralResidualCandidate(
+          {
+            blockerKind: 'runtime-fallback',
+            holeKind: 'render-state-scalar',
+            numbers: { authoredCandidateCount: candidates.length },
+            texts: [
+              metadata?.evidence,
+              metadata?.hookName,
+              metadata?.ownerName,
+              metadata?.sourcePath,
+              path,
+            ],
+            tokens: ['compiler-render-state-candidates', 'path:' + path],
+          },
+          candidates,
+        )
+      : undefined;
+    const chosen = candidates.find((candidate) => candidate.id === selection?.candidateId) ??
+      candidates.sort((left, right) =>
+        left.deterministicRank - right.deterministicRank || left.id.localeCompare(right.id),
+      )[0];
+    if (chosen !== undefined) selectedValues.push(chosen.value);
+    if (retainedSelection === undefined && selection !== undefined) retainedSelection = selection;
+  }
+  return Object.freeze({
+    candidateId: retainedSelection?.candidateId,
+    decision: retainedSelection?.decision,
+    values: Object.freeze(selectedValues),
+  });
 }
 
 /** Bounds compiler metadata before retaining it in the local webview session. */
@@ -389,6 +513,13 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
     typeof source[name] === 'string'
       ? source[name].slice(0, PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT)
       : fallback;
+  const smartPathSelection = normalizePreviewInspectorRuntimeSmartPathValues(
+    source.smartPathValues,
+    source,
+  );
+  const semanticValueDemand = normalizePreviewInspectorRuntimeSemanticValueDemand(
+    source.semanticValueDemand,
+  );
   return {
     column: Number.isSafeInteger(source.column) && source.column > 0 ? source.column : undefined,
     evidence: readText('evidence', 'bounded static hook usage inference'),
@@ -408,9 +539,24 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
     preserveSmartValue: source.preserveSmartValue === true,
     renderGuardPaths: normalizePreviewInspectorRequiredPropertyPaths(source.renderGuardPaths),
     requiredPaths: normalizePreviewInspectorRequiredPropertyPaths(source.requiredPaths),
-    smartPathValues: normalizePreviewInspectorRuntimeSmartPathValues(source.smartPathValues),
+    semanticValueDemand,
+    neuralSmartPathDecision: smartPathSelection.decision,
+    smartPathCandidateId: smartPathSelection.candidateId,
+    smartPathValues: smartPathSelection.values,
     sourcePath: readText('sourcePath'),
   };
+}
+
+/** Accepts only compiler-issued scalar identity evidence at one normalized result path. */
+function normalizePreviewInspectorRuntimeSemanticValueDemand(value) {
+  if (value?.kind !== 'identity' || typeof value?.path !== 'string') return undefined;
+  const path = normalizePreviewInspectorRequiredPropertyPaths([value.path])[0];
+  const parsed = parsePreviewInspectorRequiredPath(path);
+  if (
+    typeof path !== 'string' || parsed === undefined || parsed.callable || parsed.collection ||
+    parsed.stringReceiver || parsed.path.length === 0
+  ) return undefined;
+  return Object.freeze({ kind: 'identity', path });
 }
 
 /** Creates the exact compiler/runtime requirement coverage owned by one applied Smart value. */
@@ -482,6 +628,92 @@ function schedulePreviewInspectorRuntimeFallbackRefresh(reachabilityKey) {
   });
 }
 
+/** Commits one learned recommendation only after the Auto transaction that found it has settled. */
+function commitPreviewInspectorRuntimeNeuralRecommendationRetry(exportName, reachabilityKey) {
+  previewInspectorSession.runtimeFallbackNeuralRetryScheduled = false;
+  if (
+    typeof exportName !== 'string' || exportName.length === 0 ||
+    typeof refreshPreviewInspectorExport !== 'function' ||
+    (
+      typeof reachabilityKey === 'string' &&
+      previewInspectorSession.activeTargetReachabilityKey !== reachabilityKey
+    )
+  ) return false;
+  const corridorResumed = typeof resumePreviewInspectorTargetReachabilityAfterNeuralRecommendation ===
+    'function' && typeof reachabilityKey === 'string'
+    ? resumePreviewInspectorTargetReachabilityAfterNeuralRecommendation(reachabilityKey)
+    : false;
+  const notifiedSubscriberCount = notifyPreviewInspectorRuntimeFallbackNeuralSubscribers();
+  refreshPreviewInspectorExport(exportName, false);
+  if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
+    recordPreviewInspectorRuntimeHealth({
+      category: 'neural-residual',
+      detail: {
+        corridorResumed,
+        exportName,
+        notifiedSubscriberCount,
+        phase: 'retry-scheduled',
+        reachabilityKey,
+      },
+      event: 'neural-residual-shared',
+    });
+  }
+  return true;
+}
+
+/** Resets the page error boundary once after a newly learned target recommendation is available. */
+function schedulePreviewInspectorRuntimeNeuralRecommendationRetry() {
+  if (
+    previewInspectorSession.runtimeFallbackNeuralRetryScheduled === true ||
+    typeof refreshPreviewInspectorExport !== 'function'
+  ) return false;
+  const reachabilityKey = previewInspectorSession.activeTargetReachabilityKey;
+  const state = typeof reachabilityKey === 'string'
+    ? previewInspectorSession.targetReachabilityByKey?.get?.(reachabilityKey)
+    : undefined;
+  const exportName = typeof state?.targetExportName === 'string'
+    ? state.targetExportName
+    : previewInspectorSession.selectedExportName;
+  if (typeof exportName !== 'string' || exportName.length === 0) return false;
+  previewInspectorSession.runtimeFallbackNeuralRetryScheduled = true;
+  const scheduleAfterCommit = typeof previewInspectorScheduleRuntimeEffectFrame === 'function'
+    ? previewInspectorScheduleRuntimeEffectFrame
+    : previewInspectorScheduleRuntimeFallbackMicrotask;
+  scheduleAfterCommit(() => {
+    const activeAttempt = previewInspectorSession.blockerTraceActiveAttempt;
+    if (
+      activeAttempt?.settledAt === undefined &&
+      typeof reachabilityKey === 'string' &&
+      activeAttempt?.targetReachabilityKey === reachabilityKey
+    ) {
+      activeAttempt.runtimeFallbackNeuralRetry = { exportName, reachabilityKey };
+      if (typeof settlePreviewInspectorBlockerTraceAttempt === 'function') {
+        settlePreviewInspectorBlockerTraceAttempt(activeAttempt, {
+          outcome: 'superseded-by-neural-recommendation',
+        });
+        return;
+      }
+      /*
+       * The export-boundary reset must wait for the active transaction, but mounted hook consumers
+       * can safely observe the committed recommendation after this animation frame. Without this
+       * notification an invisible stateful drawer can deadlock: its output is required to settle
+       * the attempt that is itself withholding the learned state needed to make that output visible.
+      */
+      notifyPreviewInspectorRuntimeFallbackNeuralSubscribers();
+      if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
+        recordPreviewInspectorRuntimeHealth({
+          category: 'neural-residual',
+          detail: { exportName, phase: 'retry-deferred', reachabilityKey },
+          event: 'neural-residual-shared',
+        });
+      }
+      return;
+    }
+    commitPreviewInspectorRuntimeNeuralRecommendationRetry(exportName, reachabilityKey);
+  });
+  return true;
+}
+
 /** Safely describes one generated fallback without retaining or invoking project-owned values. */
 function describePreviewInspectorRuntimeFallbackValue(value) {
   try {
@@ -533,6 +765,307 @@ function readOrCreatePreviewInspectorRuntimeFallback(
     previewInspectorSession.runtimeFallbackValues.set(metadata.id, fallback);
   }
   return fallback;
+}
+
+/** Creates the bounded residual problem shared by unseen identity-valued hook fields. */
+function createPreviewInspectorRuntimeSemanticValueSpecification(metadata, demand) {
+  return {
+    blockerKind: 'runtime-fallback',
+    holeKind: 'render-state-reference-value',
+    numbers: {
+      requiredPathCount: metadata.requiredPaths.length,
+      semanticPathDepth: parsePreviewInspectorRequiredPath(demand.path)?.path.length ?? 0,
+    },
+    texts: [metadata.evidence, metadata.hookName, metadata.ownerName, demand.path],
+    tokens: [
+      'compiler-semantic-demand:' + demand.kind,
+      'semantic-path-leaf:value',
+      'value-source:generated-hook',
+    ],
+  };
+}
+
+/** Keeps materialization deterministic while the residual chooses only between admitted values. */
+function createPreviewInspectorRuntimeSemanticValueCandidates() {
+  return [
+    {
+      deterministicRank: 0,
+      id: 'independent-generated-value',
+      numbers: { referentialCoherence: 0 },
+      texts: ['Retain the independently generated value leaf'],
+      tokens: ['strategy:independent-generated-value'],
+    },
+    {
+      deterministicRank: 1,
+      id: 'generated-identity-reference',
+      numbers: { referentialCoherence: 1 },
+      texts: ['Reuse the generated collection identity convention'],
+      tokens: ['strategy:generated-identity-reference'],
+    },
+  ];
+}
+
+/** Replaces one compiler-owned scalar path without invoking project getters or setters. */
+function replacePreviewInspectorRuntimeFallbackSemanticValue(value, rawPath, replacement) {
+  const parsed = parsePreviewInspectorRequiredPath(rawPath);
+  if (
+    parsed === undefined || parsed.callable || parsed.collection || parsed.stringReceiver ||
+    parsed.path.length === 0
+  ) return value;
+  let template = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
+  const indexedRoot = /^\d+$/u.test(parsed.path[0]);
+  if (template === null || typeof template !== 'object' || Array.isArray(template) !== indexedRoot) {
+    template = indexedRoot ? [] : {};
+  }
+  let current = template;
+  for (const [index, propertyName] of parsed.path.entries()) {
+    if (blockedInspectorPropNames.has(propertyName)) return value;
+    if (index === parsed.path.length - 1) {
+      current[propertyName] = replacement;
+      break;
+    }
+    const expectsArray = /^\d+$/u.test(parsed.path[index + 1] ?? '');
+    if (
+      current[propertyName] === null || typeof current[propertyName] !== 'object' ||
+      Array.isArray(current[propertyName]) !== expectsArray
+    ) {
+      current[propertyName] = expectsArray ? [] : {};
+    }
+    current = current[propertyName];
+  }
+  const materialized = materializePreviewInspectorRuntimeFallbackOverride(template);
+  markPreviewInspectorGeneratedValue(materialized);
+  return materialized;
+}
+
+/** Emits one compact self-supervised update without retaining the compiler field name or value. */
+function recordPreviewInspectorRuntimeSemanticValueTraining(
+  metadata,
+  initialSelection,
+  finalSelection,
+  updateCount,
+  lastUpdate,
+) {
+  if (typeof recordPreviewInspectorRuntimeHealth !== 'function') return;
+  recordPreviewInspectorRuntimeHealth({
+    category: 'neural-residual',
+    detail: {
+      candidateId: finalSelection?.candidateId,
+      headKey: lastUpdate?.headKey,
+      hookName: metadata.hookName,
+      initialCandidateId: initialSelection?.candidateId,
+      labelReason: 'compiler-identity-field-proof',
+      modelUpdates: lastUpdate?.updates,
+      ownerName: metadata.ownerName,
+      phase: finalSelection?.candidateId === 'generated-identity-reference'
+        ? 'learned-and-promoted'
+        : 'learning-bounded-without-promotion',
+      trainingExamples: updateCount,
+    },
+    event: 'neural-residual-trained',
+  });
+}
+
+/**
+ * Learns one compiler-proven reference mismatch after commit, then retries mounted hook consumers.
+ * The cold path remains deterministic; only a verified semantic candidate may displace it later.
+ */
+function schedulePreviewInspectorRuntimeSemanticValueLearning(
+  metadata,
+  entry,
+  specification,
+  candidates,
+) {
+  if (entry.learningScheduled === true) return;
+  entry.learningScheduled = true;
+  if (typeof beginPreviewInspectorNeuralLearningStatus === 'function') {
+    beginPreviewInspectorNeuralLearningStatus({
+      headKey: 'render-state',
+      labelReason: 'compiler-identity-field-proof',
+    });
+  }
+  const scheduleAfterCommit = typeof previewInspectorScheduleRuntimeEffectFrame === 'function'
+    ? previewInspectorScheduleRuntimeEffectFrame
+    : previewInspectorScheduleRuntimeFallbackMicrotask;
+  scheduleAfterCommit(() => {
+    const compilerDecision = typeof selectPreviewInspectorNeuralResidualCandidate === 'function'
+      ? selectPreviewInspectorNeuralResidualCandidate(specification, [candidates[0]])?.decision
+      : undefined;
+    const identityDecision = typeof selectPreviewInspectorNeuralResidualCandidate === 'function'
+      ? selectPreviewInspectorNeuralResidualCandidate(specification, [candidates[1]])?.decision
+      : undefined;
+    let finalSelection = entry.selection;
+    let lastUpdate;
+    let updateCount = 0;
+    for (let pass = 0; pass < 8 && finalSelection?.candidateId !== 'generated-identity-reference'; pass += 1) {
+      const negativeUpdate = typeof trainPreviewInspectorNeuralResidualDecision === 'function'
+        ? trainPreviewInspectorNeuralResidualDecision(compilerDecision, 0)
+        : undefined;
+      const positiveUpdate = typeof trainPreviewInspectorNeuralResidualDecision === 'function'
+        ? trainPreviewInspectorNeuralResidualDecision(identityDecision, 1)
+        : undefined;
+      if (negativeUpdate !== undefined) {
+        lastUpdate = negativeUpdate;
+        updateCount += 1;
+      }
+      if (positiveUpdate !== undefined) {
+        lastUpdate = positiveUpdate;
+        updateCount += 1;
+      }
+      finalSelection = typeof selectPreviewInspectorNeuralResidualCandidate === 'function'
+        ? selectPreviewInspectorNeuralResidualCandidate(specification, candidates)
+        : finalSelection;
+    }
+    entry.selection = finalSelection;
+    entry.learningComplete = true;
+    if (finalSelection?.decision !== undefined) {
+      previewInspectorSession.runtimeFallbackNeuralDecisions.set(
+        metadata.id,
+        finalSelection.decision,
+      );
+    }
+    recordPreviewInspectorRuntimeSemanticValueTraining(
+      metadata,
+      entry.initialSelection,
+      finalSelection,
+      updateCount,
+      lastUpdate,
+    );
+    if (typeof finishPreviewInspectorNeuralLearningStatus === 'function') {
+      finishPreviewInspectorNeuralLearningStatus({
+        headKey: lastUpdate?.headKey,
+        labelReason: 'compiler-identity-field-proof',
+        modelUpdates: lastUpdate?.updates,
+        phase: finalSelection?.candidateId === 'generated-identity-reference'
+          ? 'learned-and-promoted'
+          : 'learning-bounded-without-promotion',
+        success: finalSelection?.candidateId === 'generated-identity-reference',
+        trainingExamples: updateCount,
+      });
+    }
+    if (
+      finalSelection?.decision !== undefined &&
+      typeof recordPreviewInspectorNeuralResidualSelection === 'function'
+    ) {
+      recordPreviewInspectorNeuralResidualSelection(
+        finalSelection.decision,
+        { mode: 'auto-semantic-retry' },
+        'semantic-value-retry:' + metadata.id,
+      );
+    }
+    if (finalSelection?.candidateId === 'generated-identity-reference') {
+      schedulePreviewInspectorRuntimeNeuralRecommendationRetry();
+    }
+  });
+}
+
+/** Selects and applies a learned referentially coherent value for one compiler-proven field leaf. */
+function createPreviewInspectorRuntimeSemanticValueRecommendation(metadata, compilerFallback) {
+  const demand = metadata.semanticValueDemand;
+  if (demand?.kind !== 'identity') return undefined;
+  const parsed = parsePreviewInspectorRequiredPath(demand.path);
+  if (parsed === undefined) return undefined;
+  const generatedValue = readPreviewInspectorRequiredPathSeed(compilerFallback, parsed.path);
+  const signature = JSON.stringify([
+    typeof readPreviewInspectorNeuralLearningModelUpdates === 'function'
+      ? readPreviewInspectorNeuralLearningModelUpdates()
+      : 0,
+    demand.kind,
+    demand.path,
+    generatedValue === PREVIEW_INSPECTOR_RUNTIME_GENERATED_IDENTITY_VALUE,
+  ]);
+  let entry = previewInspectorSession.runtimeFallbackSemanticValueRecommendations.get(metadata.id);
+  if (entry?.signature !== signature) {
+    const specification = createPreviewInspectorRuntimeSemanticValueSpecification(metadata, demand);
+    const candidates = createPreviewInspectorRuntimeSemanticValueCandidates();
+    const selection = typeof selectPreviewInspectorNeuralResidualCandidate === 'function'
+      ? selectPreviewInspectorNeuralResidualCandidate(specification, candidates)
+      : undefined;
+    entry = {
+      initialSelection: selection,
+      learningComplete: generatedValue === PREVIEW_INSPECTOR_RUNTIME_GENERATED_IDENTITY_VALUE,
+      learningScheduled: false,
+      selection,
+      signature,
+    };
+    if (
+      previewInspectorSession.runtimeFallbackSemanticValueRecommendations.size <
+        PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT
+    ) {
+      previewInspectorSession.runtimeFallbackSemanticValueRecommendations.set(metadata.id, entry);
+    }
+    if (selection?.decision !== undefined) {
+      previewInspectorSession.runtimeFallbackNeuralDecisions.set(metadata.id, selection.decision);
+      if (typeof recordPreviewInspectorNeuralResidualSelection === 'function') {
+        recordPreviewInspectorNeuralResidualSelection(
+          selection.decision,
+          { mode: 'auto-semantic-discovery' },
+          'semantic-value:' + metadata.id,
+        );
+      }
+    }
+    if (
+      generatedValue !== PREVIEW_INSPECTOR_RUNTIME_GENERATED_IDENTITY_VALUE &&
+      selection?.candidateId !== 'generated-identity-reference'
+    ) {
+      schedulePreviewInspectorRuntimeSemanticValueLearning(
+        metadata,
+        entry,
+        specification,
+        candidates,
+      );
+    }
+  }
+  const useIdentityReference =
+    generatedValue === PREVIEW_INSPECTOR_RUNTIME_GENERATED_IDENTITY_VALUE ||
+    entry?.selection?.candidateId === 'generated-identity-reference';
+  if (!useIdentityReference) return undefined;
+  const value = replacePreviewInspectorRuntimeFallbackSemanticValue(
+    compilerFallback,
+    demand.path,
+    PREVIEW_INSPECTOR_RUNTIME_GENERATED_IDENTITY_VALUE,
+  );
+  return Object.freeze({
+    decision: entry?.selection?.decision,
+    metadata: {
+      ...metadata,
+      neuralRecommendation: Object.freeze({
+        candidateId: 'generated-identity-reference',
+        label: 'Learned generated identity reference',
+        path: demand.path,
+        residual: typeof summarizePreviewInspectorNeuralResidualDecision === 'function'
+          ? summarizePreviewInspectorNeuralResidualDecision(entry?.selection?.decision)
+          : undefined,
+        strategy: 'generated-identity-reference',
+        value: PREVIEW_INSPECTOR_RUNTIME_GENERATED_IDENTITY_VALUE,
+      }),
+      renderGuardPaths: normalizePreviewInspectorRequiredPropertyPaths([
+        ...metadata.renderGuardPaths,
+        demand.path,
+      ]),
+      residualHoleKind: 'render-state-reference-value',
+    },
+    value,
+  });
+}
+
+/** Prevents semantic Auto learning from replacing a complete application-owned field value. */
+function shouldUsePreviewInspectorRuntimeSemanticValueRecommendation(
+  metadata,
+  authoredValue,
+  failure,
+  resolutionFrame,
+) {
+  const demand = metadata.semanticValueDemand;
+  if (demand === undefined) return false;
+  if (
+    failure !== undefined ||
+    (Array.isArray(resolutionFrame?.children) && resolutionFrame.children.length > 0) ||
+    isPreviewInspectorMarkedGeneratedValue(authoredValue)
+  ) return true;
+  const parsed = parsePreviewInspectorRequiredPath(demand.path);
+  return parsed !== undefined &&
+    readPreviewInspectorRequiredPathSeed(authoredValue, parsed.path) === undefined;
 }
 
 /** Returns whether a user supplied an explicit JSON result for one render-blocking hook edge. */
@@ -594,11 +1127,42 @@ function isPreviewInspectorRuntimeFallbackSharedIdentity(value) {
   return (typeof value === 'object' || typeof value === 'function') && value !== null;
 }
 
+/**
+ * Mirrors the compiler-proven custom-hook to raw-Context identity into the Inspector session.
+ * A conflicting registration becomes permanently ambiguous, matching the Context bridge policy.
+ */
+function registerPreviewInspectorRuntimeContextIdentity(hookIdentity, contextIdentity) {
+  initializePreviewInspectorRuntimeFallbackState();
+  if (
+    typeof hookIdentity !== 'function' ||
+    !isPreviewInspectorRuntimeFallbackSharedIdentity(contextIdentity) ||
+    previewInspectorSession.runtimeFallbackAmbiguousContextHooks.has(hookIdentity)
+  ) return false;
+  const current = previewInspectorSession.runtimeFallbackContextIdentityByHook.get(hookIdentity);
+  if (current === contextIdentity) return true;
+  if (current !== undefined) {
+    previewInspectorSession.runtimeFallbackContextIdentityByHook.delete(hookIdentity);
+    previewInspectorSession.runtimeFallbackAmbiguousContextHooks.add(hookIdentity);
+    return false;
+  }
+  previewInspectorSession.runtimeFallbackContextIdentityByHook.set(hookIdentity, contextIdentity);
+  return true;
+}
+
+/** Resolves a non-ambiguous raw Context identity for one exact imported custom hook. */
+function readPreviewInspectorRuntimeContextIdentity(hookIdentity) {
+  if (
+    typeof hookIdentity !== 'function' ||
+    previewInspectorSession.runtimeFallbackAmbiguousContextHooks.has(hookIdentity)
+  ) return undefined;
+  return previewInspectorSession.runtimeFallbackContextIdentityByHook.get(hookIdentity);
+}
+
 /** Canonicalizes a bounded exact-scalar overlay independently of compiler discovery order. */
 function createPreviewInspectorRuntimeSharedSmartSignature(values) {
   return JSON.stringify(
     (Array.isArray(values) ? values : [])
-      .map((item) => [item?.path, item?.value])
+      .map((item) => [item?.path, item?.value, item?.role])
       .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
   );
 }
@@ -713,7 +1277,7 @@ function createPreviewInspectorRuntimeFallbackSmartSignature(metadata, requiredP
   );
   const smartSignature = JSON.stringify(
     (Array.isArray(metadata?.smartPathValues) ? metadata.smartPathValues : [])
-      .map((item) => [item?.path, item?.value]),
+      .map((item) => [item?.path, item?.value, item?.role]),
   );
   return pathSignature + ':' + smartSignature;
 }
@@ -731,6 +1295,602 @@ function hasPreviewInspectorRuntimeSmartAlternative(metadata, value) {
     if (!Object.is(current, item.value)) return true;
   }
   return false;
+}
+
+/** Opens a bounded causal frame so an outer hook can recognize values produced by nested fallbacks. */
+function beginPreviewInspectorRuntimeFallbackResolutionFrame(metadata) {
+  initializePreviewInspectorRuntimeFallbackState();
+  const frame = { children: [], id: metadata.id };
+  previewInspectorSession.runtimeFallbackResolutionFrames.push(frame);
+  return frame;
+}
+
+/** Removes only the exact active frame, including when authored hook execution throws. */
+function finishPreviewInspectorRuntimeFallbackResolutionFrame(frame) {
+  const frames = previewInspectorSession.runtimeFallbackResolutionFrames;
+  if (!Array.isArray(frames)) return;
+  if (frames.at(-1) === frame) {
+    frames.pop();
+    return;
+  }
+  const index = frames.lastIndexOf(frame);
+  if (index >= 0) frames.splice(index, 1);
+}
+
+/**
+ * Reports generated child output to its active caller without retaining the child value itself.
+ * This supplies causal provenance for primitives, which cannot carry the generated-value marker.
+ */
+function reportPreviewInspectorNestedRuntimeFallback(metadata, reason, generatedPaths) {
+  const frames = previewInspectorSession.runtimeFallbackResolutionFrames;
+  const parent = Array.isArray(frames) ? frames.at(-1) : undefined;
+  if (parent === undefined || parent.children.length >= 12 || parent.id === metadata.id) return;
+  parent.children.push(Object.freeze({
+    hookName: metadata.hookName,
+    id: metadata.id,
+    reason: String(reason ?? 'generated').slice(0, 80),
+    requiredPaths: normalizePreviewInspectorRequiredPropertyPaths(generatedPaths),
+  }));
+}
+
+/** Returns a stable coarse kind used only as a neural feature token. */
+function readPreviewInspectorRuntimeFallbackValueKind(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+/** Reports whether the compiler proves a property below the hook-result root. */
+function hasPreviewInspectorRuntimeFallbackDescendantRequirement(metadata) {
+  return normalizePreviewInspectorRequiredPropertyPaths([
+    ...(metadata?.requiredPaths ?? []),
+    ...(metadata?.smartPathValues ?? []).map((item) => item?.path),
+  ]).some((path) => path !== '<root>' && path !== '<root>()');
+}
+
+/** Resolves one imported hook contract across callsites without trusting a bare local hook name. */
+function createPreviewInspectorRuntimeFallbackHookContractKey(metadata) {
+  const hookName = typeof metadata?.hookName === 'string' ? metadata.hookName : '';
+  const moduleSpecifier = typeof metadata?.moduleSpecifier === 'string'
+    ? metadata.moduleSpecifier.replaceAll('\\', '/')
+    : '';
+  if (hookName.length === 0 || moduleSpecifier.length === 0) return '';
+  if (!moduleSpecifier.startsWith('.')) return moduleSpecifier + '#' + hookName;
+  const sourcePath = typeof metadata?.sourcePath === 'string'
+    ? metadata.sourcePath.replaceAll('\\', '/')
+    : '';
+  if (sourcePath.length === 0) return '';
+  const segments = sourcePath.split('/');
+  segments.pop();
+  for (const segment of moduleSpecifier.split('/')) {
+    if (segment.length === 0 || segment === '.') continue;
+    if (segment === '..') segments.pop();
+    else segments.push(segment);
+  }
+  return segments.join('/') + '#' + hookName;
+}
+
+/** Reads a selected-target recommendation by exact identity, then its resolved import contract. */
+function readPreviewInspectorRuntimeSharedNeuralRecommendation(metadata, hookIdentity) {
+  const accepts = (recommendation) =>
+    metadata?.smartPathCandidateId === undefined ||
+    recommendation?.smartPathCandidateId === undefined ||
+    recommendation.smartPathCandidateId === metadata?.smartPathCandidateId;
+  if (isPreviewInspectorRuntimeFallbackSharedIdentity(hookIdentity)) {
+    const byIdentity = previewInspectorSession.runtimeFallbackSharedNeuralRecommendations.get(
+      hookIdentity,
+    );
+    if (byIdentity !== undefined && accepts(byIdentity)) {
+      return { match: 'identity', recommendation: byIdentity };
+    }
+  }
+  const contractKey = createPreviewInspectorRuntimeFallbackHookContractKey(metadata);
+  const byContract = contractKey.length === 0
+    ? undefined
+    : previewInspectorSession.runtimeFallbackSharedNeuralRecommendationsByContract.get(contractKey);
+  return byContract === undefined || !accepts(byContract)
+    ? undefined
+    : { match: 'contract', recommendation: byContract };
+}
+
+/** Stores one target recommendation across its exact hook, Context, and resolved import contract. */
+function storePreviewInspectorRuntimeSharedNeuralRecommendation(
+  metadata,
+  hookIdentity,
+  recommendation,
+  origin,
+) {
+  const contractKey = createPreviewInspectorRuntimeFallbackHookContractKey(metadata);
+  const contextIdentity = readPreviewInspectorRuntimeContextIdentity(hookIdentity);
+  if (
+    !isPreviewInspectorRuntimeFallbackSharedIdentity(hookIdentity) &&
+    !isPreviewInspectorRuntimeFallbackSharedIdentity(contextIdentity) &&
+    contractKey.length === 0
+  ) return false;
+  let signature;
+  try {
+    signature = JSON.stringify([
+      recommendation?.strategy,
+      metadata?.smartPathCandidateId,
+      metadata?.sourcePath,
+      normalizePreviewInspectorRequiredPropertyPaths(recommendation?.sharedGuardPaths),
+      recommendation?.value,
+    ]);
+  } catch {
+    signature = String(recommendation?.strategy ?? 'neural-recommendation');
+  }
+  const sharedRecommendation = Object.freeze({
+    label: recommendation?.label,
+    residual: recommendation?.residual,
+    sharedGuardPaths: normalizePreviewInspectorRequiredPropertyPaths(
+      recommendation?.sharedGuardPaths,
+    ),
+    smartPathCandidateId: metadata?.smartPathCandidateId,
+    sourcePath: typeof metadata?.sourcePath === 'string'
+      ? metadata.sourcePath.replaceAll('\\', '/')
+      : '',
+    strategy: recommendation?.strategy,
+    signature,
+    value: recommendation?.value,
+  });
+  let changed = false;
+  if (isPreviewInspectorRuntimeFallbackSharedIdentity(hookIdentity)) {
+    changed ||= previewInspectorSession.runtimeFallbackSharedNeuralRecommendations.get(
+      hookIdentity,
+    )?.signature !== signature;
+    previewInspectorSession.runtimeFallbackSharedNeuralRecommendations.set(
+      hookIdentity,
+      sharedRecommendation,
+    );
+  }
+  if (isPreviewInspectorRuntimeFallbackSharedIdentity(contextIdentity)) {
+    changed ||= previewInspectorSession.runtimeFallbackSharedNeuralRecommendations.get(
+      contextIdentity,
+    )?.signature !== signature;
+    previewInspectorSession.runtimeFallbackSharedNeuralRecommendations.set(
+      contextIdentity,
+      sharedRecommendation,
+    );
+  }
+  if (
+    contractKey.length > 0 &&
+    (
+      previewInspectorSession.runtimeFallbackSharedNeuralRecommendationsByContract.has(
+        contractKey,
+      ) ||
+      previewInspectorSession.runtimeFallbackSharedNeuralRecommendationsByContract.size <
+        PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT
+    )
+  ) {
+    changed ||= previewInspectorSession.runtimeFallbackSharedNeuralRecommendationsByContract.get(
+      contractKey,
+    )?.signature !== signature;
+    previewInspectorSession.runtimeFallbackSharedNeuralRecommendationsByContract.set(
+      contractKey,
+      sharedRecommendation,
+    );
+  }
+  if (!changed) return false;
+  previewInspectorSession.runtimeFallbackNeuralRevision =
+    (previewInspectorSession.runtimeFallbackNeuralRevision ?? 0) + 1;
+  if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
+    recordPreviewInspectorRuntimeHealth({
+      category: 'neural-residual',
+      detail: {
+        hookName: metadata.hookName,
+        origin,
+        ownerName: metadata.ownerName,
+        phase: 'stored',
+        sharedBy: [
+          ...(isPreviewInspectorRuntimeFallbackSharedIdentity(hookIdentity) ? ['identity'] : []),
+          ...(isPreviewInspectorRuntimeFallbackSharedIdentity(contextIdentity)
+            ? ['context-identity']
+            : []),
+          ...(contractKey.length > 0 ? ['contract'] : []),
+        ],
+        sharedGuardPaths: sharedRecommendation.sharedGuardPaths,
+        strategy: sharedRecommendation.strategy,
+      },
+      event: 'neural-residual-shared',
+    });
+  }
+  return true;
+}
+
+/** Reads only compiler-tagged callable candidates that can retain a rendered collection. */
+function readPreviewInspectorRuntimeFallbackDataFlowSmartValues(metadata) {
+  return (Array.isArray(metadata?.smartPathValues) ? metadata.smartPathValues : [])
+    .filter((item) =>
+      item?.role === 'collection-filter-predicate' &&
+      typeof item?.path === 'string' && item.path.endsWith('()') &&
+      typeof item?.value === 'boolean',
+    )
+    .slice(0, 8);
+}
+
+/** Trains on observed generated-call flow, not on the presence of an empty-state DOM node. */
+function observePreviewInspectorRuntimeFallbackDataFlowSignal(signal, decision, metadata) {
+  if (signal?.scheduled === true || decision === undefined) return;
+  signal.scheduled = true;
+  const startedAt = Date.now();
+  const observe = () => {
+    if (signal.observed === true) return;
+    if ((signal.calls ?? 0) === 0 && Date.now() - startedAt < 320) {
+      if (typeof globalThis.setTimeout === 'function') globalThis.setTimeout(observe, 32);
+      return;
+    }
+    signal.observed = true;
+    if ((signal.calls ?? 0) === 0) return;
+    const retentionRatio = Math.max(
+      0,
+      Math.min(1, Number(signal.truthyReturns ?? 0) / Number(signal.calls)),
+    );
+    const label = retentionRatio * 0.65;
+    const update = typeof trainPreviewInspectorNeuralResidualDecision === 'function'
+      ? trainPreviewInspectorNeuralResidualDecision(decision, label)
+      : undefined;
+    if (update !== undefined && typeof recordPreviewInspectorRuntimeHealth === 'function') {
+      recordPreviewInspectorRuntimeHealth({
+        category: 'neural-residual',
+        detail: {
+          callCount: signal.calls,
+          candidateId: decision.candidateId,
+          headKey: update.headKey,
+          hookName: metadata.hookName,
+          label: update.label,
+          labelReason: label > 0
+            ? 'generated-collection-retained'
+            : 'generated-collection-dropped',
+          ownerName: metadata.ownerName,
+          pathCount: signal.paths.size,
+          prediction: update.prediction,
+          truthyReturnCount: signal.truthyReturns,
+          updates: update.updates,
+        },
+        event: 'neural-residual-data-flow-trained',
+      });
+    }
+  };
+  if (typeof globalThis.setTimeout === 'function') globalThis.setTimeout(observe, 0);
+  else previewInspectorScheduleRuntimeFallbackMicrotask(observe);
+}
+
+/**
+ * Lets the residual choose a callable data valve and keeps its cold compiler fallback unchanged.
+ * The first unseen site explores the data-retaining candidate; verified call flow then owns later
+ * ranking through the isolated data-collection head.
+ */
+function createPreviewInspectorRuntimeFallbackDataFlowRecommendation(metadata, compilerFallback) {
+  const smartValues = readPreviewInspectorRuntimeFallbackDataFlowSmartValues(metadata);
+  if (smartValues.length === 0) return undefined;
+  const signature = JSON.stringify([
+    typeof readPreviewInspectorNeuralLearningModelUpdates === 'function'
+      ? readPreviewInspectorNeuralLearningModelUpdates()
+      : 0,
+    smartValues.map((item) => [item.path, item.value, item.role]),
+  ]);
+  const cached = previewInspectorSession.runtimeFallbackDataFlowRecommendations.get(metadata.id);
+  if (cached?.signature === signature) return cached;
+  const requiredPaths = normalizePreviewInspectorRequiredPropertyPaths(metadata.requiredPaths);
+  const candidates = [
+    {
+      deterministicRank: 0,
+      id: 'retain-generated-collection',
+      numbers: { callableCandidateCount: smartValues.length, retainsData: 1 },
+      texts: ['Return the compiler-admitted predicate candidate and retain generated rows'],
+      tokens: ['strategy:data-retaining-call-result', 'role:collection-filter-predicate'],
+    },
+    {
+      deterministicRank: 1,
+      id: 'neutral-callable',
+      numbers: { callableCandidateCount: smartValues.length, retainsData: 0 },
+      texts: ['Keep the generated callable inert'],
+      tokens: ['strategy:neutral-call-result', 'role:collection-filter-predicate'],
+    },
+  ];
+  const selection = typeof selectPreviewInspectorNeuralResidualCandidate === 'function'
+    ? selectPreviewInspectorNeuralResidualCandidate(
+        {
+          blockerKind: 'runtime-fallback',
+          holeKind: 'rendered-collection-consumer-data',
+          numbers: {
+            callableCandidateCount: smartValues.length,
+            requiredPathCount: requiredPaths.length,
+          },
+          texts: [
+            metadata.evidence,
+            metadata.hookName,
+            metadata.ownerName,
+            metadata.sourcePath,
+            ...smartValues.map((item) => item.path),
+          ],
+          tokens: [
+            'compiler-call-result-candidate',
+            ...smartValues.map((item) => 'role:' + item.role),
+          ],
+        },
+        candidates,
+      )
+    : undefined;
+  const candidateId = selection?.candidateId === 'neutral-callable'
+    ? 'neutral-callable'
+    : 'retain-generated-collection';
+  const selectedSmartValues = candidateId === 'retain-generated-collection'
+    ? smartValues
+    : [];
+  const draft = createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
+    compilerFallback,
+    requiredPaths,
+    selectedSmartValues,
+  );
+  const signal = {
+    calls: 0,
+    candidateId,
+    observed: false,
+    paths: new Set(smartValues.map((item) => item.path.slice(0, -2))),
+    scheduled: false,
+    truthyReturns: 0,
+  };
+  const value = materializePreviewInspectorRuntimeFallbackOverride(draft, 0, signal);
+  markPreviewInspectorGeneratedValue(value);
+  const recommendation = Object.freeze({
+    candidateId,
+    decision: selection?.decision,
+    signal,
+    signature,
+    summary: Object.freeze({
+      candidateId,
+      label: candidateId === 'retain-generated-collection'
+        ? 'Learned data-retaining callable'
+        : 'Learned neutral callable',
+      paths: Object.freeze(smartValues.map((item) => item.path)),
+      residual: typeof summarizePreviewInspectorNeuralResidualDecision === 'function'
+        ? summarizePreviewInspectorNeuralResidualDecision(selection?.decision)
+        : undefined,
+      strategy: candidateId,
+    }),
+    value,
+  });
+  previewInspectorSession.runtimeFallbackDataFlowRecommendations.set(metadata.id, recommendation);
+  previewInspectorSession.runtimeFallbackDataFlowSignals.set(metadata.id, signal);
+  if (selection?.decision !== undefined) {
+    previewInspectorSession.runtimeFallbackNeuralDecisions.set(metadata.id, selection.decision);
+    observePreviewInspectorRuntimeFallbackDataFlowSignal(signal, selection.decision, metadata);
+  }
+  return recommendation;
+}
+
+/**
+ * Creates a typed recommendation when a nested generated primitive contradicts its caller's shape.
+ * The neural residual sees semantic candidate descriptions only; materialization remains in the
+ * existing bounded blocker-value runtime and defaults to the non-branch-opening shape on a tie.
+ */
+function createPreviewInspectorNestedRuntimeFallbackRecommendation(
+  metadata,
+  authoredValue,
+  compilerFallback,
+  resolutionFrame,
+  hookIdentity,
+) {
+  const authoredKind = readPreviewInspectorRuntimeFallbackValueKind(authoredValue);
+  const fallbackKind = readPreviewInspectorRuntimeFallbackValueKind(compilerFallback);
+  const requiredPaths = normalizePreviewInspectorRequiredPropertyPaths(metadata.requiredPaths);
+  const sharedMatch = readPreviewInspectorRuntimeSharedNeuralRecommendation(
+    metadata,
+    hookIdentity,
+  );
+  const sharedRecommendation = sharedMatch?.recommendation;
+  if (sharedRecommendation !== undefined) {
+    const sharedValue = materializePreviewInspectorRuntimeFallbackOverride(
+      copyPreviewInspectorBlockerValueForJson(sharedRecommendation.value, { nodes: 0 }),
+    );
+    const localDraft = createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
+      compilerFallback,
+      requiredPaths,
+      [],
+    );
+    const localValue = materializePreviewInspectorRuntimeFallbackOverride(localDraft);
+    const localCompletion = completePreviewInspectorGeneratedValue(sharedValue, localValue, {
+      requiredPaths,
+    });
+    const compatibleSharedValue = localCompletion.changed
+      ? localCompletion.value
+      : sharedValue;
+    const sharedGuardPaths = normalizePreviewInspectorRequiredPropertyPaths(
+      sharedRecommendation.sharedGuardPaths,
+    );
+    const authoredCompletion = isPreviewInspectorRuntimeFallbackSharedIdentity(authoredValue)
+      ? completePreviewInspectorGeneratedValue(authoredValue, compatibleSharedValue, {
+          renderGuardPaths: sharedGuardPaths,
+          requiredPaths: normalizePreviewInspectorRequiredPropertyPaths([
+            ...requiredPaths,
+            ...sharedGuardPaths,
+          ]),
+        })
+      : { changed: false, value: authoredValue };
+    const value = authoredCompletion.changed
+      ? authoredCompletion.value
+      : isPreviewInspectorRuntimeFallbackSharedIdentity(authoredValue)
+        ? authoredValue
+        : compatibleSharedValue;
+    markPreviewInspectorGeneratedValue(value);
+    if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
+      recordPreviewInspectorRuntimeHealth({
+        category: 'neural-residual',
+        detail: {
+          authoredKind,
+          changed: authoredCompletion.changed === true,
+          hookName: metadata.hookName,
+          match: sharedMatch.match,
+          ownerName: metadata.ownerName,
+          phase: 'applied',
+          sharedGuardValuePreview: sharedGuardPaths.map((rawPath) => {
+            const parsed = parsePreviewInspectorRequiredPath(rawPath);
+            const pathValue = parsed === undefined
+              ? undefined
+              : readPreviewInspectorRequiredPathSeed(value, parsed.path);
+            return rawPath + '=' + describePreviewInspectorRuntimeFallbackValue(pathValue);
+          }).join(', '),
+          sharedGuardPaths,
+          strategy: sharedRecommendation.strategy,
+        },
+        event: 'neural-residual-shared',
+      });
+    }
+    return {
+      decision: undefined,
+      generatedPaths: normalizePreviewInspectorRequiredPropertyPaths([
+        ...requiredPaths,
+        ...sharedGuardPaths,
+      ]),
+      shared: true,
+      strategy: sharedRecommendation.strategy,
+      summary: {
+        ...sharedRecommendation,
+        nestedFallbacks: (resolutionFrame?.children ?? []).map((child) => ({
+          hookName: child.hookName,
+          reason: child.reason,
+        })),
+        requiredPaths,
+        shared: true,
+        value: copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 }),
+      },
+      value,
+    };
+  }
+  if (
+    !Array.isArray(resolutionFrame?.children) || resolutionFrame.children.length === 0 ||
+    authoredValue === null || authoredValue === undefined ||
+    (typeof authoredValue === 'object' || typeof authoredValue === 'function') ||
+    (typeof compilerFallback !== 'object' && typeof compilerFallback !== 'function') ||
+    compilerFallback === null ||
+    !hasPreviewInspectorRuntimeFallbackDescendantRequirement(metadata)
+  ) return undefined;
+  const shapeDraft = createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
+    compilerFallback,
+    requiredPaths,
+    [],
+  );
+  const branchDraft = createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
+    compilerFallback,
+    requiredPaths,
+    metadata.smartPathValues,
+  );
+  let distinctBranchDraft = false;
+  try { distinctBranchDraft = JSON.stringify(branchDraft) !== JSON.stringify(shapeDraft); } catch {}
+  const requiredPathSet = new Set(requiredPaths);
+  const exactSmartPathCount = (Array.isArray(metadata?.smartPathValues)
+    ? metadata.smartPathValues
+    : []).filter((item) => requiredPathSet.has(item?.path)).length;
+  const compilerBranchPreferred = distinctBranchDraft && exactSmartPathCount > 0;
+  const candidates = [
+    {
+      deterministicRank: compilerBranchPreferred ? 1 : 0,
+      id: 'shape-only',
+      numbers: {
+        branchOpening: 0,
+        exactSmartPathCount: 0,
+        requiredPathCount: requiredPaths.length,
+      },
+      texts: ['Preserve the compiler fallback scalars and repair only its required shape'],
+      tokens: [
+        'strategy:shape-only',
+        'value-kind:' + fallbackKind,
+        'compiler-branch-proof:false',
+      ],
+    },
+    ...(distinctBranchDraft
+      ? [{
+          deterministicRank: compilerBranchPreferred ? 0 : 1,
+          id: 'branch-opening',
+          numbers: {
+            branchOpening: 1,
+            exactSmartPathCount,
+            requiredPathCount: requiredPaths.length,
+          },
+          texts: [
+            'Use compiler-proven branch scalars while repairing the required shape',
+            (metadata.smartPathValues ?? []).map((item) => item?.path).join(' '),
+          ],
+          tokens: [
+            'strategy:branch-opening',
+            'value-kind:' + fallbackKind,
+            'compiler-branch-proof:' + String(compilerBranchPreferred),
+          ],
+        }]
+      : []),
+  ];
+  const specification = {
+    blockerKind: 'runtime-fallback',
+    holeKind: 'blocker-exception-runtime-value',
+    numbers: {
+      nestedFallbackCount: resolutionFrame.children.length,
+      requiredPathCount: requiredPaths.length,
+    },
+    texts: [
+      metadata.evidence,
+      metadata.hookName,
+      metadata.ownerName,
+      metadata.sourcePath,
+      requiredPaths.join(' '),
+    ],
+    tokens: [
+      'authored-kind:' + authoredKind,
+      'fallback-kind:' + fallbackKind,
+      ...requiredPaths.slice(0, 16).map((path) => 'required:' + path),
+      ...resolutionFrame.children.slice(0, 8).map(
+        (child) => 'nested:' + child.hookName + ':' + child.reason,
+      ),
+    ],
+  };
+  const selection = typeof selectPreviewInspectorNeuralResidualCandidate === 'function'
+    ? selectPreviewInspectorNeuralResidualCandidate(specification, candidates)
+    : undefined;
+  const strategy = selection?.candidateId === 'branch-opening'
+    ? 'branch-opening'
+    : 'shape-only';
+  const decision = strategy === 'branch-opening'
+    ? previewInspectorSession.runtimeFallbackNeuralDecisions.get(metadata.id) ?? selection?.decision
+    : selection?.decision;
+  const draft = strategy === 'branch-opening' ? branchDraft : shapeDraft;
+  const value = materializePreviewInspectorRuntimeFallbackOverride(draft);
+  const safeValue = strategy === 'shape-only'
+    ? value
+    : materializePreviewInspectorRuntimeFallbackOverride(shapeDraft);
+  const sharedGuardPaths = requiredPaths.filter((rawPath) => {
+    const parsed = parsePreviewInspectorRequiredPath(rawPath);
+    if (parsed === undefined || parsed.callable || parsed.collection || parsed.stringReceiver) {
+      return false;
+    }
+    const leaf = readPreviewInspectorRequiredPathSeed(value, parsed.path);
+    return leaf === null || ['boolean', 'number', 'string'].includes(typeof leaf);
+  });
+  markPreviewInspectorGeneratedValue(value);
+  markPreviewInspectorGeneratedValue(safeValue);
+  return {
+    decision,
+    generatedPaths: requiredPaths,
+    safeValue,
+    sharedGuardPaths,
+    strategy,
+    summary: {
+      label: strategy === 'branch-opening'
+        ? 'Compiler branch value'
+        : 'Minimum compatible hook value',
+      nestedFallbacks: resolutionFrame.children.map((child) => ({
+        hookName: child.hookName,
+        reason: child.reason,
+      })),
+      requiredPaths,
+      residual: typeof summarizePreviewInspectorNeuralResidualDecision === 'function'
+        ? summarizePreviewInspectorNeuralResidualDecision(decision)
+        : undefined,
+      sharedGuardPaths,
+      strategy,
+      value: copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 }),
+    },
+    value,
+  };
 }
 
 /** Registers a bypassed hook failure once and mirrors it as a warning, never a fatal error. */
@@ -766,8 +1926,10 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
     previewInspectorSession.runtimeFallbackSmartIds.delete(metadata.id);
     previewInspectorSession.runtimeFallbackSmartPathSignatures.delete(metadata.id);
   }
+  const { neuralSmartPathDecision: _neuralSmartPathDecision, ...recordMetadata } = metadata;
+  void _neuralSmartPathDecision;
   const next = {
-    ...metadata,
+    ...recordMetadata,
     count: (previous?.count ?? 0) + 1,
     error: errorHeadline,
     fallbackPreview: describePreviewInspectorRuntimeFallbackValue(fallback),
@@ -788,7 +1950,7 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
   };
   previewInspectorSession.runtimeFallbacks.set(metadata.id, next);
   if (
-    reason !== 'smart-candidate' &&
+    reason !== 'smart-candidate' && reason !== 'neural-candidate' &&
     (
       previous === undefined ||
       previous.error !== next.error ||
@@ -800,6 +1962,8 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
       typeof recordPreviewInspectorBlockerAutoDecision === 'function' &&
       !next.passive && (next.mode === 'auto' || next.mode === 'smart')
     ) {
+      const neuralDataFlowSignal =
+        previewInspectorSession.runtimeFallbackDataFlowSignals.get(metadata.id);
       recordPreviewInspectorBlockerAutoDecision({
         action: reason === 'partial' ? 'Complete missing hook fields' : 'Substitute failed hook result',
         blockerId: metadata.id,
@@ -809,14 +1973,23 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
         generatedPaths,
         line: metadata.line,
         mode: next.mode,
+        neuralResidualDecision:
+          previewInspectorSession.runtimeFallbackNeuralDecisions.get(metadata.id),
+        neuralDataFlowSignal,
         ownerName: metadata.ownerName,
         reason: errorHeadline || metadata.evidence,
-        selectedValue: createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
-          fallback,
-          requiredPaths,
-        ),
+        selectedValue: metadata.neuralRecommendation?.value ??
+          createPreviewInspectorRuntimeFallbackSmartDraftTemplate(fallback, requiredPaths),
         sourcePath: metadata.sourcePath,
-        summary: { requiredPaths },
+        startsRenderAttempt: neuralDataFlowSignal !== undefined ||
+          metadata.residualHoleKind === 'render-state-reference-value',
+        summary: {
+          ...(metadata.neuralRecommendation === undefined
+            ? {}
+            : { neuralRecommendation: metadata.neuralRecommendation }),
+          requiredPaths,
+        },
+        targetReachabilityKey: next.reachabilityKey,
       });
     }
     const message =
@@ -884,6 +2057,9 @@ function readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback) {
 function clearPreviewInspectorRuntimeFallback(metadata) {
   initializePreviewInspectorRuntimeFallbackState();
   if (previewInspectorSession.runtimeFallbacks.delete(metadata.id)) {
+    previewInspectorSession.runtimeFallbackNeuralDecisions.delete(metadata.id);
+    previewInspectorSession.runtimeFallbackDataFlowRecommendations.delete(metadata.id);
+    previewInspectorSession.runtimeFallbackDataFlowSignals.delete(metadata.id);
     schedulePreviewInspectorRuntimeFallbackRefresh();
   }
 }
@@ -899,6 +2075,7 @@ function resolvePreviewInspectorRuntimeHook(
   readGraphqlDocument,
   readGraphqlOptions,
   readHookIdentity,
+  inheritedResolutionFrame,
 ) {
   const metadata = scopePreviewInspectorRuntimeFallbackMetadata(
     normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata),
@@ -912,30 +2089,53 @@ function resolvePreviewInspectorRuntimeHook(
   ) {
     return readHook();
   }
+  const neuralSmartPathDecision = typeof copyPreviewInspectorNeuralResidualDecision === 'function'
+    ? copyPreviewInspectorNeuralResidualDecision(metadata.neuralSmartPathDecision)
+    : undefined;
+  if (neuralSmartPathDecision !== undefined) {
+    initializePreviewInspectorRuntimeFallbackState();
+    previewInspectorSession.runtimeFallbackNeuralDecisions.set(metadata.id, neuralSmartPathDecision);
+  }
   let value;
   let failure;
   let hookIdentity;
   const manualOverride = hasPreviewInspectorRuntimeFallbackOverride(metadata.id);
+  const ownsResolutionFrame = inheritedResolutionFrame === undefined;
+  const resolutionFrame = inheritedResolutionFrame ??
+    beginPreviewInspectorRuntimeFallbackResolutionFrame(metadata);
   if (typeof readHookIdentity === 'function') {
     try {
       hookIdentity = readHookIdentity();
     } catch {}
   }
   try {
-    value = readHook();
-  } catch (error) {
-    if (
-      isPreviewInspectorRuntimeThenable(error) ||
-      (!manualOverride && !readPreviewInspectorFallbackValuesEnabled())
-    ) {
-      throw error;
+    try {
+      value = readHook();
+    } catch (error) {
+      if (
+        isPreviewInspectorRuntimeThenable(error) ||
+        (!manualOverride && !readPreviewInspectorFallbackValuesEnabled())
+      ) {
+        throw error;
+      }
+      failure = error;
     }
-    failure = error;
+  } finally {
+    if (ownsResolutionFrame) {
+      finishPreviewInspectorRuntimeFallbackResolutionFrame(resolutionFrame);
+    }
   }
   const sharedIdentityChanged = rememberPreviewInspectorRuntimeSmartAuthoredValue(
     metadata,
     failure === undefined ? value : undefined,
-    failure === undefined ? undefined : hookIdentity,
+    failure !== undefined ||
+      (
+        !isPreviewInspectorRuntimeFallbackSharedIdentity(value) &&
+        Array.isArray(resolutionFrame?.children) &&
+        resolutionFrame.children.length > 0
+      )
+      ? hookIdentity
+      : undefined,
   );
   if (sharedIdentityChanged) {
     schedulePreviewInspectorRuntimeFallbackRefresh(
@@ -975,18 +2175,145 @@ function resolvePreviewInspectorRuntimeHook(
     readGraphqlDocument,
     readGraphqlOptions,
   );
+  const semanticValueRecommendation = manualOverride ||
+    !shouldUsePreviewInspectorRuntimeSemanticValueRecommendation(
+      completionMetadata,
+      value,
+      failure,
+      resolutionFrame,
+    )
+    ? undefined
+    : createPreviewInspectorRuntimeSemanticValueRecommendation(
+        completionMetadata,
+        compilerFallback,
+      );
+  const semanticCompletionMetadata = semanticValueRecommendation?.metadata ?? completionMetadata;
+  const semanticFallback = semanticValueRecommendation?.value ?? compilerFallback;
+  if (semanticValueRecommendation?.decision !== undefined) {
+    previewInspectorSession.runtimeFallbackNeuralDecisions.set(
+      semanticCompletionMetadata.id,
+      semanticValueRecommendation.decision,
+    );
+  }
+  const dataFlowRecommendation = manualOverride
+    ? undefined
+    : createPreviewInspectorRuntimeFallbackDataFlowRecommendation(
+        semanticCompletionMetadata,
+        semanticFallback,
+      );
+  const recommendedCompletionMetadata = dataFlowRecommendation === undefined
+    ? semanticCompletionMetadata
+    : {
+        ...semanticCompletionMetadata,
+        neuralRecommendation: dataFlowRecommendation.summary,
+        residualHoleKind: 'rendered-collection-consumer-data',
+      };
   const sharedCarrier = failure === undefined ? value : hookIdentity;
   const sharedCompletion = !manualOverride
     ? createPreviewInspectorRuntimeSharedSmartCompletion(
-        completionMetadata,
+        recommendedCompletionMetadata,
         sharedCarrier,
-        compilerFallback,
+        dataFlowRecommendation?.value ?? semanticFallback,
       )
     : { fallback: compilerFallback, metadata: completionMetadata, projected: false };
   const fallback = sharedCompletion.fallback;
   const effectiveCompletionMetadata = createPreviewInspectorRuntimeSmartCompletionMetadata(
     sharedCompletion.metadata,
   );
+  const residualRecommendation = failure === undefined
+    ? createPreviewInspectorNestedRuntimeFallbackRecommendation(
+        effectiveCompletionMetadata,
+        value,
+        fallback,
+        resolutionFrame,
+        hookIdentity,
+      )
+    : undefined;
+  const residualMetadata = residualRecommendation === undefined
+    ? effectiveCompletionMetadata
+    : {
+        ...effectiveCompletionMetadata,
+        neuralRecommendation: residualRecommendation.summary,
+        residualHoleKind: 'nested-generated-shape-mismatch',
+      };
+  if (residualRecommendation?.decision !== undefined) {
+    previewInspectorSession.runtimeFallbackNeuralDecisions.set(
+      effectiveCompletionMetadata.id,
+      residualRecommendation.decision,
+    );
+  }
+  const ownsNeuralRecommendation = manualOverride ||
+    previewInspectorSession.runtimeFallbackSmartIds.has(effectiveCompletionMetadata.id);
+  if (
+    residualRecommendation !== undefined &&
+    residualRecommendation.shared !== true &&
+    ownsNeuralRecommendation
+  ) {
+    const stored = storePreviewInspectorRuntimeSharedNeuralRecommendation(
+      effectiveCompletionMetadata,
+      hookIdentity,
+      {
+        label: residualRecommendation.summary.label,
+        residual: residualRecommendation.summary.residual,
+        sharedGuardPaths: residualRecommendation.sharedGuardPaths,
+        strategy: residualRecommendation.strategy,
+        value: residualRecommendation.summary.value,
+      },
+      'runtime-discovery',
+    );
+    if (stored) schedulePreviewInspectorRuntimeNeuralRecommendationRetry();
+  }
+  if (
+    residualRecommendation !== undefined &&
+    (
+      ownsNeuralRecommendation || residualRecommendation.shared === true
+    )
+  ) {
+    if (residualRecommendation.shared === true && !ownsNeuralRecommendation) {
+      clearPreviewInspectorRuntimeFallback(residualMetadata);
+      reportPreviewInspectorNestedRuntimeFallback(
+        residualMetadata,
+        'shared-neural-recommendation',
+        residualRecommendation.generatedPaths,
+      );
+      return residualRecommendation.value;
+    }
+    recordPreviewInspectorRuntimeFallback(
+      residualMetadata,
+      residualRecommendation.value,
+      'partial',
+      undefined,
+      residualRecommendation.generatedPaths,
+    );
+    reportPreviewInspectorNestedRuntimeFallback(
+      residualMetadata,
+      'neural-recommendation',
+      residualRecommendation.generatedPaths,
+    );
+    return residualRecommendation.value;
+  }
+  if (residualRecommendation !== undefined) {
+    recordPreviewInspectorRuntimeFallback(
+      residualMetadata,
+      residualRecommendation.value,
+      'neural-candidate',
+      undefined,
+      [],
+    );
+    /*
+     * A nested generated scalar cannot safely escape through a custom hook whose caller proves an
+     * object contract: destructuring succeeds but yields undefined and the next member read throws
+     * before the learned branch can be selected. Apply only the recommendation's neutral shape on
+     * this discovery pass. Its branch-opening value remains recorded and is promoted by the normal
+     * Smart retry, so this exception repair cannot invent visible state ahead of neural selection.
+     */
+    reportPreviewInspectorNestedRuntimeFallback(
+      residualMetadata,
+      'neural-shape-safety',
+      residualRecommendation.generatedPaths,
+    );
+    return residualRecommendation.safeValue;
+  }
   if (
     failure === undefined &&
     shouldUsePreviewInspectorHookGraphqlFallback(value, readGraphqlDocument)
@@ -996,6 +2323,11 @@ function resolvePreviewInspectorRuntimeHook(
       fallback,
       'partial',
       undefined,
+      effectiveCompletionMetadata.requiredPaths,
+    );
+    reportPreviewInspectorNestedRuntimeFallback(
+      effectiveCompletionMetadata,
+      'partial',
       effectiveCompletionMetadata.requiredPaths,
     );
     return fallback;
@@ -1035,6 +2367,11 @@ function resolvePreviewInspectorRuntimeHook(
       // A sibling shell consumer receives the exact state selected by the target hook. It is not a
       // second blocker and should not emit a duplicate partial-value warning or occupy a frontier.
       clearPreviewInspectorRuntimeFallback(effectiveCompletionMetadata);
+      reportPreviewInspectorNestedRuntimeFallback(
+        effectiveCompletionMetadata,
+        'shared-smart-projection',
+        completion.paths,
+      );
       return completion.value;
     }
     recordPreviewInspectorRuntimeFallback(
@@ -1042,6 +2379,11 @@ function resolvePreviewInspectorRuntimeHook(
       fallback,
       'partial',
       undefined,
+      completion.paths,
+    );
+    reportPreviewInspectorNestedRuntimeFallback(
+      effectiveCompletionMetadata,
+      'partial',
       completion.paths,
     );
     return completion.value;
@@ -1053,6 +2395,11 @@ function resolvePreviewInspectorRuntimeHook(
     // A Provider-less sibling call failed at the same exact imported hook function. It receives
     // the target's coherent Smart state without becoming a second missing-provider blocker.
     clearPreviewInspectorRuntimeFallback(effectiveCompletionMetadata);
+    reportPreviewInspectorNestedRuntimeFallback(
+      effectiveCompletionMetadata,
+      'shared-smart-projection',
+      effectiveCompletionMetadata.requiredPaths,
+    );
     return fallback;
   }
   recordPreviewInspectorRuntimeFallback(
@@ -1067,6 +2414,13 @@ function resolvePreviewInspectorRuntimeHook(
         : effectiveCompletionMetadata.passive
           ? []
           : ['<root>'],
+  );
+  reportPreviewInspectorNestedRuntimeFallback(
+    effectiveCompletionMetadata,
+    failure === undefined ? 'nullish' : 'threw',
+    effectiveCompletionMetadata.requiredPaths.length > 0
+      ? effectiveCompletionMetadata.requiredPaths
+      : ['<root>'],
   );
   return fallback;
 }
@@ -1272,6 +2626,37 @@ function resolvePreviewInspectorRuntimeEffect(readEffect, rawMetadata, ownership
 }
 
 /**
+ * Repairs a fragment carrier whose upstream generated Context widened one object into a list.
+ *
+ * GraphQL fragment helpers can faithfully return their input carrier. When a schema-less Context
+ * fallback generated company as an Array but this callsite immediately destructures warnings, the
+ * Array is not an authored fragment result: its first generated row is the compatible object root.
+ * This decision is enabled only for Auto values and only by compiler-proven named root paths.
+ */
+function readPreviewInspectorCompatibleGraphqlFragmentCarrier(readFragment, metadata) {
+  const value = readFragment();
+  if (!readPreviewInspectorFallbackValuesEnabled() || !Array.isArray(value)) return value;
+  const requiresNamedObjectRoot = normalizePreviewInspectorRequiredPropertyPaths(
+    metadata?.requiredPaths,
+  )
+    .map(parsePreviewInspectorRequiredPath)
+    .some((parsed) =>
+      parsed !== undefined &&
+      parsed.path.length > 0 &&
+      !/^\d+$/u.test(parsed.path[0]),
+    );
+  if (!requiresNamedObjectRoot) return value;
+  try {
+    const first = Object.getOwnPropertyDescriptor(value, '0');
+    return first !== undefined && Object.hasOwn(first, 'value')
+      ? first.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Completes a GraphQL Code Generator fragment carrier from its authored fragment selection.
  * The normal helper still executes first; real carrier fields win, while an empty Context/prop
  * placeholder receives only missing selected fields through the ordinary editable blocker store.
@@ -1284,7 +2669,10 @@ function resolvePreviewInspectorGraphqlFragmentValue(
 ) {
   const normalizedMetadata = normalizePreviewInspectorRuntimeFallbackMetadata(metadata);
   return resolvePreviewInspectorRuntimeHook(
-    readFragment,
+    () => readPreviewInspectorCompatibleGraphqlFragmentCarrier(
+      readFragment,
+      normalizedMetadata,
+    ),
     () => {
       const selectedData = createPreviewInspectorHookGraphqlFragmentData(readDocument);
       return overlayPreviewInspectorGraphqlLiteralDemands(
@@ -1438,6 +2826,53 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
     return completion.changed || sharedIdentityChanged || !wasSmart ||
       previousPathSignature !== pathSignature;
   }
+  if (
+    record.residualHoleKind === 'nested-generated-shape-mismatch' &&
+    record.neuralRecommendation?.value !== undefined
+  ) {
+    const recommendedDraft = copyPreviewInspectorBlockerValueForJson(
+      record.neuralRecommendation.value,
+      { nodes: 0 },
+    );
+    const recommendedValue = materializePreviewInspectorRuntimeFallbackOverride(
+      recommendedDraft,
+    );
+    markPreviewInspectorGeneratedValue(recommendedValue);
+    previewInspectorSession.runtimeFallbackValues.set(fallbackId, recommendedValue);
+    previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
+    previewInspectorSession.runtimeFallbackSmartPathSignatures.set(fallbackId, pathSignature);
+    previewInspectorSession.runtimeFallbacks.set(fallbackId, {
+      ...record,
+      mode: 'smart',
+    });
+    const sharedRecommendationStored = storePreviewInspectorRuntimeSharedNeuralRecommendation(
+      record,
+      previewInspectorSession.runtimeFallbackAuthoredValues.get(fallbackId),
+      record.neuralRecommendation,
+      'smart-selection',
+    );
+    if (sharedRecommendationStored) schedulePreviewInspectorRuntimeNeuralRecommendationRetry();
+    return sharedIdentityChanged || !wasSmart || previousPathSignature !== pathSignature ||
+      recommendedValue !== fallback;
+  }
+  const dataFlowRecommendation =
+    record.residualHoleKind === 'rendered-collection-consumer-data'
+      ? previewInspectorSession.runtimeFallbackDataFlowRecommendations.get(fallbackId)
+      : undefined;
+  if (dataFlowRecommendation?.value !== undefined) {
+    previewInspectorSession.runtimeFallbackValues.set(
+      fallbackId,
+      dataFlowRecommendation.value,
+    );
+    previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
+    previewInspectorSession.runtimeFallbackSmartPathSignatures.set(fallbackId, pathSignature);
+    previewInspectorSession.runtimeFallbacks.set(fallbackId, {
+      ...record,
+      mode: 'smart',
+    });
+    return sharedIdentityChanged || !wasSmart || previousPathSignature !== pathSignature ||
+      dataFlowRecommendation.value !== fallback;
+  }
   if (record.graphqlSelectionBacked === true) {
     /*
      * The authored DocumentNode proves every selected response field. Narrowing this value to only
@@ -1501,7 +2936,7 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
 
 /** Replaces one generated hook result with only the paths proven necessary by downstream reads. */
 function smartFillPreviewInspectorRuntimeFallback(fallbackId) {
-  if (!applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId)) return;
+  if (!applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId)) return false;
   const record = previewInspectorSession.runtimeFallbacks.get(fallbackId);
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function' && record !== undefined) {
     const generatedSelection = createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
@@ -1520,12 +2955,19 @@ function smartFillPreviewInspectorRuntimeFallback(fallbackId) {
       mode: previewInspectorSession.runtimeFallbackOverrides.has(fallbackId)
         ? 'smart-manual'
         : 'smart',
+      neuralResidualDecision:
+        previewInspectorSession.runtimeFallbackNeuralDecisions.get(fallbackId),
+      neuralDataFlowSignal:
+        previewInspectorSession.runtimeFallbackDataFlowSignals.get(fallbackId),
       ownerName: record.ownerName,
       reason: record.evidence,
       selectedValue: generatedSelection,
       sourcePath: record.sourcePath,
       startsRenderAttempt: true,
       summary: {
+        ...(record.neuralRecommendation === undefined
+          ? {}
+          : { neuralRecommendation: record.neuralRecommendation }),
         preservedUserValue: previewInspectorSession.runtimeFallbackOverrides.has(fallbackId),
         requiredPaths: record.requiredPaths,
       },
@@ -1533,6 +2975,7 @@ function smartFillPreviewInspectorRuntimeFallback(fallbackId) {
   }
   previewInspectorSession.fallbackValuesEnabled = true;
   commitPreviewInspectorRuntimeFallbackChange();
+  return true;
 }
 
 /**

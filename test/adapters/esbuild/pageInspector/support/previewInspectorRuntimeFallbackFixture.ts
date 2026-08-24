@@ -6,6 +6,8 @@
  */
 import { createContext, runInContext } from 'node:vm';
 import { createPreviewInspectorFailureEvidenceRuntimeSource } from '../../../../../src/adapters/esbuild/pageInspector/previewInspectorFailureEvidenceRuntimeSource';
+import { createPreviewInspectorNeuralLearningStatusRuntimeSource } from '../../../../../src/adapters/esbuild/pageInspector/previewInspectorNeuralLearningStatusRuntimeSource';
+import { createPreviewInspectorNeuralResidualRuntimeSource } from '../../../../../src/adapters/esbuild/pageInspector/previewInspectorNeuralResidualRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackRuntimeSource } from '../../../../../src/adapters/esbuild/pageInspector/previewInspectorRuntimeFallbackRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackScopeRuntimeSource } from '../../../../../src/adapters/esbuild/pageInspector/previewInspectorRuntimeFallbackScopeRuntimeSource';
 
@@ -17,6 +19,12 @@ export interface TestRuntimeFallbackRecord {
   readonly hookName: string;
   readonly id: string;
   readonly mode: string;
+  readonly neuralRecommendation?: {
+    readonly candidateId?: string;
+    readonly residual?: { readonly score: number };
+    readonly strategy: string;
+    readonly value?: unknown;
+  };
   readonly ownerName?: string;
   readonly reason: string;
   readonly requiredPaths: readonly string[];
@@ -30,6 +38,12 @@ export interface TestRuntimeFallbackApi {
   draft(fallbackId: string): unknown;
   effect(readEffect: () => unknown, metadata: object): unknown;
   pathSignature(requiredPaths: readonly string[]): string;
+  neuralModel(): {
+    readonly heads: Readonly<Record<string, { readonly updates: number }>>;
+    readonly updates: number;
+  };
+  neuralStatus(): { readonly phase: string; readonly updates: number } | undefined;
+  registerContext(hookIdentity: object, contextIdentity: object): boolean;
   registerGraphql(
     document: object,
     paths: readonly string[],
@@ -53,6 +67,7 @@ export interface TestRuntimeFallbackApi {
     metadata: object,
   ): unknown;
   set(fallbackId: string, value: unknown): void;
+  setActiveNeuralAttempt(active: boolean): void;
   setRevision(revision: number): void;
   setRouterOwned(owned: boolean): void;
   setSelectedExport(exportName: string): void;
@@ -63,20 +78,27 @@ export interface TestRuntimeFallbackApi {
     options?: { readonly preserveUserValues?: boolean },
   ): boolean;
   status(): string;
+  subscribeNeural(listener: () => void): void;
 }
 
 /** Complete observations exposed by one generated-runtime VM fixture. */
 export interface RuntimeFallbackFixture {
   readonly api: TestRuntimeFallbackApi;
+  readonly autoDecisions: Record<string, unknown>[];
   readonly consoleEntries: Record<string, unknown>[];
   /** Runs the next browser-frame or timer-fallback callbacks queued by the generated runtime. */
   flushEffectFrame(): void;
+  /** Number of authored-page traversal resumes requested by a newly shared recommendation. */
+  neuralResumeCount(): number;
+  /** Number of selected-export retries requested after a shared recommendation. */
+  neuralRetryCount(): number;
   readonly warnings: string[];
 }
 
 /** Browser scheduling variant used to exercise both requestAnimationFrame and its timer fallback. */
 export interface RuntimeFallbackFixtureOptions {
   readonly animationFrameSupported?: boolean;
+  readonly animationFrameStalls?: boolean;
 }
 
 /** Creates the lexical browser bindings required by the generated fallback runtime. */
@@ -84,8 +106,11 @@ export function createRuntimeFallbackFixture(
   enabled: boolean,
   options: RuntimeFallbackFixtureOptions = {},
 ): RuntimeFallbackFixture {
+  const autoDecisions: Record<string, unknown>[] = [];
   const consoleEntries: Record<string, unknown>[] = [];
   const effectFrameCallbacks: (() => void)[] = [];
+  let neuralResumes = 0;
+  let neuralRetries = 0;
   const warnings: string[] = [];
   const previewInspectorSession = {
     activeTargetReachabilityKey: 'page:Target',
@@ -137,7 +162,9 @@ export function createRuntimeFallbackFixture(
     requestAnimationFrame:
       options.animationFrameSupported === false
         ? undefined
-        : (callback: () => void): number => effectFrameCallbacks.push(callback),
+        : options.animationFrameStalls === true
+          ? (): number => 1
+          : (callback: () => void): number => effectFrameCallbacks.push(callback),
     setTimeout(callback: () => void): number {
       return effectFrameCallbacks.push(callback);
     },
@@ -161,8 +188,20 @@ export function createRuntimeFallbackFixture(
     readPreviewInspectorTargetReachabilityState(): object {
       return previewInspectorSession.testTargetReachabilityState;
     },
+    refreshPreviewInspectorExport(): undefined {
+      neuralRetries += 1;
+      return undefined;
+    },
+    resumePreviewInspectorTargetReachabilityAfterNeuralRecommendation(): boolean {
+      neuralResumes += 1;
+      return true;
+    },
     recordPreviewInspectorConsoleEntry(candidate: Record<string, unknown>): void {
       consoleEntries.push(candidate);
+    },
+    recordPreviewInspectorBlockerAutoDecision(candidate: Record<string, unknown>): string {
+      autoDecisions.push(candidate);
+      return `test-auto-${autoDecisions.length.toString()}`;
     },
     recordPreviewInspectorRuntimeHealth(): undefined {
       return undefined;
@@ -172,6 +211,8 @@ export function createRuntimeFallbackFixture(
   runInContext(
     'let previewEntryRevision = 0;\n' +
       `${createPreviewInspectorFailureEvidenceRuntimeSource()}\n` +
+      `${createPreviewInspectorNeuralResidualRuntimeSource()}\n` +
+      `${createPreviewInspectorNeuralLearningStatusRuntimeSource()}\n` +
       `${createPreviewInspectorRuntimeFallbackRuntimeSource()}\n` +
       `${createPreviewInspectorRuntimeFallbackScopeRuntimeSource()}\n` +
       'globalThis.__runtimeFallbackApi = {' +
@@ -185,7 +226,10 @@ export function createRuntimeFallbackFixture(
       ' auto: autoPassPreviewInspectorRuntimeFallback,' +
       ' draft: readPreviewInspectorRuntimeFallbackDraft,' +
       ' effect: resolvePreviewInspectorRuntimeEffect,' +
+      ' neuralModel: serializePreviewInspectorNeuralResidualModel,' +
+      ' neuralStatus: readPreviewInspectorNeuralLearningStatus,' +
       ' pathSignature: createPreviewInspectorRuntimeFallbackPathSignature,' +
+      ' registerContext: registerPreviewInspectorRuntimeContextIdentity,' +
       ' registerGraphql: registerPreviewInspectorGraphqlRenderPropUsage,' +
       ' read: readPreviewInspectorRuntimeFallbacks,' +
       ' readEffectiveDirectTarget: (candidateId) => ' +
@@ -194,6 +238,9 @@ export function createRuntimeFallbackFixture(
       ' resolve: resolvePreviewInspectorScopedRuntimeHook,' +
       ' resolveFragment: resolvePreviewInspectorGraphqlFragmentValue,' +
       ' set: setPreviewInspectorRuntimeFallbackOverride,' +
+      ' setActiveNeuralAttempt: (active) => {' +
+      "previewInspectorSession.blockerTraceActiveAttempt = active ? { targetReachabilityKey: 'page:Target' } : undefined;" +
+      '},' +
       ' setRevision: (revision) => { previewEntryRevision = revision; },' +
       ' setRouterOwned: (owned) => {' +
       'previewInspectorSession.selectedRootOwnsRouter = owned;' +
@@ -208,7 +255,11 @@ export function createRuntimeFallbackFixture(
       '},' +
       ' smart: smartFillPreviewInspectorRuntimeFallback,' +
       ' smartReachability: smartFillPreviewInspectorRuntimeFallbacksForReachability,' +
-      ' status: readPreviewInspectorRuntimeFallbackStatus' +
+      ' status: readPreviewInspectorRuntimeFallbackStatus,' +
+      ' subscribeNeural: (listener) => {' +
+      'initializePreviewInspectorRuntimeFallbackState();' +
+      'previewInspectorSession.runtimeFallbackNeuralListeners.add(listener);' +
+      '}' +
       '};',
     context,
   );
@@ -217,10 +268,17 @@ export function createRuntimeFallbackFixture(
   if (api === undefined) throw new Error('Generated fallback runtime did not initialize.');
   return {
     api,
+    autoDecisions,
     consoleEntries,
     flushEffectFrame(): void {
       const pending = effectFrameCallbacks.splice(0);
       for (const callback of pending) callback();
+    },
+    neuralResumeCount(): number {
+      return neuralResumes;
+    },
+    neuralRetryCount(): number {
+      return neuralRetries;
     },
     warnings,
   };

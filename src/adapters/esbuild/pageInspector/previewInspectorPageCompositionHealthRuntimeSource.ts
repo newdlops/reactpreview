@@ -16,6 +16,12 @@ export const PREVIEW_INSPECTOR_PAGE_COMPOSITION_ROW_LIMIT = 20;
 /** Maximum active blocker summaries copied into one runtime-health event. */
 export const PREVIEW_INSPECTOR_PAGE_COMPOSITION_BLOCKER_LIMIT = 6;
 
+/** Maximum connected shallow projection hosts inspected for one detail-fidelity summary. */
+export const PREVIEW_INSPECTOR_PAGE_COMPOSITION_PROJECTION_LIMIT = 512;
+
+/** Maximum distinct projected component identities retained in one health event. */
+export const PREVIEW_INSPECTOR_PAGE_COMPOSITION_PROJECTION_IDENTITY_LIMIT = 16;
+
 /**
  * Creates browser source for deduplicated page-composition runtime-health events.
  *
@@ -33,6 +39,10 @@ const PREVIEW_INSPECTOR_PAGE_COMPOSITION_ROW_LIMIT =
   ${PREVIEW_INSPECTOR_PAGE_COMPOSITION_ROW_LIMIT};
 const PREVIEW_INSPECTOR_PAGE_COMPOSITION_BLOCKER_LIMIT =
   ${PREVIEW_INSPECTOR_PAGE_COMPOSITION_BLOCKER_LIMIT};
+const PREVIEW_INSPECTOR_PAGE_COMPOSITION_PROJECTION_LIMIT =
+  ${PREVIEW_INSPECTOR_PAGE_COMPOSITION_PROJECTION_LIMIT};
+const PREVIEW_INSPECTOR_PAGE_COMPOSITION_PROJECTION_IDENTITY_LIMIT =
+  ${PREVIEW_INSPECTOR_PAGE_COMPOSITION_PROJECTION_IDENTITY_LIMIT};
 
 /** Converts an authored or runtime component identity into a conservative comparison token. */
 function normalizePreviewInspectorCompositionIdentity(value) {
@@ -55,6 +65,46 @@ function matchesPreviewInspectorCompositionIdentity(expected, actual) {
 function hasPreviewInspectorCompositionHostOutput(snapshot, nodeId) {
   const hostNodes = snapshot?.hostNodesById?.get?.(nodeId);
   return Array.isArray(hostNodes) && hostNodes.some((host) => host?.isConnected !== false);
+}
+
+/** Counts connected compiler projections whose authored visual implementation is still omitted. */
+function summarizePreviewInspectorShallowProjections() {
+  try {
+    if (typeof document?.querySelectorAll !== 'function') {
+      return { count: 0, identities: [], identitiesTruncated: false, observed: false, visitLimitReached: false };
+    }
+    const allNodes = Array.from(
+      document.querySelectorAll('[data-react-preview-shallow-component]'),
+    );
+    const nodes = allNodes.slice(0, PREVIEW_INSPECTOR_PAGE_COMPOSITION_PROJECTION_LIMIT);
+    const identities = [];
+    const identitySet = new Set();
+    let count = 0;
+    for (const node of nodes) {
+      if (node?.isConnected === false) continue;
+      count += 1;
+      const identity = typeof node?.getAttribute === 'function'
+        ? node.getAttribute('data-react-preview-shallow-component')
+        : undefined;
+      if (
+        typeof identity !== 'string' || identity.length === 0 ||
+        identitySet.has(identity)
+      ) continue;
+      identitySet.add(identity);
+      if (identities.length < PREVIEW_INSPECTOR_PAGE_COMPOSITION_PROJECTION_IDENTITY_LIMIT) {
+        identities.push(identity.slice(0, 240));
+      }
+    }
+    return {
+      count,
+      identities,
+      identitiesTruncated: identitySet.size > identities.length,
+      observed: true,
+      visitLimitReached: allNodes.length > nodes.length,
+    };
+  } catch {
+    return { count: 0, identities: [], identitiesTruncated: false, observed: false, visitLimitReached: false };
+  }
 }
 
 /** Produces one stable human-readable state for a mixed live/static Inspector node. */
@@ -297,6 +347,7 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     : undefined;
   const reachability = trackedReachability ?? standaloneReachability;
   const tree = summarizePreviewInspectorPageCompositionTree(snapshot);
+  const projectionSummary = summarizePreviewInspectorShallowProjections();
   const targetStage = readPreviewInspectorCompositionTargetStage(reachability, tree);
   const retainedTargetError = typeof readPreviewInspectorRuntimeHealthTargetError === 'function'
     ? readPreviewInspectorRuntimeHealthTargetError(reachability?.targetExportName)
@@ -478,6 +529,7 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
         ? pageExecutionCandidate.targetRole
         : 'element',
     },
+    projectionSummary,
     route: {
       evidenceKind: routeLocation?.evidenceKind ?? 'none',
       pathname: routeLocation?.pathname ?? '/',
@@ -582,6 +634,7 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     detail.candidate.complete,
     detail.contextModule,
     detail.pageExecution,
+    detail.projectionSummary,
     detail.route.pathname,
     detail.targetState.stage,
     detail.targetState.status,

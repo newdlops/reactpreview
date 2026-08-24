@@ -92,6 +92,10 @@ export interface PreviewRuntimeHookAliasUsagePath {
   readonly names: readonly string[];
   /** The compiler-proven scalar must replace an authored first-state value to pass a render guard. */
   readonly renderGuard?: true;
+  /** Candidate scalar returned by a generated callable, selected later by the local learner. */
+  readonly smartValueExpression?: string;
+  /** Bounded semantic role used as a neural feature; it never selects the candidate by itself. */
+  readonly smartValueRole?: 'collection-filter-predicate' | 'render-state';
   /** String-only method proving the preceding leaf should be generated as text. */
   readonly stringProperty?: string;
   /** Side-effect-free scalar expression proven by a reached child component's render contract. */
@@ -112,8 +116,8 @@ export interface PreviewRuntimeHookImportedHelperItemFallback {
     | 'graphql-document'
     | 'null'
     | 'number'
-      | 'object'
-      | 'string';
+    | 'object'
+    | 'string';
   /** Structured child usages retained when an imported object parameter has nested contracts. */
   readonly nestedUsages?: readonly PreviewRuntimeHookImportedHelperNestedUsage[];
   readonly requiredPaths?: readonly string[];
@@ -876,6 +880,7 @@ function normalizeAliasUsage(
   const terminal = names.at(-1);
   const called =
     ts.isCallExpression(expression.parent) && expression.parent.expression === expression;
+  const smartCallable = called ? inferPreviewRuntimeHookCallableSmartValue(expression) : undefined;
   const receiverNames = names.slice(0, -1);
   const membershipItem = inferPreviewRuntimeHookMembershipItemFallback(
     expression,
@@ -910,9 +915,7 @@ function normalizeAliasUsage(
       ? {}
       : {
           collectionItemExpression: membershipItem.expression,
-          collectionItemRequiredPaths: Object.freeze([
-            ...(membershipItem.requiredPaths ?? []),
-          ]),
+          collectionItemRequiredPaths: Object.freeze([...(membershipItem.requiredPaths ?? [])]),
         }),
     ...(collection && terminal !== undefined ? { collectionProperty: terminal } : {}),
     names: Object.freeze(collection || stringReceiver ? names.slice(0, -1) : [...names]),
@@ -924,8 +927,92 @@ function normalizeAliasUsage(
     ...(renderedExpression === undefined || emptyRenderable
       ? {}
       : { valueExpression: renderedExpression }),
+    ...(smartCallable === undefined
+      ? {}
+      : {
+          smartValueExpression: smartCallable.expression,
+          smartValueRole: smartCallable.role,
+        }),
     ...(stringReceiver ? { stringProperty: terminal ?? '' } : {}),
   });
+}
+
+/**
+ * Describes a callable result that can be explored without baking the result into its fallback.
+ *
+ * A generated hook method used as the direct predicate of an Array filter is an observable data
+ * valve: a falsey no-op drops every generated row, while a truthy result retains the corridor for
+ * downstream verification. The compiler emits both the neutral callable and this candidate role;
+ * the browser-side residual chooses and learns from the observed invocation outcome.
+ */
+export function inferPreviewRuntimeHookCallableSmartValue(
+  propertyAccess: ts.PropertyAccessExpression,
+):
+  | {
+      readonly expression: 'true';
+      readonly role: 'collection-filter-predicate';
+    }
+  | undefined {
+  const call = propertyAccess.parent;
+  if (!ts.isCallExpression(call) || call.expression !== propertyAccess) return undefined;
+  const callback = findDirectCollectionFilterCallback(call);
+  return callback === undefined
+    ? undefined
+    : Object.freeze({ expression: 'true', role: 'collection-filter-predicate' });
+}
+
+/** Finds the exact inline callback whose returned expression contains this generated call. */
+function findDirectCollectionFilterCallback(
+  expression: ts.Expression,
+): ts.ArrowFunction | ts.FunctionExpression | undefined {
+  let returned: ts.Node = expression;
+  while (
+    (ts.isParenthesizedExpression(returned.parent) ||
+      ts.isAsExpression(returned.parent) ||
+      ts.isTypeAssertionExpression(returned.parent) ||
+      ts.isNonNullExpression(returned.parent) ||
+      ts.isSatisfiesExpression(returned.parent)) &&
+    returned.parent.expression === returned
+  ) {
+    returned = returned.parent;
+  }
+  let callback: ts.ArrowFunction | ts.FunctionExpression | undefined;
+  if (
+    (ts.isArrowFunction(returned.parent) || ts.isFunctionExpression(returned.parent)) &&
+    returned.parent.body === returned
+  ) {
+    callback = returned.parent;
+  } else if (ts.isReturnStatement(returned.parent) && returned.parent.expression === returned) {
+    const block = returned.parent.parent;
+    const owner = block.parent;
+    if (
+      ts.isBlock(block) &&
+      block.statements.length === 1 &&
+      (ts.isArrowFunction(owner) || ts.isFunctionExpression(owner)) &&
+      owner.body === block
+    ) {
+      callback = owner;
+    }
+  }
+  if (callback === undefined) return undefined;
+  let callbackNode: ts.Node = callback;
+  while (
+    ts.isParenthesizedExpression(callbackNode.parent) &&
+    callbackNode.parent.expression === callbackNode
+  ) {
+    callbackNode = callbackNode.parent;
+  }
+  const filterCall = callbackNode.parent;
+  if (!ts.isCallExpression(filterCall)) return undefined;
+  const callee = unwrapPreviewRuntimeExpression(filterCall.expression);
+  const methodFilter =
+    ts.isPropertyAccessExpression(callee) &&
+    callee.questionDotToken === undefined &&
+    callee.name.text === 'filter' &&
+    filterCall.arguments[0] === callbackNode;
+  const utilityFilter =
+    ts.isIdentifier(callee) && callee.text === 'filter' && filterCall.arguments[1] === callbackNode;
+  return methodFilter || utilityFilter ? callback : undefined;
 }
 
 /**

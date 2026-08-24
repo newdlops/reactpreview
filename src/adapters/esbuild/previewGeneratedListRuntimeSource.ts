@@ -97,10 +97,13 @@ const previewGeneratedListRuntime = (() => {
   const previous = globalThis[PREVIEW_GENERATED_LIST_RUNTIME_SYMBOL];
   let sampleCount = normalizePreviewGeneratedListSampleCount(previous?.getSampleCount?.());
   const runtime = {
-    create(itemFactory) {
+    create(itemFactory, requestedCount) {
       if (typeof itemFactory !== 'function') return [];
+      const itemCount = requestedCount === undefined
+        ? sampleCount
+        : normalizePreviewGeneratedListSampleCount(requestedCount);
       const result = [];
-      for (let itemIndex = 0; itemIndex < sampleCount; itemIndex += 1) {
+      for (let itemIndex = 0; itemIndex < itemCount; itemIndex += 1) {
         result.push(clonePreviewGeneratedListItem(itemFactory(itemIndex), itemIndex));
       }
       // Application helpers commonly call Array#sort in place. Keep the list itself mutable while
@@ -134,8 +137,8 @@ function setPreviewGeneratedListSampleCount(value) {
 }
 
 /** Materializes one independently frozen item per configured, reorderable list sample. */
-function createPreviewGeneratedList(itemFactory) {
-  return previewGeneratedListRuntime.create(itemFactory);
+function createPreviewGeneratedList(itemFactory, requestedCount) {
+  return previewGeneratedListRuntime.create(itemFactory, requestedCount);
 }
 `;
 }

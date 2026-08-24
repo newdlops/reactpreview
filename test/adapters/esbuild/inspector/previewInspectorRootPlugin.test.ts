@@ -354,6 +354,23 @@ describe('createPreviewInspectorRootSource', () => {
     );
     expect(source).toContain('"id":"candidate-alternate"');
     expect(source).toContain('"executablePageCandidateId":"candidate-page"');
+    const descriptorLine = source
+      .split('\n')
+      .find((line) => line.startsWith('const __reactPreviewInspectorDescriptor = '));
+    if (descriptorLine === undefined) throw new Error('Inspector descriptor is missing.');
+    const descriptor = JSON.parse(
+      descriptorLine.slice('const __reactPreviewInspectorDescriptor = '.length).replace(/;$/u, ''),
+    ) as {
+      readonly inspector: {
+        readonly pageCandidates: readonly {
+          readonly target?: { readonly exportName: string; readonly sourcePath: string };
+        }[];
+      };
+    };
+    expect(descriptor.inspector.pageCandidates.map((candidate) => candidate.target)).toEqual([
+      primaryPlan.target,
+      primaryPlan.target,
+    ]);
   });
 
   /** Rebuilds one narrow graph when the user chooses a different caller path. */

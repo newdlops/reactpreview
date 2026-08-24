@@ -9,6 +9,7 @@ import type {
   PreviewInspectorComponentReference,
   PreviewInspectorPageCandidate,
 } from './previewInspectorAncestorTypes';
+import type { PreviewRenderChainCandidate } from '../renderGraph';
 import type { PreviewInspectorRouteMountEvidence } from './previewInspectorRouteLocationTypes';
 import type { PreviewInspectorTargetMode } from '../../../domain/preview';
 import { createPreviewInspectorPagePathSegments } from './previewInspectorPagePathSegments';
@@ -74,6 +75,11 @@ export function createPreviewInspectorPageExecutionCandidates(
   const pageSurface = createAuthenticSurface(virtualPage.contentCandidate.root, 'page');
   const pageSlicedSurface = createSelectedExportSurface(virtualPage.contentCandidate.root, 'page');
   const pageLocalSurface = createLocalComponentSurface(virtualPage.contentCandidate.root, 'page');
+  const transientContextSurface = createTransientContextSurface(
+    renderPath,
+    unmountedBrowserCandidate,
+    unmountedBrowserCandidate.target,
+  );
   const isRouteLeafDetachedFromTarget =
     unmountedBrowserCandidate.detachedTargetPlacement === undefined &&
     isDetachedRouteLeaf(unmountedBrowserCandidate, options.plan.target);
@@ -358,6 +364,37 @@ export function createPreviewInspectorPageExecutionCandidates(
       }),
     );
   }
+  // A transient primitive such as Skeleton is rarely a complete screen by itself. When the
+  // selected authored path proves a nearest exported loading surface, retain that whole surface as
+  // the final contextual fallback before reducing execution to the primitive target alone.
+  if (transientContextSurface !== undefined) {
+    const transientTargetEdge = createPageTargetEdge(
+      transientContextSurface,
+      targetSurface,
+      undefined,
+    );
+    candidates.push(
+      createCandidate({
+        browserCandidate,
+        compositionEdges: transientTargetEdge === undefined ? [] : [transientTargetEdge],
+        criticalSurfaces: deduplicateSurfaces([transientContextSurface, targetSurface]),
+        evidenceSourcePaths: Object.freeze(
+          [...new Set([...evidenceSourcePaths, transientContextSurface.sourcePath])].sort(),
+        ),
+        fidelity: 'target-contextual',
+        targetPageTabKeys,
+        watchSourcePaths: Object.freeze(
+          [
+            ...new Set([
+              ...watchSourcePaths,
+              ...transientContextSurface.watchSourcePaths,
+              ...targetSurface.watchSourcePaths,
+            ]),
+          ].sort(),
+        ),
+      }),
+    );
+  }
   const targetOnlyOmitsNestedOwner =
     options.targetMode === 'selected-route-leaf' && (routeRecipe?.mounts.length ?? 0) > 0;
   if (!targetOnlyOmitsNestedOwner) {
@@ -578,6 +615,124 @@ function createLocalComponentSurface(
     strategy: 'inner-local-component-slice',
     watchSourcePaths: Object.freeze([sourcePath]),
   });
+}
+
+const PREVIEW_INSPECTOR_TRANSIENT_SURFACE_WORDS = new Set([
+  'fallback',
+  'loader',
+  'loading',
+  'pending',
+  'placeholder',
+  'progress',
+  'shimmer',
+  'skeleton',
+  'spinner',
+]);
+
+/**
+ * Promotes the nearest importable loading-state owner on the exact selected path. The target must
+ * itself be transient, which prevents ordinary components nested beneath an unrelated spinner or
+ * progress indicator from silently changing their execution root.
+ */
+function createTransientContextSurface(
+  renderPath: PreviewRenderChainCandidate | undefined,
+  browserCandidate: PreviewInspectorPageCandidate,
+  target: PreviewInspectorComponentReference,
+): PreviewInspectorMountSurface | undefined {
+  if (renderPath === undefined || !hasTransientSurfaceWord(target.exportName)) return undefined;
+  const normalizedTargetPath = path.normalize(target.sourcePath);
+  const exactRootStepIndex = renderPath.steps.findIndex(
+    (step) =>
+      path.normalize(step.sourcePath) === path.normalize(browserCandidate.root.sourcePath) &&
+      normalizeRenderStepExportName(step.label) === browserCandidate.root.exportName,
+  );
+  const corridorEnd =
+    browserCandidate.rootStepIndex ??
+    (exactRootStepIndex >= 0 ? exactRootStepIndex : renderPath.steps.length - 1);
+  for (let index = 1; index <= corridorEnd; index += 1) {
+    const step = renderPath.steps[index];
+    if (step === undefined || !hasTransientSurfaceWord(step.label)) continue;
+    const exportName = normalizeRenderStepExportName(step.label);
+    const sourcePath = path.normalize(step.sourcePath);
+    if (
+      exportName === undefined ||
+      (sourcePath === normalizedTargetPath && exportName === target.exportName) ||
+      !sourceExportsRuntimeValue(sourcePath, exportName)
+    ) {
+      continue;
+    }
+    return createAuthenticSurface(Object.freeze({ exportName, sourcePath }), 'transient-context');
+  }
+  return undefined;
+}
+
+function hasTransientSurfaceWord(name: string): boolean {
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
+    .split(/[^A-Za-z0-9]+/u)
+    .map((word) => word.toLowerCase());
+  return words.some((word) => PREVIEW_INSPECTOR_TRANSIENT_SURFACE_WORDS.has(word));
+}
+
+function normalizeRenderStepExportName(label: string): string | undefined {
+  if (label === '@default') return 'default';
+  return /^[$A-Z_a-z][$0-9A-Z_a-z]*$/u.test(label) ? label : undefined;
+}
+
+/** Fails closed for local-only declarations and type-only exports. */
+function sourceExportsRuntimeValue(sourcePath: string, exportName: string): boolean {
+  const sourceText = readSource(sourcePath);
+  if (sourceText === undefined) return false;
+  const sourceFile = ts.createSourceFile(
+    sourcePath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    sourcePath.endsWith('.tsx') || sourcePath.endsWith('.jsx')
+      ? ts.ScriptKind.TSX
+      : ts.ScriptKind.TS,
+  );
+  const hasModifier = (node: ts.Node, kind: ts.SyntaxKind): boolean =>
+    (ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined)?.some(
+      (modifier) => modifier.kind === kind,
+    ) === true;
+  for (const statement of sourceFile.statements) {
+    if (ts.isExportAssignment(statement)) {
+      if (exportName === 'default' && !statement.isExportEquals) return true;
+      continue;
+    }
+    if (
+      (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) &&
+      hasModifier(statement, ts.SyntaxKind.ExportKeyword)
+    ) {
+      if (exportName === 'default' && hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
+        return true;
+      }
+      if (statement.name?.text === exportName) return true;
+      continue;
+    }
+    if (
+      ts.isVariableStatement(statement) &&
+      hasModifier(statement, ts.SyntaxKind.ExportKeyword) &&
+      statement.declarationList.declarations.some(
+        (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === exportName,
+      )
+    ) {
+      return true;
+    }
+    if (
+      ts.isExportDeclaration(statement) &&
+      !statement.isTypeOnly &&
+      statement.exportClause !== undefined &&
+      ts.isNamedExports(statement.exportClause) &&
+      statement.exportClause.elements.some(
+        (element) => !element.isTypeOnly && element.name.text === exportName,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Limits candidate analysis to the same source ceiling as Frontier v2. */

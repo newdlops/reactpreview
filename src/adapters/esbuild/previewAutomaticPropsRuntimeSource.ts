@@ -43,6 +43,7 @@ const PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY = (() => {
   }
 })();
 const PREVIEW_AUTOMATIC_EXACT_CHILD_REGISTRY = new WeakMap();
+const PREVIEW_AUTOMATIC_RENDERED_COLLECTION_DECISIONS = new WeakSet();
 const blockedPreviewAutomaticPropNames = new Set(['__proto__', 'constructor', 'prototype']);
 
 /** Remembers direct primitive children whose authored syntax proved one exact accepted value. */
@@ -169,8 +170,157 @@ function materializePreviewAutomaticStringListItem(node, value, fieldName, itemI
   return base + ' ' + String(itemIndex + 1);
 }
 
+/** Reads only finite compiler-authored candidates matching the scalar node's declared kind. */
+function readPreviewAutomaticScalarCandidates(node) {
+  const expectedType = node?.kind === 'boolean'
+    ? 'boolean'
+    : node?.kind === 'number' ? 'number' : node?.kind === 'string' ? 'string' : '';
+  if (expectedType.length === 0 || !Array.isArray(node?.candidateValues)) return [];
+  return [...new Set(node.candidateValues.filter((candidate) =>
+    typeof candidate === expectedType &&
+    (expectedType !== 'number' || Number.isFinite(candidate)),
+  ))].slice(0, 8);
+}
+
+/** Finds the largest finite branch domain within one rendered row contract. */
+function readPreviewAutomaticRenderedCollectionVariantCount(node, depth = 0) {
+  if (node === null || typeof node !== 'object' || depth > 8) return 0;
+  let count = readPreviewAutomaticScalarCandidates(node).length;
+  if (node.kind === 'array' && node.items !== undefined) {
+    count = Math.max(
+      count,
+      readPreviewAutomaticRenderedCollectionVariantCount(node.items, depth + 1),
+    );
+  }
+  if (node.kind === 'object') {
+    for (const child of Object.values(node.properties ?? {})) {
+      count = Math.max(
+        count,
+        readPreviewAutomaticRenderedCollectionVariantCount(child, depth + 1),
+      );
+    }
+  }
+  return count;
+}
+
+/** Lists bounded candidate-bearing row paths for transparent blocker telemetry. */
+function readPreviewAutomaticRenderedCollectionCandidatePaths(node, prefix = '', paths = [], depth = 0) {
+  if (
+    node === null || typeof node !== 'object' || depth > 8 || paths.length >= 24
+  ) return paths;
+  if (readPreviewAutomaticScalarCandidates(node).length > 0 && prefix.length > 0) {
+    paths.push(prefix);
+  }
+  if (node.kind === 'array' && node.items !== undefined) {
+    readPreviewAutomaticRenderedCollectionCandidatePaths(
+      node.items,
+      prefix.length === 0 ? '[]' : prefix + '.[]',
+      paths,
+      depth + 1,
+    );
+  }
+  if (node.kind === 'object') {
+    for (const [name, child] of readPreviewAutomaticPropEntries(node.properties ?? {})) {
+      if (blockedPreviewAutomaticPropNames.has(name)) continue;
+      readPreviewAutomaticRenderedCollectionCandidatePaths(
+        child,
+        prefix.length === 0 ? name : prefix + '.' + name,
+        paths,
+        depth + 1,
+      );
+    }
+  }
+  return paths;
+}
+
+/** Lets the isolated data head choose only between compiler-admitted row coverage strategies. */
+function createPreviewAutomaticRenderedCollectionPlan(node, fieldName) {
+  const configuredRowCount = typeof readPreviewGeneratedListSampleCount === 'function'
+    ? readPreviewGeneratedListSampleCount()
+    : 3;
+  const variantCount = readPreviewAutomaticRenderedCollectionVariantCount(node?.items);
+  const coverageRowCount = Math.max(configuredRowCount, Math.min(10, variantCount));
+  const candidates = [
+    {
+      deterministicRank: 0,
+      id: 'branch-coverage',
+      numbers: { rowCount: coverageRowCount },
+      texts: ['Cover compiler-proven rendered row branches'],
+      tokens: ['row-strategy:branch-coverage'],
+    },
+    ...(coverageRowCount === 1 ? [] : [{
+      deterministicRank: 1,
+      id: 'minimum-row',
+      numbers: { rowCount: 1 },
+      texts: ['Use one minimum rendered row'],
+      tokens: ['row-strategy:minimum-row'],
+    }]),
+  ];
+  const selection = typeof selectPreviewInspectorNeuralResidualCandidate === 'function'
+    ? selectPreviewInspectorNeuralResidualCandidate(
+        {
+          blockerKind: 'automatic-props',
+          holeKind: 'rendered-collection-prop-data',
+          numbers: { configuredRowCount, variantCount },
+          texts: [fieldName],
+          tokens: ['compiler-rendered-collection', 'component-prop-data'],
+        },
+        candidates,
+      )
+    : undefined;
+  const candidateId = selection?.candidateId === 'minimum-row'
+    ? 'minimum-row'
+    : 'branch-coverage';
+  const rowCount = candidateId === 'minimum-row' ? 1 : coverageRowCount;
+  if (
+    !PREVIEW_AUTOMATIC_RENDERED_COLLECTION_DECISIONS.has(node) &&
+    typeof recordPreviewInspectorBlockerAutoDecision === 'function'
+  ) {
+    PREVIEW_AUTOMATIC_RENDERED_COLLECTION_DECISIONS.add(node);
+    const exportName = typeof previewInspectorSession === 'object'
+      ? previewInspectorSession.selectedExportName
+      : undefined;
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Fill compiler-rendered component rows',
+      blockerId: 'automatic-rendered-collection:' + String(exportName ?? 'target') + ':' + fieldName,
+      blockerKind: 'automatic-props',
+      blockerName: 'Rendered component data · ' + fieldName,
+      generatedPaths: readPreviewAutomaticRenderedCollectionCandidatePaths(node?.items),
+      mode: 'neural-rendered-collection-auto',
+      neuralResidualDecision: selection?.decision,
+      ownerName: exportName,
+      reason: 'JSX collection and row callback contracts selected ' + String(rowCount) + ' row(s)',
+      selectedValue: { candidateId, rowCount, variantCount },
+      startsRenderAttempt: true,
+      summary: { candidateId, rowCount, variantCount },
+    });
+  }
+  return { candidateId, rowCount, variantCount };
+}
+
+/** Produces visible but inert text only inside a compiler-proven rendered collection row. */
+function createPreviewAutomaticRenderedCollectionString(fieldName, itemIndex) {
+  const name = String(fieldName).replaceAll('_', '').toLowerCase();
+  if (/(?:at|on|date|datetime|time)$/u.test(name)) {
+    return new Date(Date.UTC(2026, 0, 15 + Math.min(10, itemIndex), 9)).toISOString();
+  }
+  if (name.endsWith('id') || name === 'uuid') return 'preview-id';
+  if (name.includes('email')) return 'preview@example.invalid';
+  if (name.endsWith('url') || name.endsWith('uri')) return 'https://example.invalid/';
+  if (name.endsWith('status')) return 'PREVIEW';
+  const value = String(fieldName || 'Preview');
+  return value.length <= 32 ? value : value.slice(0, 31) + '…';
+}
+
 /** Materializes one validated shape node under fixed depth and aggregate node budgets. */
-function materializePreviewAutomaticPropNode(node, budget, depth, fieldName = '') {
+function materializePreviewAutomaticPropNode(
+  node,
+  budget,
+  depth,
+  fieldName = '',
+  itemIndex = 0,
+  renderedCollectionItem = false,
+) {
   if (
     node === null || typeof node !== 'object' || Array.isArray(node) ||
     depth > PREVIEW_AUTOMATIC_PROP_MAX_DEPTH || budget.nodes >= PREVIEW_AUTOMATIC_PROP_MAX_NODES
@@ -181,17 +331,33 @@ function materializePreviewAutomaticPropNode(node, budget, depth, fieldName = ''
       // A sample list is admitted only when static type evidence supplied an element contract.
       // Unknown arrays stay empty so automatic props cannot invent application collection semantics.
       if (node.items === undefined) return [];
+      const renderedCollection = node.renderedCollection === true;
+      const plan = renderedCollection
+        ? createPreviewAutomaticRenderedCollectionPlan(node, fieldName || 'rows')
+        : undefined;
       const items = createPreviewGeneratedList((itemIndex) =>
         materializePreviewAutomaticStringListItem(
           node.items,
-          materializePreviewAutomaticPropNode(node.items, budget, depth + 1, fieldName),
+          materializePreviewAutomaticPropNode(
+            node.items,
+            budget,
+            depth + 1,
+            fieldName,
+            itemIndex,
+            renderedCollectionItem || renderedCollection,
+          ),
           fieldName,
           itemIndex,
         ),
+        plan?.rowCount,
       );
       return items.filter((item) => item !== undefined);
     }
-    case 'boolean': return typeof node.value === 'boolean' ? node.value : false;
+    case 'boolean': {
+      const candidates = readPreviewAutomaticScalarCandidates(node);
+      return candidates[itemIndex % candidates.length] ??
+        (typeof node.value === 'boolean' ? node.value : false);
+    }
     case 'component': {
       const component = function PreviewAutomaticComponent() { return null; };
       Object.defineProperty(component, PREVIEW_AUTOMATIC_COMPONENT_MARKER, { value: true });
@@ -201,14 +367,35 @@ function materializePreviewAutomaticPropNode(node, budget, depth, fieldName = ''
     case 'function': return function previewAutomaticNoop() { return undefined; };
     case 'graphql-document': return createPreviewAutomaticGraphqlDocument(node, budget, depth + 1);
     case 'null': return null;
-    case 'number': return typeof node.value === 'number' && Number.isFinite(node.value) ? node.value : 0;
-    case 'string': return typeof node.value === 'string' ? node.value : '';
+    case 'number': {
+      const candidates = readPreviewAutomaticScalarCandidates(node);
+      return candidates[itemIndex % candidates.length] ??
+        (typeof node.value === 'number' && Number.isFinite(node.value)
+          ? node.value
+          : renderedCollectionItem ? itemIndex + 1 : 0);
+    }
+    case 'string': {
+      const candidates = readPreviewAutomaticScalarCandidates(node);
+      return candidates[itemIndex % candidates.length] ??
+        (typeof node.value === 'string'
+          ? node.value
+          : renderedCollectionItem
+            ? createPreviewAutomaticRenderedCollectionString(fieldName, itemIndex)
+            : '');
+    }
     case 'object': {
       const result = {};
       const properties = isPreviewAutomaticPropRecord(node.properties) ? node.properties : {};
       for (const [name, childNode] of readPreviewAutomaticPropEntries(properties)) {
         if (blockedPreviewAutomaticPropNames.has(name)) continue;
-        const child = materializePreviewAutomaticPropNode(childNode, budget, depth + 1, name);
+        const child = materializePreviewAutomaticPropNode(
+          childNode,
+          budget,
+          depth + 1,
+          name,
+          itemIndex,
+          renderedCollectionItem,
+        );
         if (child !== undefined) result[name] = child;
       }
       return result;

@@ -56,6 +56,42 @@ const LOCAL_HELPER_ITEM_IDENTITY_METHOD_NAMES = new Set([
   ...ARRAY_ITEM_IDENTITY_METHOD_NAMES,
   'sort',
 ]);
+const RENDERED_COLLECTION_PROP_NAMES = new Set([
+  'data',
+  'datalist',
+  'items',
+  'objectlist',
+  'options',
+  'records',
+  'results',
+  'rowdata',
+  'rows',
+  'values',
+]);
+const RENDERED_COLLECTION_CONFIG_PROP_NAMES = new Set(['columns', 'fields']);
+const RENDERED_COLLECTION_FIELD_KEY_NAMES = new Set([
+  'accessorkey',
+  'dataindex',
+  'field',
+  'key',
+]);
+const RENDERED_COLLECTION_CALLBACK_NAMES = new Set([
+  'accessor',
+  'body',
+  'cell',
+  'formatter',
+  'getvalue',
+  'render',
+  'valuegetter',
+]);
+const RENDERED_COLLECTION_ITEM_WRAPPER_NAMES = new Set([
+  'data',
+  'item',
+  'object',
+  'record',
+  'row',
+  'value',
+]);
 const STRING_METHOD_NAMES = new Set<string>(PREVIEW_STRING_ONLY_METHOD_NAMES);
 const STRING_COLLECTION_SHARED_METHOD_NAMES = new Set([
   'at',
@@ -82,12 +118,16 @@ export type PreviewInferredPropKind =
 
 /** JSON-safe recursive shape emitted into target and Inspector bridge descriptors. */
 export interface PreviewInferredPropShape {
+  /** Finite authored branch values used to diversify generated rendered-collection rows. */
+  readonly candidateValues?: readonly (boolean | number | string)[];
   /** True only when authored literal/control-flow syntax proves the exact generated scalar. */
   readonly exactValue?: true;
   /** Element contract for arrays when syntax or a resolved type proves its required fields. */
   readonly items?: PreviewInferredPropShape;
   readonly kind: PreviewInferredPropKind;
   readonly properties?: Readonly<Record<string, PreviewInferredPropShape>>;
+  /** True only when JSX proves that this Array directly feeds a list/table collection prop. */
+  readonly renderedCollection?: true;
   readonly value?: boolean | number | string | null;
 }
 
@@ -157,6 +197,8 @@ type PreviewStaticRegistryKey = boolean | number | string;
 
 /** Mutable internal node that retains merge provenance before deterministic serialization. */
 interface MutableShapeNode {
+  /** Source-ordered finite primitive values accepted by rendered callback branches. */
+  candidateValues?: (boolean | number | string)[];
   children: Map<string, MutableShapeNode>;
   /** Retains authored literal/control-flow evidence across compatible shape merges. */
   exactValue?: true;
@@ -169,6 +211,8 @@ interface MutableShapeNode {
   kind: PreviewInferredPropKind;
   /** The callback item itself was emitted as React child content rather than only keyed. */
   renderedValue?: true;
+  /** JSX proves that this Array is passed to a conventional list/table data prop. */
+  renderedCollection?: true;
   source: PreviewInferredPropProvenance['source'];
   value?: boolean | number | string | null;
 }
@@ -1092,6 +1136,7 @@ function inferComponentProps(
   collectLocalHelperForwardedPropRequirements(functionLike, state);
   collectKeyedCollectionHelperRequirements(functionLike, state);
   collectUsageRequirements(functionLike, state);
+  collectRenderedCollectionRequirements(functionLike, state);
   collectEqualityDiscriminantRequirements(functionLike, state);
   collectSwitchDiscriminantRequirements(functionLike, state);
   collectCatalogJsxForwardedPropRequirements(functionLike, state);
@@ -2026,7 +2071,20 @@ function setArrayItemRequirement(
 function mergeMutableShapeRequirement(target: MutableShapeNode, source: MutableShapeNode): void {
   mergeNodeKind(target, source.kind, source.source, source.value, source.exactValue);
   if (target.kind !== source.kind) return;
+  for (const candidateValue of source.candidateValues ?? []) {
+    const candidateValues = (target.candidateValues ??= []);
+    if (
+      candidateValues.length < 8 &&
+      !candidateValues.some(
+        (candidate) =>
+          typeof candidate === typeof candidateValue && Object.is(candidate, candidateValue),
+      )
+    ) {
+      candidateValues.push(candidateValue);
+    }
+  }
   if (source.itemConsumed === true) target.itemConsumed = true;
+  if (source.renderedCollection === true) target.renderedCollection = true;
   if (source.renderedValue === true) target.renderedValue = true;
   if (source.source === 'type') target.source = 'type';
   if (source.value !== undefined && target.exactValueSource !== 'usage') {
@@ -2368,6 +2426,208 @@ function readCollectionCarrierPropPath(
   return path_ === undefined ? undefined : { expression: current, path: path_ };
 }
 
+/**
+ * Correlates a prop-fed list/table data attribute with its sibling column callback contracts.
+ *
+ * Package tables are often opaque to the source walker: the row Array enters through `dataList`
+ * while its real field reads live inside `columns`. This exact JSX relationship proves both that
+ * the collection must contain rows and which finite discriminator values make those rows visible.
+ */
+function collectRenderedCollectionRequirements(
+  functionLike: ExportedFunctionLike,
+  state: InferenceState,
+): void {
+  const body = functionLike.body;
+  if (body === undefined) return;
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const attributes = node.attributes.properties;
+      const collectionAttributes = attributes.flatMap((attribute) => {
+        if (
+          !ts.isJsxAttribute(attribute) ||
+          !ts.isIdentifier(attribute.name) ||
+          attribute.initializer === undefined ||
+          !ts.isJsxExpression(attribute.initializer) ||
+          attribute.initializer.expression === undefined ||
+          !RENDERED_COLLECTION_PROP_NAMES.has(attribute.name.text.toLowerCase())
+        ) {
+          return [];
+        }
+        const collection = readRenderedCollectionCarrierPropPath(
+          attribute.initializer.expression,
+          state,
+        );
+        return collection === undefined || isShadowedPathRoot(collection.expression, state)
+          ? []
+          : [collection];
+      });
+      if (collectionAttributes.length === 1) {
+        const collection = collectionAttributes[0];
+        if (collection !== undefined) {
+          const item = inferRenderedCollectionConfigurationItem(attributes, state);
+          if (item !== undefined) {
+            requirePath(state, collection.path, 'array', 'usage');
+            setArrayItemRequirement(state, collection.path, item);
+            const collectionNode = readMutablePathNode(state, collection.path);
+            if (collectionNode?.kind === 'array') collectionNode.renderedCollection = true;
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+}
+
+/** Reads only direct Array transforms that retain every original item field. */
+function readRenderedCollectionCarrierPropPath(
+  expression: ts.Expression,
+  state: InferenceState,
+): Readonly<{ expression: ts.Expression; path: readonly string[] }> | undefined {
+  let current = unwrapExpression(expression);
+  for (let depth = 0; ts.isCallExpression(current) && depth < 8; depth += 1) {
+    if (current.questionDotToken !== undefined) return undefined;
+    const callee = unwrapExpression(current.expression);
+    if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken !== undefined) {
+      return undefined;
+    }
+    if (ARRAY_ITEM_IDENTITY_METHOD_NAMES.has(callee.name.text)) {
+      current = unwrapExpression(callee.expression);
+      continue;
+    }
+    if (
+      callee.name.text === 'map' &&
+      isRenderedCollectionIdentityMapCallback(current.arguments[0])
+    ) {
+      current = unwrapExpression(callee.expression);
+      continue;
+    }
+    return undefined;
+  }
+  const path_ = readPropPath(current, state.aliases);
+  return path_ === undefined ? undefined : { expression: current, path: path_ };
+}
+
+/** Accepts a map only when its returned record explicitly spreads the unchanged item. */
+function isRenderedCollectionIdentityMapCallback(
+  expression: ts.Expression | undefined,
+): boolean {
+  if (
+    expression === undefined ||
+    (!ts.isArrowFunction(expression) && !ts.isFunctionExpression(expression))
+  ) {
+    return false;
+  }
+  const parameter = expression.parameters[0];
+  if (parameter === undefined || !ts.isIdentifier(parameter.name)) return false;
+  const parameterName = parameter.name.text;
+  const returned = readRenderedCollectionCallbackReturnExpression(expression);
+  if (returned === undefined) return false;
+  const value = unwrapExpression(returned);
+  if (ts.isIdentifier(value)) return value.text === parameterName;
+  return (
+    ts.isObjectLiteralExpression(value) &&
+    value.properties.some(
+      (property) =>
+        ts.isSpreadAssignment(property) &&
+        ts.isIdentifier(unwrapExpression(property.expression)) &&
+        (unwrapExpression(property.expression) as ts.Identifier).text === parameterName,
+    )
+  );
+}
+
+/** Reads an expression body or one unambiguous top-level return from a collection callback. */
+function readRenderedCollectionCallbackReturnExpression(
+  callback: ts.ArrowFunction | ts.FunctionExpression,
+): ts.Expression | undefined {
+  if (!ts.isBlock(callback.body)) return callback.body;
+  const returns = callback.body.statements.filter(
+    (statement): statement is ts.ReturnStatement =>
+      ts.isReturnStatement(statement) && statement.expression !== undefined,
+  );
+  return returns.length === 1 ? returns[0]?.expression : undefined;
+}
+
+/** Builds one row shape from field keys and static callbacks inside sibling table configuration. */
+function inferRenderedCollectionConfigurationItem(
+  attributes: ts.NodeArray<ts.JsxAttributeLike>,
+  state: InferenceState,
+): MutableShapeNode | undefined {
+  let item: MutableShapeNode | undefined;
+  const mergeItem = (candidate: MutableShapeNode | undefined): void => {
+    if (candidate?.kind !== 'object') return;
+    if (item === undefined) item = candidate;
+    else mergeMutableShapeRequirement(item, candidate);
+  };
+  const appendField = (fieldName: string): void => {
+    if (
+      fieldName.length === 0 ||
+      fieldName.length > 128 ||
+      BLOCKED_PROPERTY_NAMES.has(fieldName)
+    ) {
+      return;
+    }
+    const semantic = inferPreviewUsageSemanticFallback(state, fieldName);
+    const field = createMutableNode(semantic?.kind ?? 'string', 'usage');
+    if (semantic?.value !== undefined) field.value = semantic.value;
+    const row = createMutableNode('object', 'usage');
+    row.children.set(fieldName, field);
+    mergeItem(row);
+  };
+  const appendCallback = (callback: ts.ArrowFunction | ts.FunctionExpression): void => {
+    const inferred = inferArrayCallbackItemRequirement(callback, state);
+    mergeItem(unwrapRenderedCollectionCallbackItem(inferred));
+  };
+  for (const attribute of attributes) {
+    if (
+      !ts.isJsxAttribute(attribute) ||
+      !ts.isIdentifier(attribute.name) ||
+      attribute.initializer === undefined ||
+      !ts.isJsxExpression(attribute.initializer) ||
+      attribute.initializer.expression === undefined ||
+      !RENDERED_COLLECTION_CONFIG_PROP_NAMES.has(attribute.name.text.toLowerCase())
+    ) {
+      continue;
+    }
+    const visitConfig = (node: ts.Node): void => {
+      if (ts.isPropertyAssignment(node)) {
+        const propertyName = readPropertyName(node.name)?.toLowerCase();
+        const initializer = unwrapExpression(node.initializer);
+        if (
+          propertyName !== undefined &&
+          RENDERED_COLLECTION_FIELD_KEY_NAMES.has(propertyName) &&
+          ts.isStringLiteralLike(initializer)
+        ) {
+          appendField(initializer.text);
+        }
+        if (
+          propertyName !== undefined &&
+          RENDERED_COLLECTION_CALLBACK_NAMES.has(propertyName) &&
+          (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))
+        ) {
+          appendCallback(initializer);
+          return;
+        }
+      }
+      ts.forEachChild(node, visitConfig);
+    };
+    visitConfig(attribute.initializer.expression);
+  }
+  return item;
+}
+
+/** Removes conventional table callback wrappers such as `{ data }` from the actual row shape. */
+function unwrapRenderedCollectionCallbackItem(
+  requirement: MutableShapeNode | undefined,
+): MutableShapeNode | undefined {
+  if (requirement?.kind !== 'object') return requirement;
+  const wrappers = [...requirement.children.entries()].filter(
+    ([name, child]) =>
+      RENDERED_COLLECTION_ITEM_WRAPPER_NAMES.has(name.toLowerCase()) && child.kind === 'object',
+  );
+  return wrappers.length === 1 ? wrappers[0]?.[1] : requirement;
+}
+
 /** Infers one callback parameter in isolation, retaining recursively nested collection demand. */
 function inferArrayCallbackItemRequirement(
   callback: ts.ArrowFunction | ts.FunctionExpression,
@@ -2701,7 +2961,11 @@ function thawPreviewInferredShape(
   if (state.nodeCount >= state.nodeLimit) return undefined;
   state.nodeCount += 1;
   const node = createMutableNode(shape.kind, 'usage');
+  if (Array.isArray(shape.candidateValues)) {
+    node.candidateValues = [...shape.candidateValues].slice(0, 8);
+  }
   if (shape.value !== undefined) node.value = shape.value;
+  if (shape.renderedCollection === true) node.renderedCollection = true;
   if (shape.exactValue === true) {
     node.exactValue = true;
     node.exactValueSource = 'usage';
@@ -2804,19 +3068,27 @@ function collectEqualityDiscriminantRequirements(
           candidate.value !== undefined &&
           path_ !== undefined &&
           path_.length > 0 &&
-          !isShadowedPathRoot(candidate.expression, state) &&
-          (!hasPreviewInferredPropExplicitValue(state, path_) ||
-            (state.collectionDemandDepth > 0 &&
-              !hasPreviewInferredPropUsageExactValue(state, path_)))
+          !isShadowedPathRoot(candidate.expression, state)
         ) {
-          requirePath(
-            state,
-            path_,
-            readPrimitiveValueKind(candidate.value),
-            'usage',
-            candidate.value,
-            true,
-          );
+          // Keep every source-proven scalar branch, not only collection-row branches. The first
+          // value still materializes the deterministic preview default, while the bounded domain
+          // lets runtime recovery distinguish an invalid placeholder from a real authored value
+          // and lets Inspector hand genuine semantic alternatives to the user.
+          appendPreviewInferredCandidateValue(state, path_, candidate.value);
+          if (
+            !hasPreviewInferredPropExplicitValue(state, path_) ||
+            (state.collectionDemandDepth > 0 &&
+              !hasPreviewInferredPropUsageExactValue(state, path_))
+          ) {
+            requirePath(
+              state,
+              path_,
+              readPrimitiveValueKind(candidate.value),
+              'usage',
+              candidate.value,
+              true,
+            );
+          }
           break;
         }
       }
@@ -2824,6 +3096,26 @@ function collectEqualityDiscriminantRequirements(
     ts.forEachChild(node, visit);
   };
   visit(body);
+}
+
+/** Retains a bounded authored value domain without choosing one branch for every generated row. */
+function appendPreviewInferredCandidateValue(
+  state: InferenceState,
+  path_: readonly string[],
+  value: boolean | number | string,
+): void {
+  requirePath(state, path_, readPrimitiveValueKind(value), 'usage');
+  const node = readMutablePathNode(state, path_);
+  if (node === undefined || node.kind !== readPrimitiveValueKind(value)) return;
+  const candidateValues = (node.candidateValues ??= []);
+  if (
+    candidateValues.length < 8 &&
+    !candidateValues.some(
+      (candidate) => typeof candidate === typeof value && Object.is(candidate, value),
+    )
+  ) {
+    candidateValues.push(value);
+  }
 }
 
 /** Restricts discriminator evidence to direct primitive equality and inequality operators. */
@@ -2852,14 +3144,20 @@ function collectSwitchDiscriminantRequirements(
         path_ !== undefined &&
         path_.length > 0 &&
         !isShadowedPathRoot(node.expression, state) &&
-        (!hasPreviewInferredPropExplicitValue(state, path_) ||
-          (state.collectionDemandDepth > 0 &&
-            !hasPreviewInferredPropUsageExactValue(state, path_))) &&
         caseValues !== undefined
       ) {
-        const value = caseValues[0];
-        if (value !== undefined) {
-          requirePath(state, path_, readPrimitiveValueKind(value), 'usage', value, true);
+        for (const candidateValue of caseValues) {
+          appendPreviewInferredCandidateValue(state, path_, candidateValue);
+        }
+        if (
+          !hasPreviewInferredPropExplicitValue(state, path_) ||
+          (state.collectionDemandDepth > 0 &&
+            !hasPreviewInferredPropUsageExactValue(state, path_))
+        ) {
+          const value = caseValues[0];
+          if (value !== undefined) {
+            requirePath(state, path_, readPrimitiveValueKind(value), 'usage', value, true);
+          }
         }
       }
     }
@@ -3495,6 +3793,9 @@ function freezeInference(root: MutableShapeNode): PreviewInferredExportProps {
     }
     return Object.freeze({
       kind: node.kind,
+      ...(node.candidateValues === undefined || node.candidateValues.length === 0
+        ? {}
+        : { candidateValues: Object.freeze([...node.candidateValues]) }),
       ...(node.kind === 'array' && node.items !== undefined
         ? { items: freezeNode(node.items, [...path_, '[]']) }
         : {}),
@@ -3503,6 +3804,7 @@ function freezeInference(root: MutableShapeNode): PreviewInferredExportProps {
         : {}),
       ...(node.value === undefined ? {} : { value: node.value }),
       ...(node.exactValue === true ? { exactValue: true as const } : {}),
+      ...(node.renderedCollection === true ? { renderedCollection: true as const } : {}),
     });
   };
   const shape = freezeNode(root, []);

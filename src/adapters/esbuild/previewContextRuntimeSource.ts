@@ -45,6 +45,7 @@ const REACT_CONTEXT_TYPE = Symbol.for('react.context');
 const REACT_PROVIDER_TYPE = Symbol.for('react.provider');
 const PREVIEW_RUNTIME_CALL_RESULT_MARKER = Symbol.for(${JSON.stringify(PREVIEW_RUNTIME_CALL_RESULT_MARKER_KEY)});
 const PREVIEW_TARGET_RENDER_CHAIN_BRIDGE = Symbol.for('newdlops.react-file-preview.target-render-chain');
+const PREVIEW_INSPECTOR_API_KEY = Symbol.for('newdlops.react-file-preview.page-inspector');
 const STATIC_NOOP = Object.freeze(() => undefined);
 const STATIC_BOOLEAN_RESULT_FALSE = Object.freeze(Object.defineProperty(
   () => false,
@@ -470,6 +471,9 @@ export function registerPreviewContextIdentity(hook, context) {
   if (typeof hook !== 'function' || readRawContextProvider(context) === undefined) {
     return;
   }
+  try {
+    globalThis[PREVIEW_INSPECTOR_API_KEY]?.registerRuntimeContextIdentity?.(hook, context);
+  } catch {}
   if (ambiguousHooks.has(hook)) {
     return;
   }

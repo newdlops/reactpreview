@@ -76,6 +76,29 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"refresh": Object.freeze(() => undefined)');
   });
 
+  /** Emits a learnable call-result candidate while keeping the compiler fallback inert. */
+  it('tags a hook callable used as a collection filter predicate for neural learning', () => {
+    const source = [
+      `import { useRoundFilter } from './use-round-filter';`,
+      'export function FeedList({ feeds }) {',
+      '  const roundFilter = useRoundFilter();',
+      '  const visibleFeeds = feeds.filter((feed) => roundFilter.matches(feed.round));',
+      '  return visibleFeeds.map((feed) => <article key={feed.id}>{feed.name}</article>);',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/FeedList.tsx', source),
+    );
+
+    expect(transformed).toContain('"matches": Object.freeze(() => undefined)');
+    expect(transformed).toContain(
+      'path: "matches()", value: (true), role: "collection-filter-predicate"',
+    );
+    expect(transformed).toContain('"requiredPaths":["matches()"]');
+  });
+
   /** Keeps an opaque package helper from receiving a locally inferred, incomplete list item. */
   it('preserves a neutral collection when a hook list crosses an opaque helper', () => {
     const source = [
@@ -588,10 +611,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
 
   /** Rejects aliases whose item selection can change or short-circuit at runtime. */
   it('fails closed for computed or optional indexed item aliases', () => {
-    const sources = [
-      'const rsuInput = rsuInputs[index];',
-      'const rsuInput = rsuInputs?.[0];',
-    ];
+    const sources = ['const rsuInput = rsuInputs[index];', 'const rsuInput = rsuInputs?.[0];'];
     for (const alias of sources) {
       const source = [
         `import { useGrantedRsuWizard } from './use-granted-rsu-wizard';`,
@@ -732,8 +752,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).not.toContain('() => (Type.OVERLAY)');
   });
 
-  /** Keeps a dormant panel's parent layout and target branch on one compiler-proven state. */
-  it('emits an inert renderable discriminator as target-guided Smart metadata', () => {
+  /** Exposes authored visible states so the local residual can learn the useful discriminator. */
+  it('emits ranked render-state candidates as target-guided Smart metadata', () => {
     const source = [
       `import { usePanel } from './panel-context';`,
       'export function Panel() {',
@@ -753,13 +773,44 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/Panel.tsx', source),
     );
 
-    expect(transformed).toContain('path: "state.status", value: ("loading")');
+    expect(transformed).toContain(
+      'path: "state.status", value: ("open"), deterministicRank: 0, role: "render-state"',
+    );
+    expect(transformed).toContain(
+      'path: "state.status", value: ("loading"), deterministicRank: 1, role: "render-state"',
+    );
+    expect(transformed).toContain(
+      'path: "state.status", value: ("closing"), deterministicRank: 2, role: "render-state"',
+    );
     expect(transformed).toContain('path: "currentWidth"');
     expect(transformed).toContain('Number(globalThis.innerWidth)');
-    expect(transformed).not.toContain('path: "state.status", value: ("open")');
     expect(transformed).toContain(
       '"requiredPaths":["state.status","state.iframeUrl","currentWidth","close()"]',
     );
+  });
+
+  /** Keeps a visible query-loading return available as a reproducible time checkpoint. */
+  it('emits a transient early-return state for a loading surface', () => {
+    const source = [
+      `import { useGetContentDetails } from './use-content-details';`,
+      'export function DetailBottomSheetContent({ contentId }) {',
+      '  const { data: contentData, status } = useGetContentDetails(contentId);',
+      '  if (status === "pending") return <DetailBottomSheetSkeleton />;',
+      '  if (status === "error") return <p>Failed</p>;',
+      '  if (!contentData) return null;',
+      '  return <article>{contentData.title}</article>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/DetailBottomSheetContent.tsx', source),
+    );
+
+    expect(transformed).toContain(
+      'path: "status", value: ("pending"), deterministicRank: 0, role: "render-state"',
+    );
+    expect(transformed).not.toContain('path: "status", value: ("error"), deterministicRank:');
   });
 
   /** Recovers a page-state literal when a local render helper owns the selected JSX branch. */
@@ -1167,6 +1218,42 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"setValue": Object.freeze(() => undefined)');
   });
 
+  /** Carries package-agnostic identity evidence so runtime learning can align generated references. */
+  it('tags a literal identity field value as a neural semantic demand', () => {
+    const source = [
+      `import { useProjectField } from './use-project-field';`,
+      'export function Chairperson() {',
+      '  const { value, helpers: { setValue } } = useProjectField("chairpersonId");',
+      '  return <button onClick={() => setValue(value)}>{value}</button>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Chairperson.tsx', source),
+    );
+
+    expect(transformed).toContain('"semanticValueDemand":{"kind":"identity","path":"value"}');
+  });
+
+  /** Requires an actual identifier token and leaves ordinary text field values independent. */
+  it('does not tag a text field whose name merely ends with the letters id', () => {
+    const source = [
+      `import { useProjectField } from './use-project-field';`,
+      'export function Validation() {',
+      '  const { value } = useProjectField("valid");',
+      '  return <span>{value}</span>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Validation.tsx', source),
+    );
+
+    expect(transformed).not.toContain('semanticValueDemand');
+  });
+
   /** Uses local demand evidence rather than a package-name allowlist for third-party hooks. */
   it('instruments arbitrary external hooks only when their result shape is locally proven', () => {
     const source = [
@@ -1290,6 +1377,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(2);
     expect(transformed).toContain('() => (useContext(AppContext))');
     expect(transformed).toContain('() => (React.useContext(CompanyContext))');
+    expect(transformed).toContain('undefined, undefined, () => (AppContext)');
+    expect(transformed).toContain('undefined, undefined, () => (CompanyContext)');
     expect(transformed).toContain('"user": Object.freeze({ "name": "name" })');
     expect(transformed).not.toContain('() => (useMemo(');
     expect(transformed).not.toContain('() => (React.useMemo(');

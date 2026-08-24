@@ -260,4 +260,40 @@ describe('createPreviewAutomaticPropsRuntimeSource', () => {
       selectedDocumentId: 'documentId',
     });
   });
+
+  /** Uses the data neural head to cover every compiler-proven table row discriminator. */
+  it('fills rendered collection props with visible branch-diverse rows', () => {
+    const context: { result?: Record<string, unknown>; selection?: unknown } = {};
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        'function selectPreviewInspectorNeuralResidualCandidate(specification, candidates) {',
+        '  globalThis.selection = { specification, candidates };',
+        "  return { candidateId: 'branch-coverage', decision: { candidateId: 'branch-coverage' } };",
+        '}',
+        "const shape = { kind: 'object', properties: { events: { kind: 'array', renderedCollection: true, items: { kind: 'object', properties: { date: { kind: 'string' }, eventType: { kind: 'string', candidateValues: ['appointed', 'ended', 'co-ceo'], exactValue: true, value: 'appointed' } } } } } };",
+        'setPreviewGeneratedListSampleCount(2);',
+        'const value = createPreviewPropsFromLayers(shape);',
+        'globalThis.result = { dates: value.events.map((row) => row.date), eventTypes: value.events.map((row) => row.eventType), length: value.events.length };',
+      ].join('\n'),
+      context,
+    );
+
+    expect(context.result).toEqual({
+      dates: [
+        '2026-01-15T09:00:00.000Z',
+        '2026-01-16T09:00:00.000Z',
+        '2026-01-17T09:00:00.000Z',
+      ],
+      eventTypes: ['appointed', 'ended', 'co-ceo'],
+      length: 3,
+    });
+    expect(context.selection).toMatchObject({
+      specification: {
+        blockerKind: 'automatic-props',
+        holeKind: 'rendered-collection-prop-data',
+        numbers: { configuredRowCount: 2, variantCount: 3 },
+      },
+    });
+  });
 });

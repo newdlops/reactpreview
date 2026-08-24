@@ -246,12 +246,14 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
     expect([
       ...new Set(plan?.pageCandidates.map((candidate) => candidate.target?.exportName)),
     ]).toEqual(['UploadStartButton', 'UploadPanel', 'UploadHelpLink']);
-    expect(plan?.pageCandidates
-      .filter((candidate) => candidate.root.sourcePath === uploadPagePath)
-      .map((candidate) => ({
-        root: candidate.root,
-        targetExportName: candidate.target?.exportName,
-      }))).toEqual([
+    expect(
+      plan?.pageCandidates
+        .filter((candidate) => candidate.root.sourcePath === uploadPagePath)
+        .map((candidate) => ({
+          root: candidate.root,
+          targetExportName: candidate.target?.exportName,
+        })),
+    ).toEqual([
       {
         root: { exportName: 'default', sourcePath: uploadPagePath },
         targetExportName: 'UploadStartButton',
@@ -275,6 +277,98 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
     const executable = createPreviewInspectorExecutablePlan(plan, panelCandidate.id);
     expect(executable.target).toEqual({ exportName: 'UploadPanel', sourcePath: documentPath });
     expect(Object.keys(executable.renderChainsByExport)).toEqual(['UploadPanel']);
+  });
+
+  /** Keeps source-proven wrapper paths instead of collapsing a shared leaf into module context. */
+  it('publishes every Next App wrapper path for a shared named component', async () => {
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'prepare-fast-next-wrapper-paths-'));
+    temporaryRoots.push(projectRoot);
+    const documentPath = await writeSource(
+      projectRoot,
+      'src/components/common/Skeleton.tsx',
+      'export const Skeleton = ({ children }) => <div>{children}</div>;',
+    );
+    const detailPath = await writeSource(
+      projectRoot,
+      'src/components/explore/DetailSkeleton.tsx',
+      [
+        "import { Skeleton } from '../common/Skeleton';",
+        'export const DetailSkeleton = () => <section><Skeleton /></section>;',
+      ].join('\n'),
+    );
+    const posterPath = await writeSource(
+      projectRoot,
+      'src/components/explore/PosterSkeleton.tsx',
+      [
+        "import { Skeleton } from '../common/Skeleton';",
+        'const PosterCardSkeleton = () => <Skeleton />;',
+        'export const PosterSkeleton = () => <aside><PosterCardSkeleton /></aside>;',
+      ].join('\n'),
+    );
+    const pagePath = await writeSource(
+      projectRoot,
+      'src/app/explore/page.tsx',
+      [
+        "import { DetailSkeleton } from '../../components/explore/DetailSkeleton';",
+        "import { PosterSkeleton } from '../../components/explore/PosterSkeleton';",
+        'export default function ExplorePage() {',
+        '  return <main><DetailSkeleton /><PosterSkeleton /></main>;',
+        '}',
+      ].join('\n'),
+    );
+    const layoutPath = await writeSource(
+      projectRoot,
+      'src/app/layout.tsx',
+      'export default function RootLayout({ children }) { return <html><body>{children}</body></html>; }',
+    );
+    const sourcePaths = [documentPath, detailPath, posterPath, pagePath, layoutPath];
+    const request: PreviewBuildRequest = {
+      dependencySnapshots: [],
+      documentPath,
+      language: 'tsx',
+      preparationMode: 'fast',
+      renderMode: 'page-inspector',
+      sourceText: await readFile(documentPath, 'utf8'),
+      useStorybookPreview: false,
+      workspaceRoot: projectRoot,
+    };
+    const cache = {
+      discover: vi.fn(),
+      getSourcePaths: vi.fn(() => Promise.resolve(Object.freeze(sourcePaths))),
+      readSourceText: vi.fn(({ sourcePath }: { readonly sourcePath: string }) =>
+        readFile(sourcePath, 'utf8').catch(() => undefined),
+      ),
+    } as unknown as PreviewProjectUsageCache;
+
+    const prepared = await preparePreviewCompilerUsage({
+      cache,
+      projectRoot,
+      projectUsesNextRuntime: true,
+      request,
+      resolver: createResolverStub(sourcePaths),
+      setupKind: 'none',
+      targetSelection: preparePreviewCompilerTarget(request),
+      workspaceRoot: projectRoot,
+    });
+
+    const plan = prepared.packageTargetUsageProps.inspectorPlan;
+    const renderPaths = plan?.renderChain.paths ?? [];
+    expect(new Set(renderPaths.map((candidate) => candidate.id)).size).toBe(2);
+    expect(renderPaths.map((candidate) => candidate.steps.map((step) => step.label))).toEqual(
+      expect.arrayContaining([
+        ['Skeleton', 'DetailSkeleton', 'ExplorePage'],
+        ['Skeleton', 'PosterCardSkeleton', 'PosterSkeleton', 'ExplorePage'],
+      ]),
+    );
+    expect(
+      new Set(plan?.pageCandidates.map((candidate) => candidate.renderPath?.id).filter(Boolean))
+        .size,
+    ).toBe(2);
+    expect(
+      plan?.pageCandidates.filter(
+        (candidate) => candidate.routeLocation?.evidenceKind === 'next-app-filesystem',
+      ),
+    ).toHaveLength(2);
   });
 
   /**

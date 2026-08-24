@@ -58,6 +58,29 @@ describe('React conditional rendering instrumentation', () => {
     );
   });
 
+  /** Retains primitive condition logic so one learned state cannot activate contradictory branches. */
+  it('records bounded scalar predicate trees for render-state branch coherence', () => {
+    const source = [
+      'export function Panel({ state }) {',
+      '  return <main>',
+      '    {state.status === "loading" && <Loader />}',
+      '    {(state.status === "open" || state.status === "closing") && <iframe />}',
+      '  </main>;',
+      '}',
+    ].join('\n');
+    const definitions: string[] = [];
+
+    instrumentReactConditionalRendering('/workspace/src/Panel.tsx', source, definitions);
+    const definitionSource = definitions.join('\n');
+
+    expect(definitionSource).toContain(
+      '"scalarExpression":{"kind":"comparison","operator":"===","path":"state.status","value":"loading"}',
+    );
+    expect(definitionSource).toContain(
+      '"scalarExpression":{"kind":"or","left":{"kind":"comparison","operator":"===","path":"state.status","value":"open"},"right":{"kind":"comparison","operator":"===","path":"state.status","value":"closing"}}',
+    );
+  });
+
   /**
    * Registers controls inside a collection callback even when an earlier empty-list return prevents
    * the callback and its nested status/modal branches from executing during the first preview pass.

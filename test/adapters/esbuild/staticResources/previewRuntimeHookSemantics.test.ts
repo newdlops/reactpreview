@@ -19,6 +19,10 @@ describe('inferPreviewRuntimeSemanticFallback', () => {
 
   /** Keeps generated destinations parseable and inert instead of echoing an invalid field name. */
   it('uses safe locations for non-image URL and path fields', () => {
+    expect(inferPreviewRuntimeSemanticFallback('iframeUrl')).toMatchObject({
+      kind: 'string',
+      value: 'about:blank',
+    });
     expect(inferPreviewRuntimeSemanticFallback('url')).toMatchObject({
       kind: 'string',
       value: 'https://example.invalid/',

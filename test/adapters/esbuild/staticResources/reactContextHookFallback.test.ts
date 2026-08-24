@@ -81,6 +81,25 @@ describe('createReactContextHookFallbackTransform', () => {
     expect(sandbox.hookCalls).toBe(1);
   });
 
+  /** Gives the Inspector the exact raw Context carrier without re-evaluating arbitrary arguments. */
+  it('passes a stable direct useContext identity to the runtime resolver', () => {
+    const source = [
+      `import { useContext } from 'react';`,
+      `import { AppContext } from './app-context';`,
+      'export function View() {',
+      '  const value = useContext(AppContext);',
+      '  return value.state.status;',
+      '}',
+    ].join('\n');
+
+    const transform = createReactContextHookFallbackTransform('/workspace/view.tsx', source);
+
+    expect(transform.replacements).toHaveLength(1);
+    expect(transform.replacements[0]?.replacement).toContain(
+      'undefined, undefined, () => (AppContext)',
+    );
+  });
+
   /** Covers aliased named imports, namespace imports, direct aliases, and called identifiers. */
   it('supports static import aliases and namespace Context hooks', () => {
     const source = [

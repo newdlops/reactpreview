@@ -693,13 +693,21 @@ function appendShape(
   if (shape.kind === 'object')
     for (const [name, child] of Object.entries(shape.properties ?? {}))
       appendShape(paths, [...prefix, name], child, depth + 1, literalDemands);
-  else if (
-    shape.exactValue === true &&
-    shape.value !== undefined &&
-    shape.value !== null &&
-    literalDemands !== undefined
-  ) {
+  else if (literalDemands !== undefined) {
     const path = prefix.join('.');
-    literalDemands.set(path, { path, value: shape.value });
+    const candidateValues = Array.isArray(shape.candidateValues)
+      ? shape.candidateValues
+      : [];
+    for (const value of candidateValues) {
+      literalDemands.set(path + '\0' + typeof value + ':' + String(value), { path, value });
+    }
+    if (
+      candidateValues.length === 0 &&
+      shape.exactValue === true &&
+      shape.value !== undefined &&
+      shape.value !== null
+    ) {
+      literalDemands.set(path, { path, value: shape.value });
+    }
   }
 }

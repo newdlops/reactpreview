@@ -15,17 +15,22 @@ import {
 } from './previewRuntimeHookSyntax';
 
 const RESOURCE_HOST_NAMES = new Set(['audio', 'embed', 'iframe', 'object', 'script', 'video']);
-const TRANSIENT_VISIBLE_STATE_SCORES = new Map<string, number>([
-  ['loading', 1_000],
-  ['pending', 950],
-  ['initializing', 900],
-  ['connecting', 850],
-  ['preparing', 800],
-  ['opening', 750],
+const TRANSIENT_VISIBLE_STATE_NAMES = new Set([
+  'loading',
+  'pending',
+  'fetching',
+  'initializing',
+  'connecting',
+  'preparing',
+  'opening',
+  'suspended',
 ]);
+const EXITING_VISIBLE_STATE_NAMES = new Set(['closing', 'disconnecting', 'exiting']);
 
 /** One side-effect-free scalar keyed relative to the analyzed hook-result binding. */
 export interface PreviewRuntimeHookRenderableStateDemand {
+  /** Cold-model order; verified neural learning may reorder candidates with the same path. */
+  readonly deterministicRank: number;
   readonly expression: string;
   readonly path: string;
 }
@@ -45,7 +50,10 @@ interface RenderSummary {
   readonly resourceHostCount: number;
 }
 
-interface RenderCandidate extends PreviewRuntimeHookRenderableStateDemand {
+interface RenderCandidate extends Omit<
+  PreviewRuntimeHookRenderableStateDemand,
+  'deterministicRank'
+> {
   readonly order: number;
   readonly score: number;
 }
@@ -53,17 +61,18 @@ interface RenderCandidate extends PreviewRuntimeHookRenderableStateDemand {
 /**
  * Finds a literal used by a visible JSX branch after the same property blocks an empty return.
  *
- * A branch such as `state.status === "loading" && <Loader />` is exact scalar evidence. Requiring
- * the same property to occur in a null/false early return prevents arbitrary tab or filter choices
- * from becoming automatic state changes. When several visible states exist, resource-free
- * transient UI wins over iframe/media branches, then authored order is deterministic.
+ * A branch such as `state.status === "loading" && <Loader />` is exact scalar evidence. Ordinary
+ * states must also occur in a null/false early return so arbitrary tabs do not become automatic
+ * choices. A known transient literal may instead own a visible early return directly: that is a
+ * time checkpoint rather than a terminal navigation choice. Stable content still ranks ahead of
+ * transient/loading and exiting branches; the browser learner can revise that cold order.
  */
-export function inferPreviewRuntimeHookRenderableStateDemand(
+export function inferPreviewRuntimeHookRenderableStateDemands(
   identifier: ts.Identifier,
   sourceFile: ts.SourceFile,
-): PreviewRuntimeHookRenderableStateDemand | undefined {
+): readonly PreviewRuntimeHookRenderableStateDemand[] {
   const owner = findNearestPreviewRuntimeFunction(identifier);
-  if (owner === undefined) return undefined;
+  if (owner === undefined) return Object.freeze([]);
   const hidden = collectBlockingStateValues(owner, identifier.text, sourceFile);
   const candidates: RenderCandidate[] = [];
   const seen = new Set<string>();
@@ -71,42 +80,46 @@ export function inferPreviewRuntimeHookRenderableStateDemand(
     const summary = summarizeRenderedBranch(rendered, owner, sourceFile);
     if (summary.nodeCount === 0) return;
     for (const equality of readTrackedEqualities(condition, identifier.text, sourceFile)) {
-      const path = equality.path.join('.');
+      const pathKey = equality.path.join('.');
+      const path = pathKey.length === 0 ? '<root>' : pathKey;
       const identity = `${path}\0${equality.key}`;
-      if (!hidden.has(identity) && !hidden.has(`${path}\0*`)) continue;
+      const normalizedStateName = equality.semanticName.replace(/[-_\s]/gu, '').toLowerCase();
+      const transient = TRANSIENT_VISIBLE_STATE_NAMES.has(normalizedStateName);
+      const blocked = hidden.has(`${pathKey}\0${equality.key}`) || hidden.has(`${pathKey}\0*`);
+      if (!blocked && !transient) continue;
       if (seen.has(identity)) continue;
       seen.add(identity);
-      const normalizedStateName = equality.semanticName.replace(/[-_\s]/gu, '').toLowerCase();
-      const transientScore = TRANSIENT_VISIBLE_STATE_SCORES.get(normalizedStateName) ?? 0;
+      const transientPenalty = transient ? 800 : 0;
+      const exitingPenalty = EXITING_VISIBLE_STATE_NAMES.has(normalizedStateName) ? 1_000 : 0;
       candidates.push({
         expression: equality.expression,
         order,
         path,
         score:
-          transientScore +
-          (summary.resourceHostCount === 0 ? 200 : -2_000 * summary.resourceHostCount) -
+          (blocked ? 400 : 0) -
+          transientPenalty -
+          exitingPenalty +
+          (summary.resourceHostCount === 0 ? 120 : -120 * summary.resourceHostCount) +
           Math.min(summary.nodeCount, 32),
       });
     }
   };
-  if (hidden.size > 0) {
-    const visit = (node: ts.Node): void => {
-      if (node !== owner && isPreviewRuntimeFunction(node)) return;
-      if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
-      ) {
-        append(node.left, node.right, node.getStart(sourceFile));
-      } else if (ts.isConditionalExpression(node)) {
-        append(node.condition, node.whenTrue, node.getStart(sourceFile));
-      } else if (ts.isIfStatement(node)) {
-        const rendered = readReturnedRenderNode(node.thenStatement);
-        if (rendered !== undefined) append(node.expression, rendered, node.getStart(sourceFile));
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(owner);
-  }
+  const visit = (node: ts.Node): void => {
+    if (node !== owner && isPreviewRuntimeFunction(node)) return;
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+    ) {
+      append(node.left, node.right, node.getStart(sourceFile));
+    } else if (ts.isConditionalExpression(node)) {
+      append(node.condition, node.whenTrue, node.getStart(sourceFile));
+    } else if (ts.isIfStatement(node)) {
+      const rendered = readReturnedRenderNode(node.thenStatement);
+      if (rendered !== undefined) append(node.expression, rendered, node.getStart(sourceFile));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner);
   /*
    * A parent page often derives a named gate before a local render helper:
    * `const ready = status === "COMPLETED" && tree != null; if (ready) return <Target />`.
@@ -116,12 +129,37 @@ export function inferPreviewRuntimeHookRenderableStateDemand(
   if (candidates.length === 0) {
     candidates.push(...collectDerivedRenderableStateCandidates(owner, identifier.text, sourceFile));
   }
-  const selected = candidates.sort(
-    (left, right) => right.score - left.score || left.order - right.order,
-  )[0];
-  return selected === undefined
-    ? undefined
-    : Object.freeze({ expression: selected.expression, path: selected.path });
+  const retained = new Map<string, RenderCandidate>();
+  for (const candidate of candidates) {
+    const key = `${candidate.path}\0${candidate.expression}`;
+    const previous = retained.get(key);
+    if (
+      previous === undefined ||
+      candidate.score > previous.score ||
+      (candidate.score === previous.score && candidate.order < previous.order)
+    )
+      retained.set(key, candidate);
+  }
+  return Object.freeze(
+    [...retained.values()]
+      .sort((left, right) => right.score - left.score || left.order - right.order)
+      .slice(0, 8)
+      .map((candidate, deterministicRank) =>
+        Object.freeze({
+          deterministicRank,
+          expression: candidate.expression,
+          path: candidate.path,
+        }),
+      ),
+  );
+}
+
+/** Returns the cold-model winner for callers that still consume one deterministic demand. */
+export function inferPreviewRuntimeHookRenderableStateDemand(
+  identifier: ts.Identifier,
+  sourceFile: ts.SourceFile,
+): PreviewRuntimeHookRenderableStateDemand | undefined {
+  return inferPreviewRuntimeHookRenderableStateDemands(identifier, sourceFile)[0];
 }
 
 /** Finds exact equality values transported through a local Boolean gate into returned JSX. */

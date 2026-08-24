@@ -249,6 +249,11 @@ export function createReactContextHookFallbackTransform(
     const location = sourceFile.getLineAndCharacterOfPosition(start);
     const calleeStart = candidate.call.expression.getStart(sourceFile);
     const hookExpression = sourceText.slice(calleeStart, candidate.call.expression.end);
+    const hookIdentityExpression = readDirectContextIdentityExpression(
+      candidate.call,
+      sourceFile,
+      sourceText,
+    );
     replacements.push({
       end,
       fallbackBinding: declaration.binding,
@@ -257,6 +262,7 @@ export function createReactContextHookFallbackTransform(
         column: location.character + 1,
         fallbackBinding: declaration.binding,
         hookName: hookExpression,
+        ...(hookIdentityExpression === undefined ? {} : { hookIdentityExpression }),
         line: location.line + 1,
         originalCall,
         renderGuardPaths: [...plan.renderGuardPaths],
@@ -277,6 +283,31 @@ export function createReactContextHookFallbackTransform(
     registrations: Object.freeze(registrations.map((registration) => Object.freeze(registration))),
     replacements: Object.freeze(replacements.sort((left, right) => left.start - right.start)),
   };
+}
+
+/**
+ * Returns the raw Context identifier from a direct React `useContext(Context)` call.
+ * Only an identifier is repeated in the lazy identity thunk, so authored argument evaluation is
+ * never duplicated for calls, getters, element access, or other effectful expressions.
+ */
+function readDirectContextIdentityExpression(
+  call: ts.CallExpression,
+  sourceFile: ts.SourceFile,
+  sourceText: string,
+): string | undefined {
+  const callee = unwrapExpression(call.expression);
+  const hookName = ts.isIdentifier(callee)
+    ? callee.text
+    : ts.isPropertyAccessExpression(callee) && callee.questionDotToken === undefined
+      ? callee.name.text
+      : '';
+  const contextArgument = call.arguments[0];
+  if (hookName !== 'useContext' || call.arguments.length !== 1 || contextArgument === undefined)
+    return undefined;
+  const identity = unwrapExpression(contextArgument);
+  return ts.isIdentifier(identity)
+    ? sourceText.slice(contextArgument.getStart(sourceFile), contextArgument.end)
+    : undefined;
 }
 
 /** Shared immutable empty result returned for unsupported or irrelevant modules. */

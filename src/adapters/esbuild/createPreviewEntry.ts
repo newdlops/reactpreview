@@ -328,10 +328,25 @@ replacePreviewRuntimeListener('error', (event) => {
   const location = typeof event.filename === 'string' && event.filename.length > 0
     ? event.filename + ':' + String(event.lineno ?? 0) + ':' + String(event.colno ?? 0)
     : undefined;
-  showRuntimeError(event.error ?? event.message, {
-    location,
-    phase: 'unhandled browser error',
-  });
+  const error = event.error ?? event.message;
+  const reportUnhandledRuntimeError = () => {
+    if (isCapturedReactError(error)) return;
+    showRuntimeError(error, {
+      location,
+      phase: 'unhandled browser error',
+    });
+  };
+  if (
+    ${JSON.stringify(renderMode === 'page-inspector')} &&
+    (typeof error === 'object' || typeof error === 'function') && error !== null
+  ) {
+    // React development builds dispatch ErrorEvent before the nearest error boundary commits.
+    // Let that synchronous boundary mark the same Error object before classifying it as root-fatal.
+    const defer = globalThis.queueMicrotask ?? ((callback) => Promise.resolve().then(callback));
+    defer(reportUnhandledRuntimeError);
+    return;
+  }
+  reportUnhandledRuntimeError();
 });
 
 replacePreviewRuntimeListener('unhandledrejection', (event) => {

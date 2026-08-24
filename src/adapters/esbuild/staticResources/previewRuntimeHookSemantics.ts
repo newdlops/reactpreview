@@ -147,6 +147,15 @@ export function inferPreviewRuntimeSemanticFallback(
       value: '',
     };
   }
+  if (/^(?:iframe|frame|embed|webview)(?:url|uri|href|src)$/u.test(normalized)) {
+    const value = 'about:blank';
+    return {
+      expression: JSON.stringify(value),
+      kind: 'string',
+      label: 'generated inert embedded document URL',
+      value,
+    };
+  }
   if (/(?:url|uri)$/u.test(normalized)) {
     const value = 'https://example.invalid/';
     return {

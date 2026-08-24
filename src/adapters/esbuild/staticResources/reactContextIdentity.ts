@@ -3,7 +3,8 @@
  *
  * The analyzer is intentionally syntax-only. It recognizes React APIs only through value imports
  * from the exact `react` specifier, accepts only immutable top-level Context declarations, and
- * requires a conventionally named hook to return `useContext(localContext)` directly. It never
+ * requires a conventionally named hook to return `useContext(localContext)` directly or through
+ * one immutable alias guarded only by a provider-missing throw. It never
  * resolves another module, evaluates a default value, or assumes that a name containing
  * "Context" belongs to React. These narrow facts can later drive preview-only runtime registration
  * without importing an application bootstrap or confusing unrelated custom hooks.
@@ -11,7 +12,7 @@
 import path from 'node:path';
 import ts from 'typescript';
 
-const CONTEXT_HOOK_NAME_PATTERN = /^use[A-Za-z0-9_$]*Context$/u;
+const REACT_HOOK_NAME_PATTERN = /^use[A-Z][A-Za-z0-9_$]*$/u;
 const MAX_CONTEXT_CANDIDATES = 64;
 const MAX_HOOK_CANDIDATES = 64;
 const MAX_IDENTITY_PAIRS = 64;
@@ -88,8 +89,9 @@ const TRUNCATED_INVENTORY: ReactContextIdentityInventory = Object.freeze({
  *
  * Supported Contexts have the form `const C = createContext(...)` or
  * `const C = React.createContext(...)`. Supported hooks are top-level function declarations or
- * immutable arrow/function expressions named `use*Context`; their expression body or sole block
- * statement must return `useContext(C)` directly. Named aliases, React default imports, and React
+ * immutable arrow/function expressions named `use*Context`; their expression body, sole return,
+ * or exact `const value = useContext(C); if (...) throw; return value` block must preserve the
+ * Context result. Named aliases, React default imports, and React
  * namespace imports are supported. Type-only imports, shadowing, reassignable declarations,
  * indirect aliases, optional calls, nested hooks, and ambiguous declarations fail closed.
  *
@@ -379,7 +381,7 @@ function collectLocalContexts(
   return { contexts, truncated: false };
 }
 
-/** Collects unique top-level `use*Context` function and immutable function-value declarations. */
+/** Collects unique top-level React hook functions and immutable function-value declarations. */
 function collectLocalHooks(
   sourceFile: ts.SourceFile,
   topLevelBindingCounts: ReadonlyMap<string, number>,
@@ -390,7 +392,7 @@ function collectLocalHooks(
     if (
       ts.isFunctionDeclaration(statement) &&
       statement.name !== undefined &&
-      CONTEXT_HOOK_NAME_PATTERN.test(statement.name.text)
+      REACT_HOOK_NAME_PATTERN.test(statement.name.text)
     ) {
       candidateCount += 1;
       if (candidateCount > MAX_HOOK_CANDIDATES) {
@@ -414,7 +416,7 @@ function collectLocalHooks(
     for (const declaration of statement.declarationList.declarations) {
       if (
         !ts.isIdentifier(declaration.name) ||
-        !CONTEXT_HOOK_NAME_PATTERN.test(declaration.name.text) ||
+        !REACT_HOOK_NAME_PATTERN.test(declaration.name.text) ||
         declaration.initializer === undefined
       ) {
         continue;
@@ -452,7 +454,8 @@ function readDirectHookContextBinding(
   if (hasAsyncModifier(hook) || (!ts.isArrowFunction(hook) && hook.asteriskToken !== undefined)) {
     return undefined;
   }
-  const returnedExpression = readDirectReturnExpression(hook);
+  const returnedExpression =
+    readDirectReturnExpression(hook) ?? readGuardedContextReturnExpression(hook);
   if (returnedExpression === undefined) {
     return undefined;
   }
@@ -489,6 +492,63 @@ function readDirectHookContextBinding(
   return lexicalBindings.has(reactBinding) || lexicalBindings.has(context.binding)
     ? undefined
     : context.binding;
+}
+
+/**
+ * Accepts the common non-null Context hook contract without treating arbitrary aliases as proof.
+ * The immutable value must be read first, checked by one `if` whose only outcome is a throw, and
+ * returned unchanged. This covers provider assertions while rejecting transforms and side effects.
+ */
+function readGuardedContextReturnExpression(hook: RuntimeFunction): ts.Expression | undefined {
+  const body = hook.body;
+  if (body === undefined || !ts.isBlock(body) || body.statements.length !== 3) return undefined;
+  const [readStatement, guardStatement, returnStatement] = body.statements;
+  if (
+    readStatement === undefined ||
+    !ts.isVariableStatement(readStatement) ||
+    (readStatement.declarationList.flags & ts.NodeFlags.Const) === 0 ||
+    readStatement.declarationList.declarations.length !== 1 ||
+    guardStatement === undefined ||
+    !ts.isIfStatement(guardStatement) ||
+    guardStatement.elseStatement !== undefined ||
+    returnStatement === undefined ||
+    !ts.isReturnStatement(returnStatement) ||
+    returnStatement.expression === undefined
+  )
+    return undefined;
+  const declaration = readStatement.declarationList.declarations[0];
+  if (
+    declaration === undefined ||
+    !ts.isIdentifier(declaration.name) ||
+    declaration.initializer === undefined ||
+    !isThrowOnlyStatement(guardStatement.thenStatement)
+  )
+    return undefined;
+  const returnedValue = unwrapExpression(returnStatement.expression);
+  if (!ts.isIdentifier(returnedValue) || returnedValue.text !== declaration.name.text) {
+    return undefined;
+  }
+  const bindingName = declaration.name.text;
+  return findIdentifierWithText(guardStatement.expression, bindingName) === undefined
+    ? undefined
+    : declaration.initializer;
+}
+
+/** Finds one exact identifier inside a guarded expression without following symbol aliases. */
+function findIdentifierWithText(node: ts.Node, text: string): ts.Identifier | undefined {
+  if (ts.isIdentifier(node) && node.text === text) return node;
+  return ts.forEachChild(node, (child) => findIdentifierWithText(child, text));
+}
+
+/** Reports whether one branch contains exactly one unconditional throw statement. */
+function isThrowOnlyStatement(statement: ts.Statement): boolean {
+  if (ts.isThrowStatement(statement)) return true;
+  return (
+    ts.isBlock(statement) &&
+    statement.statements.length === 1 &&
+    statement.statements[0] !== undefined &&
+    ts.isThrowStatement(statement.statements[0])
+  );
 }
 
 /** Accepts an arrow expression body or a block containing exactly one direct return statement. */

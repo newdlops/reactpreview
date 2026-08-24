@@ -1094,11 +1094,13 @@ export function createPreviewHeadlessBridgeSource(
     'probing',
     'recovering-after-rejected-gate',
     'resolving-deferred-render-contract',
+    'retrying-page-execution',
     'resuming-new-requirements',
     'revealing-overlay',
     'searching-deterministic-requirements',
     'searching-requirements',
     'settling-auto-attempt',
+    'settling-neural-render-state',
   ]);
   const isCompositionPending = () => {
     const composition = bridgeState.latestComposition;
@@ -1118,6 +1120,10 @@ export function createPreviewHeadlessBridgeSource(
         composition.targetAutoAttemptResumeScheduled === true ||
         composition.targetAutoAttemptResumeHandled !== true
       )
+    ) return true;
+    if (
+      composition.targetStatus === 'settling-neural-render-state' ||
+      composition.targetStatus === 'retrying-page-execution'
     ) return true;
     if (pendingCompositionStatuses.has(composition.targetStatus)) {
       return composition.requirementSearchExhausted !== true;

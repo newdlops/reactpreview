@@ -47,12 +47,23 @@ const COLLECTION_IDENTITY_METHODS = new Set(['filter', 'slice', 'toReversed', 't
 const BLOCKED_PROP_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 const JSX_COLLECTION_PROP_NAMES = new Set([
   'data',
+  'datalist',
   'items',
+  'objectlist',
   'options',
   'records',
   'results',
+  'rowdata',
   'rows',
   'values',
+]);
+const JSX_COLLECTION_ITEM_WRAPPER_NAMES = new Set([
+  'data',
+  'item',
+  'object',
+  'record',
+  'row',
+  'value',
 ]);
 const JSX_COLLECTION_FIELD_CONFIG_PROP_NAMES = new Set(['columns', 'fields']);
 const JSX_COLLECTION_ACTION_CONFIG_PROP_NAMES = new Set(['actions', 'itemactions', 'rowactions']);
@@ -634,7 +645,14 @@ export function inferPreviewRuntimeHookJsxCollectionItemFallback(
     );
   };
   const appendCallback = (callback: ts.ArrowFunction | ts.FunctionExpression): void => {
-    mergeItemShape(inferReactFunctionParameterUsageShape(callback, 0));
+    const inferred = inferReactFunctionParameterUsageShape(callback, 0);
+    const wrappers = inferred?.kind === 'object'
+      ? Object.entries(inferred.properties ?? {}).filter(
+          ([name, child]) =>
+            JSX_COLLECTION_ITEM_WRAPPER_NAMES.has(name.toLowerCase()) && child.kind === 'object',
+        )
+      : [];
+    mergeItemShape(wrappers.length === 1 ? wrappers[0]?.[1] : inferred);
   };
   const collectConfig = (
     expression: ts.Expression,

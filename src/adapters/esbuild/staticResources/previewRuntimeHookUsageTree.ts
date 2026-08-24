@@ -36,6 +36,15 @@ export interface PreviewRuntimeHookUsageTreeFallback {
   readonly renderGuardPaths: readonly string[];
   /** Minimal de-duplicated paths displayed by the Inspector and used for partial-value repair. */
   readonly requiredPaths: readonly string[];
+  /** Neural candidates inferred from callable data-flow roles without mutating the cold fallback. */
+  readonly smartPathValueExpressions: readonly PreviewRuntimeHookUsageTreeSmartPathValue[];
+}
+
+/** One bounded candidate value and its semantic learning feature. */
+export interface PreviewRuntimeHookUsageTreeSmartPathValue {
+  readonly expression: string;
+  readonly path: string;
+  readonly role?: 'collection-filter-predicate' | 'render-state';
 }
 
 /**
@@ -58,6 +67,19 @@ export function createPreviewRuntimeHookUsageTreeFallback(
         .map((path_) => (path_.names.length === 0 ? '<root>' : path_.names.join('.'))),
     ),
     requiredPaths: Object.freeze(completedPaths.flatMap(formatPreviewRuntimeHookUsagePaths)),
+    smartPathValueExpressions: Object.freeze(
+      completedPaths.flatMap((path_) =>
+        path_.smartValueExpression === undefined
+          ? []
+          : [
+              Object.freeze({
+                expression: path_.smartValueExpression,
+                path: formatPreviewRuntimeHookUsagePath(path_),
+                ...(path_.smartValueRole === undefined ? {} : { role: path_.smartValueRole }),
+              }),
+            ],
+      ),
+    ),
   });
 }
 
@@ -103,6 +125,12 @@ function deduplicatePreviewRuntimeHookUsagePaths(
         ? {}
         : { valueRequiredPaths: Object.freeze(valueRequiredPaths) }),
       ...(existing.renderGuard === true || path_.renderGuard !== true ? {} : { renderGuard: true }),
+      ...(existing.smartValueExpression !== undefined || path_.smartValueExpression === undefined
+        ? {}
+        : {
+            smartValueExpression: path_.smartValueExpression,
+            smartValueRole: path_.smartValueRole,
+          }),
     });
   }
   const retainedPaths = [...retained.values()];

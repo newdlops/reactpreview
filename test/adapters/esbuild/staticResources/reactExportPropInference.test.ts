@@ -1088,6 +1088,102 @@ describe('collectReactExportPropInference', () => {
     );
   });
 
+  /** Correlates a direct prop Array with inline table columns and their visible row branches. */
+  it('infers branch-diverse rendered collection rows from dataList and columns', () => {
+    const source = [
+      'type Props = { events: { eventType: string; date: string }[] };',
+      'const Panel = styled(({ events }: Props) => (',
+      '  <AgDataTable',
+      '    dataList={events.filter((event) => event.eventType !== "hidden").map((event, index) => ({ ...event, id: index }))}',
+      '    columns={[',
+      '      {',
+      '        key: "kind",',
+      '        body: ({ data }) => <>',
+      '          {data.eventType === "appointed" && <span>appointed</span>}',
+      '          {data.eventType === "ended" && <span>ended</span>}',
+      '          {data.eventType === "co-ceo" && <span>co-ceo</span>}',
+      '        </>,',
+      '      },',
+      '      { key: "date" },',
+      '    ]}',
+      '  />',
+      '))``;',
+      'export default Panel;',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/Panel.tsx', source);
+
+    expect(result.default?.shape.properties?.events).toMatchObject({
+      items: {
+        properties: {
+          date: { kind: 'string', value: '2024-01-01T00:00:00.000Z' },
+          eventType: {
+            candidateValues: ['appointed', 'ended', 'co-ceo'],
+            exactValue: true,
+            kind: 'string',
+            value: 'appointed',
+          },
+          kind: { kind: 'string', value: 'kind' },
+        },
+      },
+      kind: 'array',
+      renderedCollection: true,
+    });
+  });
+
+  /** Retains scalar branch options so an exhaustive runtime guard never receives a field-name placeholder. */
+  it('keeps every source-proven scalar equality choice with the first visible branch as default', () => {
+    const source = [
+      "import styled from 'styled-components';",
+      'type Props = { taxType: string };',
+      'export const TaxTypeBadge = styled(({ taxType }: Props) => {',
+      '  if (taxType === "heavy_tax") return <span>heavy</span>;',
+      '  if (taxType === "fixed_tax" || taxType === "normal_tax") return <span>normal</span>;',
+      '  if (taxType === "reduced_tax") return <span>reduced</span>;',
+      '  if (taxType === "exempted") return <span>exempted</span>;',
+      '  if (taxType === "none") return null;',
+      '  throw new Error("Unreachable");',
+      '})``;',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/TaxTypeBadge.tsx', source);
+
+    expect(result.TaxTypeBadge?.shape.properties?.taxType).toEqual({
+      candidateValues: [
+        'heavy_tax',
+        'fixed_tax',
+        'normal_tax',
+        'reduced_tax',
+        'exempted',
+        'none',
+      ],
+      exactValue: true,
+      kind: 'string',
+      value: 'heavy_tax',
+    });
+  });
+
+  /** Gives exhaustive switch guards the same finite-domain recovery contract as equality branches. */
+  it('keeps scalar switch choices even when a broad string type supplied a placeholder', () => {
+    const source = [
+      'export function StatusBadge({ status }: { status: string }) {',
+      '  switch (status) {',
+      '    case "ready": return <span>ready</span>;',
+      '    case "pending": return <span>pending</span>;',
+      '    case "failed": return <span>failed</span>;',
+      '    default: throw new Error("Unreachable");',
+      '  }',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/StatusBadge.tsx', source);
+
+    expect(result.StatusBadge?.shape.properties?.status).toMatchObject({
+      candidateValues: ['ready', 'pending', 'failed'],
+      kind: 'string',
+    });
+  });
+
   /** Fails closed for parser recovery, prototype paths, and lowercase helper exports. */
   it('rejects unsafe or non-component inference roots', () => {
     const source = [

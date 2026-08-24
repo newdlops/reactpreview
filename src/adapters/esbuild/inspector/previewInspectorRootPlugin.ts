@@ -377,7 +377,15 @@ export function createPreviewInspectorRootSource(
         : undefined;
     const candidate = executionCandidate?.browserCandidate ?? analysisCandidate;
     const executionRecipe = executionCandidate?.routeRecipe;
-    const runtimeCandidateTarget = executionCandidate?.browserCandidate.target ?? candidate.target;
+    /*
+     * Ordinary single-export plans keep their shared target on the plan rather than duplicating it
+     * onto every candidate. Page Execution enriches only the active candidate, so publishing that
+     * one explicit target beside target-less alternatives made the browser's export filter discard
+     * every HOC/wrapper path except the mounted one. Named-export scenarios already carry an exact
+     * candidate target and remain authoritative; otherwise inherit the immutable analysis target.
+     */
+    const runtimeCandidateTarget =
+      executionCandidate?.browserCandidate.target ?? candidate.target ?? plan.target;
     const selectedExecutionRootOwnsRouter =
       executionCandidate === undefined
         ? candidate.rootOwnsRouter
@@ -1020,7 +1028,11 @@ function createPreviewInspectorDescriptorRenderChains(
     path.normalize(firstStep.sourcePath) === path.normalize(runtimeTarget.sourcePath) &&
     (firstStep.label === runtimeTarget.exportName ||
       (runtimeTarget.exportName === 'default' && firstStep.label.endsWith(' (default)')));
-  if (!exactSelectedTargetPath || selectedRenderPath === undefined || targetRenderChain === undefined) {
+  if (
+    !exactSelectedTargetPath ||
+    selectedRenderPath === undefined ||
+    targetRenderChain === undefined
+  ) {
     return {
       renderChain: plan.renderChain,
       renderChainsByExport: plan.renderChainsByExport,

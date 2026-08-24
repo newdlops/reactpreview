@@ -51,6 +51,24 @@ interface ReactDomPortalBindings {
   readonly namespaces: ReadonlySet<string>;
 }
 
+/** Bounded literal predicate tree used to keep learned render-state choices branch-coherent. */
+type ReactConditionalScalarExpression =
+  | {
+      readonly kind: 'comparison';
+      readonly operator: '==' | '!=' | '===' | '!==';
+      readonly path: string;
+      readonly value: boolean | null | number | string;
+    }
+  | {
+      readonly kind: 'and' | 'or';
+      readonly left: ReactConditionalScalarExpression;
+      readonly right: ReactConditionalScalarExpression;
+    }
+  | {
+      readonly kind: 'not';
+      readonly operand: ReactConditionalScalarExpression;
+    };
+
 /** Function scopes whose own overlay guard may safely become a visibility control. */
 type OverlayRuntimeFunction =
   ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression | ts.MethodDeclaration;
@@ -81,6 +99,8 @@ interface ReactConditionalRenderMetadata {
   readonly ownerName?: string;
   /** Optional render-control classification used for navigation and dormant overlay handling. */
   readonly role?: 'navigation' | 'overlay';
+  /** Serializable scalar logic whose value can be checked against one learned hook-state choice. */
+  readonly scalarExpression?: ReactConditionalScalarExpression;
   /** Whether continuing requires an authored state transition instead of a Boolean branch override. */
   readonly requiresAuthoredState?: true;
   /** Whether a one-sided terminal throw must be bypassed before the selected page can commit. */
@@ -959,6 +979,7 @@ function createConditionalRenderReplacement(
     runtimeOwner === undefined
       ? undefined
       : readOverlayRuntimeFunctionName(runtimeOwner, sourceFile);
+  const scalarExpression = inferConditionalScalarExpression(candidate.condition);
   const metadata: ReactConditionalRenderMetadata = {
     authoredExpression: boundMetadataText(authoredExpression.replace(/\s+/gu, ' ')),
     ...(candidate.negateRuntimeResult === true ? { authoredExpressionNegated: true } : {}),
@@ -969,6 +990,7 @@ function createConditionalRenderReplacement(
     expressionFingerprint: createPreviewRenderExpressionFingerprint(authoredExpression),
     line: location.line + 1,
     ...(ownerName === undefined ? {} : { ownerName }),
+    ...(scalarExpression === undefined ? {} : { scalarExpression }),
     sourcePath: path.normalize(sourcePath),
     ...candidate.metadata,
   };
@@ -992,6 +1014,92 @@ function createConditionalRenderReplacement(
       suffix: candidate.negateRuntimeResult === true ? `${resolverSuffix})` : resolverSuffix,
     },
   };
+}
+
+/** Converts a safe, bounded subset of authored scalar logic into inert compiler evidence. */
+function inferConditionalScalarExpression(
+  expression: ts.Expression,
+  depth = 0,
+): ReactConditionalScalarExpression | undefined {
+  if (depth > 6) return undefined;
+  const current = unwrapConditionalExpression(expression);
+  if (
+    ts.isPrefixUnaryExpression(current) &&
+    current.operator === ts.SyntaxKind.ExclamationToken
+  ) {
+    const operand = inferConditionalScalarExpression(current.operand, depth + 1);
+    return operand === undefined ? undefined : { kind: 'not', operand };
+  }
+  if (!ts.isBinaryExpression(current)) return undefined;
+  if (
+    current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+    current.operatorToken.kind === ts.SyntaxKind.BarBarToken
+  ) {
+    const left = inferConditionalScalarExpression(current.left, depth + 1);
+    const right = inferConditionalScalarExpression(current.right, depth + 1);
+    if (left === undefined || right === undefined) return undefined;
+    return {
+      kind: current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ? 'and' : 'or',
+      left,
+      right,
+    };
+  }
+  const operator = readConditionalScalarComparisonOperator(current.operatorToken.kind);
+  if (operator === undefined) return undefined;
+  const leftPath = readConditionalScalarPath(current.left);
+  const rightValue = readConditionalScalarLiteral(current.right);
+  if (leftPath !== undefined && rightValue.supported) {
+    return { kind: 'comparison', operator, path: leftPath, value: rightValue.value };
+  }
+  const rightPath = readConditionalScalarPath(current.right);
+  const leftValue = readConditionalScalarLiteral(current.left);
+  return rightPath !== undefined && leftValue.supported
+    ? { kind: 'comparison', operator, path: rightPath, value: leftValue.value }
+    : undefined;
+}
+
+/** Reads only equality operators whose primitive result is stable under operand reversal. */
+function readConditionalScalarComparisonOperator(
+  kind: ts.SyntaxKind,
+): '==' | '!=' | '===' | '!==' | undefined {
+  if (kind === ts.SyntaxKind.EqualsEqualsToken) return '==';
+  if (kind === ts.SyntaxKind.ExclamationEqualsToken) return '!=';
+  if (kind === ts.SyntaxKind.EqualsEqualsEqualsToken) return '===';
+  if (kind === ts.SyntaxKind.ExclamationEqualsEqualsToken) return '!==';
+  return undefined;
+}
+
+/** Reads a side-effect-free identifier/property chain such as `state.status`. */
+function readConditionalScalarPath(expression: ts.Expression): string | undefined {
+  let current = unwrapConditionalExpression(expression);
+  const segments: string[] = [];
+  while (ts.isPropertyAccessExpression(current) && current.questionDotToken === undefined) {
+    segments.unshift(current.name.text);
+    current = unwrapConditionalExpression(current.expression);
+    if (segments.length > 8) return undefined;
+  }
+  if (!ts.isIdentifier(current)) return undefined;
+  segments.unshift(current.text);
+  const value = segments.join('.');
+  return value.length <= 160 ? value : undefined;
+}
+
+/** Distinguishes an unsupported expression from the supported `undefined`-free literal set. */
+function readConditionalScalarLiteral(expression: ts.Expression):
+  | { readonly supported: false }
+  | { readonly supported: true; readonly value: boolean | null | number | string } {
+  const current = unwrapConditionalExpression(expression);
+  if (ts.isStringLiteralLike(current) || ts.isNoSubstitutionTemplateLiteral(current)) {
+    return { supported: true, value: current.text.slice(0, 160) };
+  }
+  if (ts.isNumericLiteral(current)) {
+    const value = Number(current.text);
+    return Number.isFinite(value) ? { supported: true, value } : { supported: false };
+  }
+  if (current.kind === ts.SyntaxKind.TrueKeyword) return { supported: true, value: true };
+  if (current.kind === ts.SyntaxKind.FalseKeyword) return { supported: true, value: false };
+  if (current.kind === ts.SyntaxKind.NullKeyword) return { supported: true, value: null };
+  return { supported: false };
 }
 
 /** Emits one inert module batch so hot edits can replace stale short-circuited definitions. */

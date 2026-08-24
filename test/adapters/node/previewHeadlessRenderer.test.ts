@@ -93,6 +93,20 @@ describe('preview headless renderer', () => {
     );
   });
 
+  /** Does not capture a transient blank frame while a neural or page retry owns the corridor. */
+  it('keeps neural settlement and page execution retry states pending', () => {
+    const bridge = createPreviewHeadlessBridgeSource(
+      '1:pending',
+      1,
+      '__reactPreviewHeadless_pending',
+      true,
+    );
+
+    expect(bridge).toContain("'settling-neural-render-state'");
+    expect(bridge).toContain("'retrying-page-execution'");
+    expect(bridge).toContain("composition.targetStatus === 'retrying-page-execution'");
+  });
+
   it('classifies stabilized evidence with failure and blockage precedence', () => {
     const healthy = createStabilizedHeadlessResult();
     expect(classifyPreviewHeadlessStabilizedOutcome(healthy)).toBe('ready');

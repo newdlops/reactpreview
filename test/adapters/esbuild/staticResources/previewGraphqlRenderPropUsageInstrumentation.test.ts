@@ -299,4 +299,67 @@ describe('preview GraphQL render-prop usage instrumentation', () => {
       '"data.director.userActivities.[].eventType","value":"directorcompensationdecisionevent"',
     );
   });
+
+  /** Preserves every positive row-renderer branch instead of collapsing the table to one case. */
+  it('carries branch-diverse dataList column values into GraphQL row demand', () => {
+    const pagePath = '/workspace/DirectorPage.tsx';
+    const panelPath = '/workspace/DirectorChangeLogPanel.tsx';
+    const pageSource = [
+      `import { DirectorChangeLogPanel } from './DirectorChangeLogPanel';`,
+      'const QUERY = {};',
+      '<QueryRenderer query={QUERY}>',
+      '  {({ data: { director } }) => (',
+      '    <DirectorChangeLogPanel events={director.userActivities} />',
+      '  )}',
+      '</QueryRenderer>;',
+    ].join('\n');
+    const panelSource = [
+      'type Props = { events: { eventType: string; date: string }[] };',
+      'export const DirectorChangeLogPanel = styled(({ events }: Props) => (',
+      '  <AgDataTable',
+      '    dataList={events}',
+      '    columns={[{',
+      '      key: "date",',
+      '      body: ({ data }) => <>',
+      '        {data.eventType === "appointed" && <span>appointed</span>}',
+      '        {data.eventType === "ended" && <span>ended</span>}',
+      '        {data.eventType === "co-ceo" && <span>co-ceo</span>}',
+      '      </>,',
+      '    }]}',
+      '  />',
+      '))``;',
+    ].join('\n');
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => (sourcePath === panelPath ? panelSource : undefined),
+      resolveModule: (moduleSpecifier, consumerPath) =>
+        consumerPath === pagePath && moduleSpecifier === './DirectorChangeLogPanel'
+          ? panelPath
+          : undefined,
+      workspaceRoot: '/workspace',
+    });
+
+    const catalog = builder.collect(pagePath, pageSource, { includeOptionalTypes: true });
+    const replacements = createPreviewGraphqlRenderPropUsageReplacements(
+      pagePath,
+      pageSource,
+      catalog,
+    );
+
+    expect(catalog.get('DirectorChangeLogPanel')?.get('events')).toMatchObject({
+      items: {
+        properties: {
+          eventType: {
+            candidateValues: ['appointed', 'ended', 'co-ceo'],
+          },
+        },
+      },
+      renderedCollection: true,
+    });
+    expect(replacements).toHaveLength(1);
+    for (const value of ['appointed', 'ended', 'co-ceo']) {
+      expect(replacements[0]?.replacement).toContain(
+        `"data.director.userActivities.[].eventType","value":"${value}"`,
+      );
+    }
+  });
 });

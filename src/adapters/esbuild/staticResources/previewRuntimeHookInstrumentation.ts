@@ -31,6 +31,7 @@ import {
   inferPreviewRuntimeHookGuardPassFallback,
 } from './previewRuntimeHookGuardValue';
 import {
+  inferPreviewRuntimeHookCallableSmartValue,
   readPreviewRuntimeHookAliasUsagePaths,
   type ResolvePreviewRuntimeHookImportedHelperItemFallback,
   type ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
@@ -59,7 +60,7 @@ import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHook
 import { inferPreviewRuntimeHookLayoutDimensionDemand } from './previewRuntimeHookLayoutDimensionDemand';
 import { inferPreviewRuntimeHookMembershipItemFallback } from './previewRuntimeHookMembershipItem';
 import { inferPreviewRuntimeHookOverlayStateDemand } from './previewRuntimeHookOverlayStateDemand';
-import { inferPreviewRuntimeHookRenderableStateDemand } from './previewRuntimeHookRenderableStateDemand';
+import { inferPreviewRuntimeHookRenderableStateDemands } from './previewRuntimeHookRenderableStateDemand';
 import {
   readPreviewRuntimeQueryParamDefaultExpression,
   readPreviewRuntimeQueryStatesDefaults,
@@ -205,8 +206,10 @@ interface PreviewRuntimeHookValueFallback {
 }
 /** One side-effect-free authored scalar keyed by its hook-result-relative property path. */
 interface PreviewRuntimeHookSmartPathValueExpression {
+  readonly deterministicRank?: number;
   readonly expression: string;
   readonly path: string;
+  readonly role?: 'collection-filter-predicate' | 'render-state';
 }
 /** Parsed hook call and inferred fallback before a stable identity is serialized. */
 interface PreviewRuntimeHookCandidate {
@@ -216,6 +219,12 @@ interface PreviewRuntimeHookCandidate {
   readonly hook: PreviewRuntimeHookBinding;
   /** Static fallback selected from local syntax. */
   readonly fallback: PreviewRuntimeHookFallback;
+}
+
+/** Compiler-proven semantic family for one hook-result value leaf. */
+interface PreviewRuntimeHookSemanticValueDemand {
+  readonly kind: 'identity';
+  readonly path: string;
 }
 
 /**
@@ -671,7 +680,7 @@ function createBindingFallback(
   if (ts.isIdentifier(binding)) {
     const layoutDimensionDemand = inferPreviewRuntimeHookLayoutDimensionDemand(binding);
     const overlayStateDemand = inferPreviewRuntimeHookOverlayStateDemand(binding, sourceFile);
-    const renderableStateDemand = inferPreviewRuntimeHookRenderableStateDemand(binding, sourceFile);
+    const renderableStateDemands = inferPreviewRuntimeHookRenderableStateDemands(binding, sourceFile);
     const withOverlayStateDemand = (
       fallback: PreviewRuntimeHookValueFallback,
     ): PreviewRuntimeHookValueFallback => {
@@ -689,14 +698,12 @@ function createBindingFallback(
         ...(overlayStateDemand === undefined
           ? []
           : [Object.freeze({ expression: overlayStateDemand.expression, path: '<root>' })]),
-        ...(renderableStateDemand === undefined
-          ? []
-          : [
-              Object.freeze({
-                expression: renderableStateDemand.expression,
-                path: renderableStateDemand.path,
-              }),
-            ]),
+        ...renderableStateDemands.map((demand) => Object.freeze({
+          deterministicRank: demand.deterministicRank,
+          expression: demand.expression,
+          path: demand.path,
+          role: 'render-state' as const,
+        })),
       ];
       return smartPathValueExpressions.length === 0
         ? safeFallback
@@ -942,6 +949,10 @@ function prefixPreviewRuntimeHookSmartPathValues(
     Object.freeze({
       expression: value.expression,
       path: value.path === '<root>' ? propertyName : `${propertyName}.${value.path}`,
+      ...(value.deterministicRank === undefined
+        ? {}
+        : { deterministicRank: value.deterministicRank }),
+      ...(value.role === undefined ? {} : { role: value.role }),
     }),
   );
 }
@@ -1017,6 +1028,9 @@ function createIdentifierUsageFallback(
                 createBindingFallback,
               )
             : undefined;
+        const smartCallable = terminalCalled
+          ? inferPreviewRuntimeHookCallableSmartValue(node)
+          : undefined;
         const collectionItemFallback =
           membershipItemFallback ??
           (usagePath.collectionItemType === undefined
@@ -1086,6 +1100,12 @@ function createIdentifierUsageFallback(
                 ? usagePath.names.slice(0, -1)
                 : usagePath.names,
             ...(guardPass === undefined ? {} : { renderGuard: true as const }),
+            ...(smartCallable === undefined
+              ? {}
+              : {
+                  smartValueExpression: smartCallable.expression,
+                  smartValueRole: smartCallable.role,
+                }),
             ...(stringReceiver ? { stringProperty: collectionProperty ?? '' } : {}),
             /* Rendering `rows.length` consumes a scalar result, not a numeric rows receiver. */
             ...(valueExpression === undefined || collection ? {} : { valueExpression }),
@@ -1245,6 +1265,9 @@ function createIdentifierUsageFallback(
       label: 'generated optional failure shape',
       preserveNullish: true,
       ...(opaqueReferences > 0 ? { projectionUnsafe: true } : {}),
+      ...(optionalFallback.smartPathValueExpressions.length === 0
+        ? {}
+        : { smartPathValueExpressions: optionalFallback.smartPathValueExpressions }),
       requiredPaths: [],
     };
   }
@@ -1258,6 +1281,9 @@ function createIdentifierUsageFallback(
         ? {}
         : { renderGuardPaths: fallback.renderGuardPaths }),
       ...(opaqueReferences > 0 ? { projectionUnsafe: true } : {}),
+      ...(fallback.smartPathValueExpressions.length === 0
+        ? {}
+        : { smartPathValueExpressions: fallback.smartPathValueExpressions }),
       requiredPaths: Object.freeze([
         ...new Set([...fallback.requiredPaths, ...dynamicElementFallback.requiredPaths]),
       ]),
@@ -1270,6 +1296,9 @@ function createIdentifierUsageFallback(
     ...(fallback.renderGuardPaths.length === 0
       ? {}
       : { renderGuardPaths: fallback.renderGuardPaths }),
+    ...(fallback.smartPathValueExpressions.length === 0
+      ? {}
+      : { smartPathValueExpressions: fallback.smartPathValueExpressions }),
     requiredPaths: fallback.requiredPaths,
   };
 }
@@ -1303,7 +1332,9 @@ function readPreviewRuntimeHookIndexedItemAliasUsages(
   };
   const visit = (node: ts.Node): void => {
     if (node !== owner && isRuntimeFunction(node)) {
-      forEachBindingInRuntimeFunction(node, (binding) => appendBindings(binding, nestedBindingCounts));
+      forEachBindingInRuntimeFunction(node, (binding) => {
+        appendBindings(binding, nestedBindingCounts);
+      });
       return;
     }
     if (
@@ -1327,10 +1358,9 @@ function readPreviewRuntimeHookIndexedItemAliasUsages(
     const collectionExpression = ts.isElementAccessExpression(initializer)
       ? unwrapExpression(initializer.expression)
       : undefined;
-    const indexExpression =
-      ts.isElementAccessExpression(initializer) && initializer.argumentExpression !== undefined
-        ? unwrapExpression(initializer.argumentExpression)
-        : undefined;
+    const indexExpression = ts.isElementAccessExpression(initializer)
+      ? unwrapExpression(initializer.argumentExpression)
+      : undefined;
     if (
       !ts.isElementAccessExpression(initializer) ||
       initializer.questionDotToken !== undefined ||
@@ -1485,9 +1515,10 @@ function createRuntimeHookReplacement(
   const end = candidate.call.end;
   const location = sourceFile.getLineAndCharacterOfPosition(start);
   const originalCall = sourceText.slice(start, end);
-  const hookIdentityExpression = sourceText.slice(
-    candidate.call.expression.getStart(sourceFile),
-    candidate.call.expression.end,
+  const hookIdentityExpression = readPreviewRuntimeHookIdentityExpression(
+    candidate,
+    sourceFile,
+    sourceText,
   );
   const graphqlArguments = readPreviewRuntimeHookGraphqlArguments(
     candidate.hook.hookName,
@@ -1496,6 +1527,10 @@ function createRuntimeHookReplacement(
     sourceText,
   );
   const ownerName = readPreviewRuntimeFunctionName(findNearestRuntimeFunction(candidate.call));
+  const semanticValueDemand = inferPreviewRuntimeHookSemanticValueDemand(
+    candidate.call,
+    candidate.fallback,
+  );
   const metadata = {
     column: location.character + 1,
     evidence: boundMetadataText(candidate.fallback.evidence),
@@ -1518,6 +1553,7 @@ function createRuntimeHookReplacement(
       ? {}
       : { nonNegativeNumberPaths: candidate.fallback.nonNegativeNumberPaths }),
     requiredPaths: candidate.fallback.requiredPaths ?? ['<root>'],
+    ...(semanticValueDemand === undefined ? {} : { semanticValueDemand }),
     sourcePath: path.normalize(sourcePath),
   };
   const api = `globalThis[Symbol.for(${JSON.stringify(INSPECTOR_API_SYMBOL)})]`;
@@ -1528,7 +1564,11 @@ function createRuntimeHookReplacement(
       : `Object.assign(${JSON.stringify(metadata)}, { smartPathValues: Object.freeze([${candidate.fallback.smartPathValueExpressions
           .map(
             (value) =>
-              `Object.freeze({ path: ${JSON.stringify(value.path)}, value: (${value.expression}) })`,
+              `Object.freeze({ path: ${JSON.stringify(value.path)}, value: (${value.expression})${
+                value.deterministicRank === undefined
+                  ? ''
+                  : `, deterministicRank: ${String(value.deterministicRank)}`
+              }${value.role === undefined ? '' : `, role: ${JSON.stringify(value.role)}`} })`,
           )
           .join(', ')}]) })`;
   const graphqlRuntimeArguments =
@@ -1545,6 +1585,89 @@ function createRuntimeHookReplacement(
     replacement: `${api}.resolveRuntimeHook(() => (${originalCall}), () => (${candidate.fallback.expression}), ${metadataExpression}${graphqlRuntimeArguments}, () => (${hookIdentityExpression}))`,
     start,
   };
+}
+
+/**
+ * Turns a literal identity-field argument into bounded cross-hook value evidence.
+ *
+ * This is deliberately package agnostic: any admitted hook whose locally proven result exposes a
+ * value leaf can carry the evidence. A literal field name ending in an `id`/`uuid` token is enough
+ * to distinguish an identity reference from ordinary free text without retaining the field name in
+ * runtime model state.
+ */
+function inferPreviewRuntimeHookSemanticValueDemand(
+  call: ts.CallExpression,
+  fallback: PreviewRuntimeHookFallback,
+): PreviewRuntimeHookSemanticValueDemand | undefined {
+  const argument = call.arguments[0];
+  if (argument === undefined) return undefined;
+  const expression = unwrapExpression(argument);
+  let fieldName: string | undefined;
+  if (ts.isStringLiteralLike(expression)) {
+    fieldName = expression.text;
+  } else if (ts.isObjectLiteralExpression(expression)) {
+    for (const property of expression.properties) {
+      if (!ts.isPropertyAssignment(property)) {
+        continue;
+      }
+      const propertyName =
+        ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)
+          ? property.name.text
+          : undefined;
+      if (propertyName !== 'name') continue;
+      const initializer = unwrapExpression(property.initializer);
+      if (ts.isStringLiteralLike(initializer)) fieldName = initializer.text;
+      break;
+    }
+  }
+  if (fieldName === undefined || !hasPreviewRuntimeIdentityFieldSuffix(fieldName)) {
+    return undefined;
+  }
+  const valuePath = (fallback.requiredPaths ?? []).find((rawPath) => {
+    const pathWithoutCall = rawPath.endsWith('()') ? rawPath.slice(0, -2) : rawPath;
+    const segments = pathWithoutCall
+      .replace(/\[(\d*)\]/gu, (_match, index: string) => '.' + (index.length === 0 ? '0' : index))
+      .split('.')
+      .filter(Boolean);
+    return segments.at(-1) === 'value';
+  });
+  return valuePath === undefined ? undefined : { kind: 'identity', path: valuePath };
+}
+
+/** Requires an actual identifier token so words such as `valid` are not misclassified. */
+function hasPreviewRuntimeIdentityFieldSuffix(fieldName: string): boolean {
+  const tokens = fieldName
+    .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
+    .split(/[^A-Za-z0-9]+/gu)
+    .filter(Boolean)
+    .map((token) => token.toLowerCase());
+  return tokens.at(-1) === 'id' || tokens.at(-1) === 'uuid';
+}
+
+/**
+ * Uses the raw Context as the identity carrier for direct React useContext reads. Other hooks keep
+ * their exact imported function identity. Only an identifier argument is repeated in the thunk.
+ */
+function readPreviewRuntimeHookIdentityExpression(
+  candidate: PreviewRuntimeHookCandidate,
+  sourceFile: ts.SourceFile,
+  sourceText: string,
+): string {
+  const contextArgument = candidate.call.arguments[0];
+  if (
+    candidate.hook.moduleSpecifier === 'react' &&
+    candidate.hook.hookName === 'useContext' &&
+    candidate.call.arguments.length === 1 &&
+    contextArgument !== undefined &&
+    !ts.isSpreadElement(contextArgument) &&
+    ts.isIdentifier(unwrapExpression(contextArgument))
+  ) {
+    return sourceText.slice(contextArgument.getStart(sourceFile), contextArgument.end);
+  }
+  return sourceText.slice(
+    candidate.call.expression.getStart(sourceFile),
+    candidate.call.expression.end,
+  );
 }
 
 /** Keeps outer hook calls when nested hook arguments would otherwise create overlapping edits. */

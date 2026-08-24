@@ -722,6 +722,121 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
     expect(executionSource).not.toContain('PreviewInspectorContextualTargetFallback');
   });
 
+  it('keeps the nearest complete loading surface before falling back to a transient primitive', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-loading-surface-'));
+    const targetPath = path.join(workspaceRoot, 'Skeleton.tsx');
+    const loadingSurfacePath = path.join(workspaceRoot, 'DetailBottomSheetSkeleton.tsx');
+    const pagePath = path.join(workspaceRoot, 'ExplorePage.tsx');
+    try {
+      await Promise.all([
+        writeFile(
+          targetPath,
+          'export const Skeleton = ({ className = "" }) => <div className={className} />;',
+        ),
+        writeFile(
+          loadingSurfacePath,
+          [
+            "import { Skeleton } from './Skeleton';",
+            'export const DetailBottomSheetSkeleton = () => (',
+            '  <section><Skeleton className="hero" /><Skeleton className="title" /></section>',
+            ');',
+          ].join('\n'),
+        ),
+        writeFile(
+          pagePath,
+          [
+            "import { DetailBottomSheetSkeleton } from './DetailBottomSheetSkeleton';",
+            'export const ExplorePage = () => <main><DetailBottomSheetSkeleton /></main>;',
+          ].join('\n'),
+        ),
+      ]);
+      const renderPath: PreviewRenderChainCandidate = {
+        id: 'detail-bottom-sheet-loading-path',
+        steps: [
+          {
+            certainty: 'confirmed',
+            kind: 'component-render',
+            label: 'Skeleton',
+            occurrenceStart: 1,
+            sourcePath: targetPath,
+            wrapperNames: [],
+          },
+          {
+            certainty: 'conditional',
+            kind: 'component-render',
+            label: 'DetailBottomSheetSkeleton',
+            occurrenceStart: 2,
+            sourcePath: loadingSurfacePath,
+            wrapperNames: [],
+          },
+          {
+            certainty: 'confirmed',
+            kind: 'component-render',
+            label: 'ExplorePage',
+            occurrenceStart: 3,
+            sourcePath: pagePath,
+            wrapperNames: [],
+          },
+        ],
+      };
+      const page = {
+        complete: true,
+        dependencyPaths: [targetPath, loadingSurfacePath, pagePath],
+        edges: [],
+        id: 'explore-page',
+        renderPath,
+        root: { exportName: 'ExplorePage', sourcePath: pagePath },
+        rootAutomaticProps: {},
+        rootOwnsRouter: false,
+        rootStepIndex: 2,
+        stopReason: 'root-reached',
+        targetAutomaticProps: {},
+      } as PreviewInspectorPageCandidate;
+      const plan = {
+        pageCandidates: [page],
+        renderChain: { paths: [renderPath] },
+        renderChainsByExport: { Skeleton: { paths: [renderPath] } },
+        target: { exportName: 'Skeleton', sourcePath: targetPath },
+      } as unknown as PreviewInspectorAncestorPlan;
+
+      const candidates = createPreviewInspectorPageExecutionCandidates({ plan });
+      expect(candidates.map((candidate) => candidate.fidelity)).toEqual([
+        'page-authentic',
+        'page-sliced',
+        'target-contextual',
+        'target-only',
+      ]);
+      const contextual = candidates.find((candidate) => candidate.fidelity === 'target-contextual');
+      expect(contextual?.browserCandidate.root).toEqual({
+        exportName: 'DetailBottomSheetSkeleton',
+        sourcePath: loadingSurfacePath,
+      });
+      expect(contextual?.standaloneTarget).toBe(false);
+      expect(contextual?.criticalSurfaces).toEqual([
+        expect.objectContaining({
+          exportName: 'DetailBottomSheetSkeleton',
+          sourcePath: loadingSurfacePath,
+          strategy: 'authentic-module-export',
+        }),
+        expect.objectContaining({
+          exportName: 'Skeleton',
+          sourcePath: targetPath,
+          strategy: 'authentic-module-export',
+        }),
+      ]);
+      expect(contextual?.compositionEdges).toEqual([
+        {
+          childSurfaceId: contextual?.runtimeTargetSurfaceId,
+          mode: 'contains-authored-child',
+          parentSurfaceId: contextual?.executionRootSurfaceId,
+          placementIndex: 0,
+        },
+      ]);
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
   it('keeps shared descendant chrome outside an outer route mount', () => {
     const contentAndPanelPath = '/workspace/ContentAndPanel.tsx';
     const featureBranchPath = '/workspace/FeatureBranch.tsx';

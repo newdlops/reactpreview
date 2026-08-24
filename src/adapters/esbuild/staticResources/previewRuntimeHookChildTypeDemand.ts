@@ -1124,12 +1124,23 @@ function mergePropShapes(
     return Object.freeze({
       kind: 'array',
       ...(items === undefined ? {} : { items }),
+      ...(primary.renderedCollection === true || secondary.renderedCollection === true
+        ? { renderedCollection: true as const }
+        : {}),
     });
   }
   if (primary.kind !== 'object') {
-    if (primary.exactValue === true) return primary;
-    if (secondary.exactValue === true) return secondary;
-    return primary.value === undefined ? secondary : primary;
+    const selected = primary.exactValue === true
+      ? primary
+      : secondary.exactValue === true
+        ? secondary
+        : primary.value === undefined ? secondary : primary;
+    const candidateValues = [
+      ...new Set([...(primary.candidateValues ?? []), ...(secondary.candidateValues ?? [])]),
+    ].slice(0, 8);
+    return candidateValues.length === 0
+      ? selected
+      : Object.freeze({ ...selected, candidateValues: Object.freeze(candidateValues) });
   }
   const properties: Record<string, PreviewInferredPropShape> = { ...(primary.properties ?? {}) };
   for (const [name, child] of Object.entries(secondary.properties ?? {})) {

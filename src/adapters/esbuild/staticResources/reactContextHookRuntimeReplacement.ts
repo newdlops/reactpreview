@@ -19,6 +19,8 @@ export interface ReactContextHookRuntimeReplacementOptions {
   readonly fallbackBinding: string;
   /** Imported hook callee text, such as `useAppContext`. */
   readonly hookName: string;
+  /** Stable raw Context expression for a direct React `useContext(Context)` call. */
+  readonly hookIdentityExpression?: string;
   /** One-based source line shown in Inspector diagnostics. */
   readonly line: number;
   /** Unchanged authored hook-call expression, including type arguments. */
@@ -72,5 +74,9 @@ export function createReactContextHookRuntimeReplacement(
     sourcePath: normalizedSourcePath,
   };
   const api = `globalThis[Symbol.for(${JSON.stringify(INSPECTOR_API_SYMBOL)})]`;
-  return `((__reactPreviewContextApi) => typeof __reactPreviewContextApi?.resolveRuntimeHook === 'function' ? __reactPreviewContextApi.resolveRuntimeHook(() => (${options.originalCall}), () => (${options.fallbackBinding}), ${JSON.stringify(metadata)}) : (${options.originalCall} ?? ${options.fallbackBinding}))(${api})`;
+  const identityArguments =
+    options.hookIdentityExpression === undefined
+      ? ''
+      : `, undefined, undefined, () => (${options.hookIdentityExpression})`;
+  return `((__reactPreviewContextApi) => typeof __reactPreviewContextApi?.resolveRuntimeHook === 'function' ? __reactPreviewContextApi.resolveRuntimeHook(() => (${options.originalCall}), () => (${options.fallbackBinding}), ${JSON.stringify(metadata)}${identityArguments}) : (${options.originalCall} ?? ${options.fallbackBinding}))(${api})`;
 }

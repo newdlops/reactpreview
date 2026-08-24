@@ -185,6 +185,12 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     expect(source).toContain(
       'createContextualTargetElement?.(Surface1, {"exportName":"TargetTable","sourcePath":"/workspace/TargetTable.tsx"}, contextualRoleToken.current)',
     );
+    expect(source).toContain('function PreviewInspectorContextualTargetSurface({ children })');
+    expect(source).toContain("'data-react-preview-contextual-target-surface': ''");
+    expect(source).toContain("height: '100vh'");
+    expect(source).toContain(
+      'React.createElement(PreviewInspectorContextualTargetSurface, null, targetElement)',
+    );
     expect(source).toContain('    : null;');
     expect(source).toContain('function PreviewInspectorContextualTargetParentFrame(frameProps)');
     expect(source).toContain(

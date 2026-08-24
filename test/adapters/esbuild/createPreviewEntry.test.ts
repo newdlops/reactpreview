@@ -284,6 +284,39 @@ describe('createPreviewEntry', () => {
     );
   });
 
+  /** Lets the exact target boundary claim React's development ErrorEvent before root classification. */
+  it('defers object ErrorEvents only in Page Inspector mode', () => {
+    const inspectorEntry = createPreviewEntry({
+      documentName: 'BrokenTarget.tsx',
+      globalNamespaces: [],
+      renderMode: 'page-inspector',
+      setupKind: 'none',
+    });
+    const directEntry = createPreviewEntry({
+      documentName: 'BrokenTarget.tsx',
+      globalNamespaces: [],
+      setupKind: 'none',
+    });
+    const listenerStart = inspectorEntry.indexOf("replacePreviewRuntimeListener('error'");
+    const deferredReport = inspectorEntry.indexOf(
+      'defer(reportUnhandledRuntimeError)',
+      listenerStart,
+    );
+    const capturedCheck = inspectorEntry.indexOf(
+      'if (isCapturedReactError(error)) return;',
+      listenerStart,
+    );
+
+    expect(capturedCheck).toBeGreaterThan(listenerStart);
+    expect(deferredReport).toBeGreaterThan(capturedCheck);
+    expect(inspectorEntry).toContain(
+      "true &&\n    (typeof error === 'object' || typeof error === 'function') && error !== null",
+    );
+    expect(directEntry).toContain(
+      "false &&\n    (typeof error === 'object' || typeof error === 'function') && error !== null",
+    );
+  });
+
   /** Commits shared fallback scope only when a fully prepared replacement is actually activated. */
   it('keeps the mounted fallback scope intact until the selected entry renders', () => {
     const entry = createPreviewEntry({

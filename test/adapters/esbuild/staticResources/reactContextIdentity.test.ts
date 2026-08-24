@@ -57,6 +57,25 @@ describe('collectReactContextIdentityPairs', () => {
     ]);
   });
 
+  /** Recognizes the standard provider assertion while keeping the Context result unchanged. */
+  it('pairs a hook that guards one immutable useContext result before returning it', () => {
+    const source = [
+      `import { createContext, useContext } from 'react';`,
+      'const PanelContext = createContext<{ state: object } | null>(null);',
+      'export const usePanelContext = () => {',
+      '  const value = useContext(PanelContext);',
+      '  if (value === null) {',
+      '    throw new Error("usePanelContext requires PanelProvider");',
+      '  }',
+      '  return value;',
+      '};',
+    ].join('\n');
+
+    expect(collectReactContextIdentityPairs('/workspace/panel-context.tsx', source).pairs).toEqual([
+      { contextBinding: 'PanelContext', hookBinding: 'usePanelContext' },
+    ]);
+  });
+
   /** Requires direct returns and local immutable Context creation instead of names alone. */
   it('rejects indirect hooks, imported Contexts, mutable Contexts, and unrelated functions', () => {
     const source = [

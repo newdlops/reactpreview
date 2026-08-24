@@ -72,6 +72,7 @@ export function createPreviewInspectorPageExecutionSource(
   const selectedRouteSurfacePassthrough = 'PreviewInspectorSelectedRouteSurfacePassthrough';
   const selectedRouteSurfaceResolver = 'PreviewInspectorResolveSelectedRouteSurface';
   const contextualTargetFallback = 'PreviewInspectorContextualTargetFallback';
+  const contextualTargetSurface = 'PreviewInspectorContextualTargetSurface';
   const contextualTargetParentFrame = 'PreviewInspectorContextualTargetParentFrame';
   const nextAppPageProps = 'PreviewInspectorNextAppPageProps';
   const nextAppPageRoot = options.candidate.browserCandidate.root;
@@ -249,6 +250,27 @@ export function createPreviewInspectorPageExecutionSource(
       : [
           `const ${contextualTargetFallback}ReachabilityKey = ${JSON.stringify(contextualTargetReachabilityKey)};`,
           `const ${contextualTargetFallback}Capability = Object.freeze(${contextualTargetFallbackCapabilityRevision});`,
+          ...(contextualTargetWrapperLocal === undefined
+            ? [
+                `function ${contextualTargetSurface}({ children }) {`,
+                '  return React.createElement(',
+                "    'div',",
+                '    {',
+                "      'data-react-preview-contextual-target-surface': '',",
+                '      style: {',
+                "        boxSizing: 'border-box',",
+                "        height: '100vh',",
+                "        minHeight: '320px',",
+                '        minWidth: 0,',
+                "        position: 'relative',",
+                "        width: '100%',",
+                '      },',
+                '    },',
+                '    children,',
+                '  );',
+                '}',
+              ]
+            : []),
           `function ${contextualTargetFallback}({ children }) {`,
           '  const [, setRevision] = React.useState(0);',
           `  const inspectorSession = globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')];`,
@@ -277,7 +299,7 @@ export function createPreviewInspectorPageExecutionSource(
           '  }, [inspectorSession, contextualOwner]);',
           `  const targetElement = inspectorSession?.createContextualTargetElement?.(${contextualTargetLocal}, ${JSON.stringify(options.target)}, contextualRoleToken.current${contextualTargetSupportsMountedTransparentChildren ? ', children' : ''}) ?? null;`,
           `  return inspectorSession?.shouldRenderContextualTargetFallback?.(${contextualTargetFallback}ReachabilityKey, contextualOwner) === true`,
-          `    ? ${contextualTargetWrapperLocal === undefined ? 'targetElement' : `React.createElement(${contextualTargetWrapperLocal}, { open: true }, targetElement)`}`,
+          `    ? ${contextualTargetWrapperLocal === undefined ? `React.createElement(${contextualTargetSurface}, null, targetElement)` : `React.createElement(${contextualTargetWrapperLocal}, { open: true }, targetElement)`}`,
           `    : ${contextualTargetSupportsMountedTransparentChildren ? 'children' : 'null'};`,
           '}',
         ];

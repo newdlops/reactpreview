@@ -28,6 +28,13 @@ describe('createPreviewInspectorShallowProjectionSource', () => {
     expect(source).toContain("key.startsWith('aria-')");
     expect(source).toContain('const hostStyle = { ...fallbackStyle, ...authoredStyle };');
     expect(source).toContain("hostProps['data-react-preview-shallow-component'] = label;");
+    expect(source).toContain(
+      "const semanticContentKeys = ['content', 'label', 'text', 'message', 'description'];",
+    );
+    expect(source).toContain('const semanticContent = children != null');
+    expect(source).toContain('React.isValidElement(value)');
+    expect(source).toContain('props.componentType ?? props.as');
+    expect(source).toContain('React.createElement(hostType, hostProps, content)');
     expect(source).toContain('styledComponentId: { value: selectorId }');
     expect(source).toContain('hostProps.className, selectorId');
     expect(source).toContain('const navigationLike =');

@@ -571,6 +571,31 @@ function selectPreviewInspectorNeuralPageContextCandidate(descriptor, options = 
       portfolioCount: 0,
     };
   }
+  const recoveryCandidate = typeof readPreviewInspectorNeuralPageContextRecoveryCandidate ===
+      'function'
+    ? readPreviewInspectorNeuralPageContextRecoveryCandidate(descriptor, record, candidates)
+    : undefined;
+  if (recoveryCandidate !== undefined) {
+    const recoveryIndex = candidates.indexOf(recoveryCandidate);
+    const decision = createPreviewInspectorNeuralPageContextDecision(
+      descriptor,
+      recoveryCandidate,
+      recoveryIndex,
+      inventory,
+    );
+    if (decision !== undefined) record.decisionByCandidateId.set(recoveryCandidate.id, decision);
+    record.selectedCandidateId = recoveryCandidate.id;
+    record.selectionOrigin = 'neural';
+    record.selectionReason = 'component-recipe-full-page-replay';
+    record.status = 'ranked';
+    return {
+      candidate: recoveryCandidate,
+      candidateCount: candidates.length,
+      decision,
+      origin: 'neural',
+      portfolioCount: 1,
+    };
+  }
   const eligible = inventory.orderedCandidates.filter((candidate) =>
     !record.failedCandidateIds.has(candidate?.id) &&
     (options.exploreUnevaluated !== true || !record.evaluatedCandidateIds.has(candidate?.id)),
@@ -827,8 +852,13 @@ function observePreviewInspectorNeuralPageContextOutcome(descriptor, candidate, 
   ) return false;
   const success = state.neuralStableOutputVerified === true &&
     state.pageRootCommitted === true && state.targetHasOutput === true &&
-    (state.targetMounted === true || state.targetWasMounted === true);
-  const failure = state.targetHasOutput !== true && (
+    (state.targetMounted === true || state.targetWasMounted === true) &&
+    (typeof hasPreviewInspectorCompletePageExecutionContext !== 'function' ||
+      hasPreviewInspectorCompletePageExecutionContext(state));
+  const pageExecutionContextComplete =
+    typeof hasPreviewInspectorCompletePageExecutionContext !== 'function' ||
+    hasPreviewInspectorCompletePageExecutionContext(state);
+  const failure = (state.targetHasOutput !== true || !pageExecutionContextComplete) && (
     state.neuralStableOutputRegressed === true ||
     state.status === 'page-blocked' && state.exhausted === true
   );
@@ -886,9 +916,11 @@ function observePreviewInspectorNeuralPageContextOutcome(descriptor, candidate, 
     record.successfulCandidateIds.delete(candidate.id);
     record.unstableCandidateIds.add(candidate.id);
     stability.regressionCount += 1;
-    record.selectionReason = state.neuralStableOutputRegressed === true
-      ? 'visible-output-regressed'
-      : 'page-blocked-verified';
+    record.selectionReason = !pageExecutionContextComplete
+      ? 'component-output-missing-page-context'
+      : state.neuralStableOutputRegressed === true
+        ? 'visible-output-regressed'
+        : 'page-blocked-verified';
     record.status = 'searching';
     if (
       previewInspectorSession.verifiedPageCandidateId === candidate.id &&

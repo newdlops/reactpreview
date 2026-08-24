@@ -451,6 +451,86 @@ function createPreviewInspectorNeuralPageContextCoverageBaseline() {
   });
 }
 
+/** Rewards recipes that preserve more live authored owners before reaching the target. */
+function scorePreviewInspectorNeuralPageContextRecoveryRecipe(snapshot) {
+  const context = snapshot?.pageExecutionContext;
+  return (Number(context?.matchedOwnerCount) || 0) * 100 +
+    Number(context?.componentOnly !== true) * 20 +
+    Number(context?.pageCandidateComplete === false) * 10 +
+    Math.min(9, Number(context?.authoredOwnerDepth) || 0);
+}
+
+/** Returns the next previously blocked full page that can consume the retained component recipe. */
+function readPreviewInspectorNeuralPageContextRecoveryCandidate(descriptor, record, candidates) {
+  const recipe = record?.pageContextRecoveryRecipe;
+  if (recipe === undefined || typeof isPreviewInspectorCompletePageCandidateContext !== 'function') {
+    return undefined;
+  }
+  return candidates.find((candidate) =>
+    candidate?.id !== recipe.sourceCandidateId &&
+    isPreviewInspectorCompletePageCandidateContext(candidate) &&
+    !record.failedCandidateIds.has(candidate?.id));
+}
+
+/** Retains component-visible viewer repairs without teaching that partial caller path as success. */
+function retainPreviewInspectorNeuralPageContextRecoveryRecipe(
+  descriptor,
+  candidate,
+  state,
+  snapshot,
+) {
+  const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
+  if (
+    record === undefined || typeof candidate?.id !== 'string' || snapshot === undefined ||
+    snapshot.pageExecutionContext?.contextComplete !== false
+  ) return false;
+  const retained = record.pageContextRecoveryRecipe;
+  if (
+    retained !== undefined && retained.sourceCandidateId === candidate.id &&
+    retained.snapshot?.fingerprint === snapshot.fingerprint
+  ) return false;
+  const quality = scorePreviewInspectorNeuralPageContextRecoveryRecipe(snapshot);
+  if (quality < Number(retained?.quality ?? -1)) return false;
+  record.pageContextRecoveryRecipe = Object.freeze({
+    applicationPath: Object.freeze((Array.isArray(state?.applicationPath)
+      ? state.applicationPath
+      : []).filter((value) => typeof value === 'string').slice(0, 24)),
+    quality,
+    sourceCandidateId: candidate.id,
+    snapshot,
+  });
+  if (typeof isPreviewInspectorCompletePageCandidateContext === 'function') {
+    for (const fullPageCandidate of readPreviewInspectorPageCandidates(descriptor)) {
+      if (
+        fullPageCandidate?.id === candidate.id ||
+        !isPreviewInspectorCompletePageCandidateContext(fullPageCandidate)
+      ) continue;
+      record.evaluatedCandidateIds.delete(fullPageCandidate.id);
+      record.failedCandidateIds.delete(fullPageCandidate.id);
+      record.provisionalCandidateIds.delete(fullPageCandidate.id);
+      record.unstableCandidateIds.delete(fullPageCandidate.id);
+    }
+  }
+  record.selectionReason = 'component-output-retained-for-full-page-replay';
+  return true;
+}
+
+/** Rebinds a retained component recipe to the full-page candidate receiving the replay. */
+function createPreviewInspectorNeuralPageContextRecoverySnapshot(recipe, candidateId) {
+  const snapshot = recipe?.snapshot;
+  if (snapshot === undefined || typeof candidateId !== 'string') return undefined;
+  const temporalState = snapshot.temporalState !== undefined &&
+      snapshot.temporalState !== null && typeof snapshot.temporalState === 'object'
+    ? Object.freeze({ ...snapshot.temporalState, pageCandidateId: candidateId })
+    : snapshot.temporalState;
+  return Object.freeze({
+    ...snapshot,
+    fingerprint: 'page-context-recovery:' + candidateId + ':' + snapshot.fingerprint,
+    pageCandidateId: candidateId,
+    temporalState,
+  });
+}
+
 /** Retains the least invasive reproducible viewer state for one exact compiler candidate. */
 function capturePreviewInspectorNeuralPageContextExecutionContract(
   record,
@@ -469,6 +549,7 @@ function capturePreviewInspectorNeuralPageContextExecutionContract(
     current !== undefined && !replacesTransientCheckpoint &&
     Number(current.snapshot?.score) >= Number(snapshot.score)
   ) {
+    record.pageContextRecoveryRecipe = undefined;
     return current;
   }
   const contract = Object.freeze({
@@ -480,6 +561,7 @@ function capturePreviewInspectorNeuralPageContextExecutionContract(
     snapshot,
   });
   record.executionContractByCandidateId.set(candidate.id, contract);
+  record.pageContextRecoveryRecipe = undefined;
   return contract;
 }
 
@@ -500,8 +582,16 @@ function activatePreviewInspectorNeuralPageContextExecutionContract(descriptor, 
     typeof restorePreviewInspectorNeuralPageGenerationBaseline !== 'function'
   ) return false;
   const contract = record.executionContractByCandidateId.get(candidateId);
+  const recoverySnapshot = record.pageContextRecoveryRecipe?.sourceCandidateId === candidateId
+    ? undefined
+    : createPreviewInspectorNeuralPageContextRecoverySnapshot(
+        record.pageContextRecoveryRecipe,
+        candidateId,
+      );
   const snapshot = contract?.snapshot ??
-    (record.pendingExecutionContractOrigin === 'neural' ? record.coverageBaseline : undefined);
+    (record.pendingExecutionContractOrigin === 'neural'
+      ? recoverySnapshot ?? record.coverageBaseline
+      : undefined);
   record.pendingExecutionContractCandidateId = undefined;
   record.pendingExecutionContractOrigin = undefined;
   if (snapshot === undefined) return false;

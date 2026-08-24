@@ -304,6 +304,69 @@ describe('Preview Inspector target reachability runtime source', () => {
     });
   });
 
+  /** Uses the enclosing component to distinguish repeated generic overlay primitives. */
+  it('selects the corridor Sheet when sibling Sheets share the same tag owner', () => {
+    const context: { __result?: { readonly before: string; readonly after: string } } = {};
+    vm.runInNewContext(
+      `
+        const previewInspectorSession = {
+          boundariesByExport: new Map(),
+          renderConditionOverrides: new Map(),
+          renderConditions: new Map(),
+          selectedExportName: 'Skeleton',
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const readPreviewInspectorRuntimeFallbacks = () => [];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        ${createTargetReachabilityFixtureSource()}
+        const descriptor = { inspector: {
+          renderChainsByExport: { Skeleton: { paths: [] } },
+          target: { exportName: 'Skeleton', sourcePath: '/common/Skeleton.tsx' },
+        } };
+        const candidate = {
+          edges: [], id: 'explore-page',
+          renderPath: { id: 'skeleton-path', steps: [
+            { label: 'Skeleton', sourcePath: '/common/Skeleton.tsx', wrapperNames: [] },
+            { label: 'DetailBottomSheetSkeleton', sourcePath: '/explore/DetailBottomSheetSkeleton.tsx', wrapperNames: ['Sheet'] },
+            { label: 'ExplorePageCarousel', sourcePath: '/explore/ExplorePageCarousel.tsx', wrapperNames: [] },
+            { label: 'ExplorePage', sourcePath: '/app/explore/page.tsx', wrapperNames: [] },
+          ] },
+          root: { exportName: 'ExplorePage' },
+          target: { exportName: 'Skeleton', sourcePath: '/common/Skeleton.tsx' },
+        };
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        const overlay = {
+          authoredEnabled: false,
+          authoredValueKind: 'boolean',
+          effectiveEnabled: false,
+          kind: 'overlay-visibility',
+          ownerName: 'Sheet',
+          reachabilityKey: state.key,
+          role: 'overlay',
+          targetBranch: 'truthy',
+        };
+        previewInspectorSession.renderConditions.set('filter-sheet', {
+          ...overlay, id: 'filter-sheet', reachabilityDiscoveryOrder: 1,
+          runtimeOwnerName: 'FilterRadioButtonGroup', sourcePath: '/explore/FilterRadioButtonGroup.tsx',
+        });
+        const before =
+          selectPreviewInspectorNextTargetGate(descriptor, candidate, state)?.condition?.id ?? 'none';
+        previewInspectorSession.renderConditions.set('detail-sheet', {
+          ...overlay, id: 'detail-sheet', reachabilityDiscoveryOrder: 2,
+          runtimeOwnerName: 'ExplorePageCarousel', sourcePath: '/explore/ExplorePageCarousel.tsx',
+        });
+        globalThis.__result = {
+          after: selectPreviewInspectorNextTargetGate(descriptor, candidate, state)?.condition?.id ?? 'none',
+          before,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({ after: 'detail-sheet', before: 'none' });
+  });
+
   /** Recovers a nested HOC guard from the exact target Fiber without admitting a shell sibling. */
   it('remembers the selected target single-child owner chain and settles its cold retry', () => {
     const context: {
@@ -1422,6 +1485,62 @@ describe('Preview Inspector target reachability runtime source', () => {
       contextualFallback: false,
       selectedGate: 'none',
       status: 'awaiting-authored-state',
+    });
+  });
+
+  /** Lets a mounted authored callback satisfy a non-Boolean state gate inside the real page. */
+  it('replays a page-local state transition before parking on an unrendered target gate', () => {
+    const context: {
+      __result?: {
+        readonly activations: number;
+        readonly conditionId: string;
+        readonly probeRevision: number;
+        readonly status: string;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        ${createEmptyPageTargetRuntimePreambleSource()}
+        let activations = 0;
+        const canPreviewInspectorTargetGuideCondition = () => false;
+        const autoInvokePreviewInspectorAuthoredStateTrigger = () => {
+          activations += 1;
+          return { metadata: { stateName: 'selectedContent' } };
+        };
+        const setPreviewInspectorTargetGuidedConditionOverride = () => {
+          throw new Error('A local state transition must run before Boolean override fallback.');
+        };
+        ${createTargetReachabilityFixtureSource()}
+        ${createPageTargetDescriptorCandidateFixtureSource()}
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        state.pageRootCommitted = true;
+        previewInspectorSession.activeTargetReachabilityKey = state.key;
+        previewInspectorSession.renderConditions.set('selected-content-gate', {
+          effectiveEnabled: false,
+          expression: '<Page> gate: selectedContent',
+          id: 'selected-content-gate',
+          ownerName: 'Page',
+          reachabilityDiscoveryOrder: 1,
+          reachabilityKey: state.key,
+          sourcePath: '/Page.tsx',
+          targetBranch: 'truthy',
+        });
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        globalThis.__result = {
+          activations,
+          conditionId: state.awaitingAuthoredStateConditionId,
+          probeRevision: state.probeRevision,
+          status: state.status,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      activations: 1,
+      conditionId: 'selected-content-gate',
+      probeRevision: 1,
+      status: 'activating-authored-state',
     });
   });
 

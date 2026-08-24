@@ -17,6 +17,7 @@ interface SuccessCheckpointFixture {
     readonly successCollectionSettled?: boolean;
     readonly successfulPaths?: readonly unknown[];
   };
+  readonly recoveryRequests: () => number;
   readonly restorationActive: () => boolean;
   readonly settle: () => unknown;
   readonly setConditions: (entries: readonly (readonly [string, boolean])[]) => void;
@@ -24,6 +25,7 @@ interface SuccessCheckpointFixture {
   readonly setOutput: (output: boolean, direct?: boolean) => void;
   readonly setRemainingExploration: (remaining: boolean) => void;
   readonly setProps: (props: unknown) => void;
+  readonly setRuntimeValue: (value: unknown) => void;
   readonly setViewerValues: (dataMode: string, runtimeStatus: string, smart: boolean) => void;
   readonly status: () => unknown;
 }
@@ -33,14 +35,17 @@ function createSuccessCheckpointFixture(
   seedRecord = true,
   withExplorationPlanner = false,
   withTemporalContract = false,
+  withIncompletePageContext = false,
 ): SuccessCheckpointFixture {
   const sandbox: {
     __continuations: number;
     __fixture?: SuccessCheckpointFixture;
+    __recoveryRequests: number;
     __remainingExploration: boolean;
     __seedRecord: boolean;
   } = {
     __continuations: 0,
+    __recoveryRequests: 0,
     __remainingExploration: true,
     __seedRecord: seedRecord,
   };
@@ -108,7 +113,7 @@ function createSuccessCheckpointFixture(
         previewInspectorSession.automaticNeuralAssistanceByKey ??= new Map();
       };
       const clearPreviewInspectorVirtualBackendResource = () => undefined;
-      const normalizePreviewInspectorProps = (value) => value;
+      const normalizePreviewInspectorProps = (value) => Array.isArray(value) ? {} : value;
       const notifyPreviewInspector = () => undefined;
       const readPreviewInspectorAutomaticNeuralAssistanceRecord = (recordKey) => {
         let record = previewInspectorSession.automaticNeuralAssistanceByKey.get(recordKey);
@@ -174,6 +179,38 @@ function createSuccessCheckpointFixture(
       `
           : ''
       }
+      ${
+        withIncompletePageContext
+          ? `
+      const findSelectedPreviewInspectorDescriptor = () => ({ inspector: {} });
+      const readSelectedPreviewInspectorPageCandidate = () => ({ id: 'candidate' });
+      const readPreviewInspectorPageExecutionContextObservation = () => ({
+        componentOnly: true,
+        contextComplete: false,
+        executionCandidateId: 'execution-contextual',
+        fidelity: 'target-contextual',
+      });
+      const readPreviewInspectorNeuralSuccessPageExecutionContext = () =>
+        readPreviewInspectorPageExecutionContextObservation();
+      const hasPreviewInspectorCompletePageExecutionContext = () => false;
+      const requestPreviewInspectorNeuralPageExecutionContextRecovery = () => {
+        globalThis.__recoveryRequests += 1;
+        state.pageExecutionContextRecoveryRequested = true;
+        return true;
+      };
+      const retainPreviewInspectorIncompletePageExecutionSuccess = (
+        recoveryState,
+        snapshot,
+        record,
+      ) => {
+        if (snapshot?.pageExecutionContext?.contextComplete !== false) return false;
+        const requested = requestPreviewInspectorNeuralPageExecutionContextRecovery();
+        record.successCollectionSettled = false;
+        return requested && recoveryState === state;
+      };
+      `
+          : ''
+      }
       ${createPreviewInspectorNeuralSuccessCheckpointRuntimeSource()}
       globalThis.__fixture = {
         capture: () => recordPreviewInspectorNeuralSuccessfulPath(state),
@@ -192,6 +229,7 @@ function createSuccessCheckpointFixture(
           for (const callback of pending) callback();
         },
         record: () => previewInspectorSession.automaticNeuralAssistanceByKey.get(key),
+        recoveryRequests: () => globalThis.__recoveryRequests,
         restorationActive: () =>
           isPreviewInspectorNeuralSuccessfulPathRestorationActive(),
         settle: () => settlePreviewInspectorNeuralSuccessfulPaths(key),
@@ -209,6 +247,8 @@ function createSuccessCheckpointFixture(
           globalThis.__remainingExploration = remaining;
         },
         setProps: (props) => previewInspectorSession.resolverPropsByExport.set('Panel', props),
+        setRuntimeValue: (value) =>
+          previewInspectorSession.runtimeFallbackValues.set('fallback:feed', value),
         setViewerValues: (dataMode, runtimeStatus, smart) => {
           previewInspectorSession.dataPayloadOverrides.set('request:feed', {
             mode: dataMode,
@@ -233,6 +273,19 @@ function createSuccessCheckpointFixture(
 }
 
 describe('Preview Inspector neural success checkpoint runtime source', () => {
+  it('retains component-only output as a recovery recipe without learning page success', () => {
+    const fixture = createSuccessCheckpointFixture(true, false, false, true);
+
+    expect(fixture.capture()).toBe(true);
+    expect(fixture.recoveryRequests()).toBe(1);
+    expect(fixture.record()).toMatchObject({
+      successCollectionSettled: false,
+      successfulPaths: [],
+    });
+    expect(fixture.record().provisionalSuccessfulPath).toBeUndefined();
+    expect(fixture.collectionSettled()).toBe(false);
+  });
+
   it('keeps first output provisional until three delayed observations remain visible', () => {
     const fixture = createSuccessCheckpointFixture(false);
 
@@ -387,6 +440,24 @@ describe('Preview Inspector neural success checkpoint runtime source', () => {
     expect(fixture.settle()).toEqual({ restoring: false, settled: true, successCount: 2 });
     expect(fixture.restorationActive()).toBe(false);
     expect(fixture.collectionSettled()).toBe(true);
+  });
+
+  it('restores an exact hook collection without passing it through props normalization', () => {
+    const fixture = createSuccessCheckpointFixture();
+    fixture.setRuntimeValue(['read:patients']);
+
+    expect(fixture.capture()).toBe(true);
+    fixture.flushRestorationVerification();
+    fixture.flushRestorationVerification();
+    fixture.flushRestorationVerification();
+
+    fixture.setRuntimeValue([{}]);
+    fixture.setOutput(false);
+    expect(fixture.settle()).toMatchObject({ restoring: true, successCount: 1 });
+    expect(fixture.currentViewerValues()).toMatchObject({
+      runtime: ['read:patients'],
+      smart: true,
+    });
   });
 
   it('falls back to the next verified checkpoint after a restored path fails twice', () => {

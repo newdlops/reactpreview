@@ -1006,8 +1006,13 @@ describe('createPreviewInspectorRootSource', () => {
     });
 
     expect(source).toContain('react-preview:inspector-page-execution');
+    expect(source).toContain('"authoredOwnerDepth":');
+    expect(source).toContain('"executionRootExportName":"InlineLayout"');
+    expect(source).toContain(`"executionRootSourcePath":${JSON.stringify(TARGET_PATH)}`);
     expect(source).toContain('"nestedMountCount":1');
     expect(source).toContain('"executionRootSurfaceId":"layout"');
+    expect(source).toContain('"pageRootExportName":"InlineLayout"');
+    expect(source).toContain(`"pageRootSourcePath":${JSON.stringify(TARGET_PATH)}`);
     expect(source).toContain('"runtimeTargetSurfaceId":"page"');
     expect(source).toContain(
       `"root":{"exportName":"InlineLayout","sourcePath":${JSON.stringify(TARGET_PATH)}}`,

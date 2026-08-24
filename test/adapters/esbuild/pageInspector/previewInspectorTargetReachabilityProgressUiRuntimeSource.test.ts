@@ -96,6 +96,14 @@ describe('Preview Inspector target reachability progress UI', () => {
     expect(runtime.createNode(blocker).name).toBe('Finding current file · default');
   });
 
+  it('keeps an automatic authored state replay in the progress state', () => {
+    const runtime = evaluateProgressUiRuntime();
+    const blocker = createReachabilityBlocker({ status: 'activating-authored-state' });
+
+    expect(runtime.isResolving(blocker)).toBe(true);
+    expect(runtime.createNode(blocker).name).toBe('Finding current file · default');
+  });
+
   it('asks for the authored page choice while preserving the interactive selection screen', () => {
     const runtime = evaluateProgressUiRuntime();
     const blocker = createReachabilityBlocker({ status: 'awaiting-authored-state' });

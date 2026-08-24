@@ -253,10 +253,16 @@ function readPreviewInspectorPageContextPathSummary(descriptor, reachability) {
       ? readPreviewInspectorReleasedNeuralTemporalStateContract(candidate.id)
       : undefined;
   const temporalReleased = releasedTemporalState !== undefined;
+  const pageExecutionContext = typeof readPreviewInspectorPageExecutionContextObservation === 'function'
+    ? readPreviewInspectorPageExecutionContextObservation(descriptor, candidate, reachability)
+    : undefined;
+  const recoveringPageContext =
+    typeof isPreviewInspectorNeuralPageExecutionContextRecoveryActive === 'function' &&
+    isPreviewInspectorNeuralPageExecutionContextRecoveryActive(reachability);
   const unstable = record?.unstableCandidateIds?.has?.(candidate.id) === true &&
     record?.successfulCandidateIds?.has?.(candidate.id) !== true;
   const verified = record?.successfulCandidateIds?.has?.(candidate.id) === true &&
-    reachability?.targetHasOutput === true;
+    reachability?.targetHasOutput === true && pageExecutionContext?.contextComplete !== false;
   const successfulPathSettled =
     typeof isPreviewInspectorNeuralSuccessCollectionSettled === 'function' &&
     isPreviewInspectorNeuralSuccessCollectionSettled(reachability);
@@ -271,6 +277,8 @@ function readPreviewInspectorPageContextPathSummary(descriptor, reachability) {
   const possibilityCount = record?.possibilityCount ?? candidates.length;
   const state = pending
       ? 'switching'
+      : recoveringPageContext
+        ? 'recovering'
       : temporalPinned
         ? 'transient'
         : temporalReleased
@@ -292,6 +300,8 @@ function readPreviewInspectorPageContextPathSummary(descriptor, reachability) {
     ? verified ? 'USER PATH · STABLE' : checking ? 'USER PATH · VERIFYING' : 'USER SELECTED'
     : state === 'switching'
       ? 'TESTING NEXT PATH'
+      : state === 'recovering'
+        ? 'RESTORING FULL PAGE CONTEXT'
       : state === 'transient'
         ? 'LOADING STATE PINNED'
         : state === 'resumed'
@@ -315,6 +325,12 @@ function readPreviewInspectorPageContextPathSummary(descriptor, reachability) {
     : state === 'resumed'
       ? 'You released this loading checkpoint · authored pending work may now complete, and ' +
         'its expected disappearance will not restart automatic blocker repair'
+    : state === 'recovering'
+      ? 'The selected component produced valid output without its authored page owners · ' +
+        'the local model retained that repair state and is replaying it through a full-page execution path' +
+        (pageExecutionContext?.missingOwnerNames?.length > 0
+          ? ' · missing ' + pageExecutionContext.missingOwnerNames.join(' › ')
+          : '')
     : state === 'checking'
     ? (userSelected ? 'Your selected path produced target output; ' : 'Target output appeared; ') +
       'the viewer is checking it across delayed observations before learning or saving this path'
@@ -357,6 +373,8 @@ function readPreviewInspectorPageContextPathSummary(descriptor, reachability) {
         ' ms verification window'
       : temporalReleased
         ? 'TIME CONTRACT · resumed by user · authored application progression active'
+      : recoveringPageContext
+        ? 'PAGE-CONTEXT RECOVERY · component output retained · testing compiler-proven page owners'
       : Number(neural?.headUpdates ?? 0) > 0
       ? 'PAGE-CHOICE · ' + String(possibilityCount) + ' source-proven wrapper path(s) · ' +
         String(neural.headUpdates) + ' learned update(s) · rank ' +
@@ -383,7 +401,8 @@ function readPreviewInspectorPageContextPathSurface(descriptor, reachability) {
   if (paths.length === 0 && summary === undefined) return undefined;
   const priorityByState = {
     active: 6, applying: 0, available: 7, checking: 2, queued: 1, recommended: 5,
-    rejected: 9, resumed: 3, tested: 8, transient: 2, unstable: 4, user: 3, verified: 2,
+    recovering: 1, rejected: 9, resumed: 3, tested: 8, transient: 2, unstable: 4,
+    user: 3, verified: 2,
   };
   const orderedPaths = [...paths].sort((left, right) =>
     (priorityByState[left.state] ?? 10) - (priorityByState[right.state] ?? 10) ||

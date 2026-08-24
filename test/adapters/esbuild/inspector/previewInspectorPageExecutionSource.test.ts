@@ -9,6 +9,7 @@ import type { PreviewInspectorPageExecutionCandidate } from '../../../../src/ada
 describe('createPreviewInspectorPageExecutionSource', () => {
   it('uses only exact composition modes and routes sliced surfaces through virtual specifiers', () => {
     const candidate = {
+      browserCandidate: { id: 'exact-composition' },
       compositionEdges: [
         {
           childSurfaceId: 'page',
@@ -87,7 +88,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     });
 
     expect(source).toContain('react-preview:page-surface/page');
-    expect(source).toContain('React.createElement(Surface0, null');
+    expect(source).toContain('React.createElement(PreviewInspectorExecutionRootBridge, null');
     expect(source).toContain('"content": React.createElement(Surface2, null)');
     expect(source).toContain('react-preview:inspector-target-facade');
     expect(source).toContain('import { Route as Surface0 } from "/workspace/Route.tsx";');
@@ -318,6 +319,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
 
   it('publishes bounded Next route state and composes a Pages `_app` Component surface', () => {
     const candidate = {
+      browserCandidate: { id: 'next-pages-component' },
       compositionEdges: [
         {
           childSurfaceId: 'page',
@@ -470,6 +472,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
 
   it('creates only the selected React Router v6 branch and no application registry', () => {
     const candidate = {
+      browserCandidate: { id: 'selected-v6-branch' },
       compositionEdges: [],
       criticalSurfaces: [
         {
@@ -529,8 +532,72 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     expect(source).not.toContain('loader:');
   });
 
+  it('mounts the authored v5 route owner instead of reducing the page to its terminal leaf', () => {
+    const candidate = {
+      browserCandidate: {
+        id: 'hospital-appointment-detail',
+        root: { exportName: 'default', sourcePath: '/workspace/HospitalRun.tsx' },
+        target: { exportName: 'default', sourcePath: '/workspace/AppointmentDetailForm.tsx' },
+      },
+      compositionEdges: [],
+      criticalSurfaces: [
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'hospital-run',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/HospitalRun.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'appointment-detail',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/AppointmentDetailForm.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+      ],
+      executionRootSurfaceId: 'hospital-run',
+      routeRecipe: {
+        kind: 'react-router-v5',
+        loaderPolicy: 'never-execute',
+        mounts: [
+          {
+            basePath: '/',
+            childSurfaceId: 'appointment-detail',
+            hasWildcardFallback: false,
+            parentSurfaceId: 'hospital-run',
+            pattern: '/appointments',
+          },
+        ],
+        params: {},
+        pathname: '/appointments',
+        pattern: '/appointments',
+        rootOwnsRouter: false,
+        routerModuleSpecifier: 'react-router-dom',
+        searchParams: {},
+      },
+      runtimeTargetSurfaceId: 'appointment-detail',
+    } as unknown as PreviewInspectorPageExecutionCandidate;
+
+    const source = createPreviewInspectorPageExecutionSource({
+      candidate,
+      executionRootModuleContract: createExecutionRootContract(candidate),
+      target: { exportName: 'default', sourcePath: '/workspace/AppointmentDetailForm.tsx' },
+    });
+
+    expect(source).toContain(
+      'render: (routeProps) => React.createElement(PreviewInspectorExecutionRootBridge, routeProps)',
+    );
+    expect(source).not.toContain('render: () => React.createElement(Surface1');
+  });
+
   it('makes an inner v6 mount relative to the preceding selected mount', () => {
     const candidate = {
+      browserCandidate: { id: 'nested-v6-branch' },
       compositionEdges: [],
       criticalSurfaces: [
         {
@@ -599,7 +666,9 @@ describe('createPreviewInspectorPageExecutionSource', () => {
       target: { exportName: 'default', sourcePath: '/workspace/CompanyPage.tsx' },
     });
 
-    expect(source).toContain('path: "/company/*", element: React.createElement(Surface0, null)');
+    expect(source).toContain(
+      'path: "/company/*", element: React.createElement(PreviewInspectorExecutionRootBridge, null)',
+    );
     expect(source).toContain('path: ":companyId", element: React.createElement(Surface1, null)');
     expect(source).not.toContain('path: "/company/:companyId"');
     expect(source.match(/React\.createElement\(MemoryRouter/gu)).toHaveLength(1);
@@ -658,7 +727,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     });
 
     expect(source).toContain(
-      'element: React.createElement(Surface0, null, React.createElement(Surface1, null))',
+      'element: React.createElement(PreviewInspectorExecutionRootBridge, null, React.createElement(Surface1, null))',
     );
     expect(source).toContain('initialEntries: ["/selected/42?tab=details"]');
     expect(source).toContain('path: "/selected/:selectedId"');
@@ -670,6 +739,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
 
   it('does not nest a generated MemoryRouter around an authored React Router root', () => {
     const candidate = {
+      browserCandidate: { id: 'authored-router-root' },
       compositionEdges: [],
       criticalSurfaces: [
         {
@@ -704,7 +774,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     });
 
     expect(source).toContain('react-preview:inspector-page-route-state');
-    expect(source).toContain('return React.createElement(Surface0, null)');
+    expect(source).toContain('React.createElement(PreviewInspectorExecutionRootBridge, null)');
     expect(source).not.toContain('MemoryRouter');
     expect(source).not.toContain('React.createElement(Routes');
   });

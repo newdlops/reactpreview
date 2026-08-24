@@ -85,6 +85,9 @@ interface PageContextFixture {
       }
     >;
     readonly failedCandidateIds: Set<string>;
+    readonly pageContextRecoveryRecipe?: {
+      readonly sourceCandidateId: string;
+    };
     readonly provisionalCandidateIds: Set<string>;
     readonly status: string;
     readonly successfulCandidateIds: Set<string>;
@@ -95,6 +98,10 @@ interface PageContextFixture {
     readonly options?: { readonly origin?: string };
   }[];
   readonly schedule: () => void;
+  readonly retainRecoveryRecipe: (
+    candidate: PageCandidateFixture,
+    state: Record<string, unknown>,
+  ) => boolean;
   readonly setAutoConditions: (entries: readonly [string, boolean][]) => void;
   readonly select: () =>
     | {
@@ -211,6 +218,13 @@ function createPageContextFixture(
         return readSelectedPreviewInspectorPageCandidate().target;
       }
       function findSelectedPreviewInspectorDescriptor() { return descriptor; }
+      function isPreviewInspectorCompletePageCandidateContext(candidate) {
+        return candidate?.complete === true ||
+          candidate?.renderPath?.entryPoint !== undefined ||
+          ['next-app-filesystem', 'next-pages-filesystem'].includes(
+            candidate?.virtualPage?.mode,
+          );
+      }
       function selectPreviewInspectorPageCandidate(candidateId, options) {
         requests.push({ candidateId, options });
         previewInspectorSession.selectedPageCandidateId = candidateId;
@@ -288,6 +302,18 @@ function createPageContextFixture(
           ),
         rankingCalls: () => neuralPageContextRankingCalls,
         releaseTemporal: releasePreviewInspectorNeuralTemporalStateContract,
+        retainRecoveryRecipe: (candidate, state) => {
+          const snapshot = Object.freeze({
+            ...createPreviewInspectorNeuralSuccessSnapshot(state),
+            pageExecutionContext: Object.freeze({ contextComplete: false }),
+          });
+          return retainPreviewInspectorNeuralPageContextRecoveryRecipe(
+            descriptor,
+            candidate,
+            state,
+            snapshot,
+          );
+        },
         record: () => readPreviewInspectorNeuralPageContextRecord(descriptor),
         requests,
         schedule: () => schedulePreviewInspectorNeuralPageContextSelection(),
@@ -651,6 +677,85 @@ describe('Preview Inspector neural page-context runtime source', () => {
     expect(fixture.prepareContract(secondCandidate.id, 'neural')).toBe(true);
     expect(fixture.activateContract(secondCandidate.id)).toBe(true);
     expect(fixture.autoConditions()).toEqual([['tax-panel-open', true]]);
+  });
+
+  it('replays a partial component repair recipe into the next full-page candidate', () => {
+    const fixture = createPageContextFixture();
+    fixture.select();
+    fixture.setAutoConditions([['component-output-visible', true]]);
+
+    expect(
+      fixture.retainRecoveryRecipe(firstCandidate, {
+        applicationPath: ['FallbackPage', 'TaxTypeBadge'],
+        targetExportName: 'TaxTypeBadge',
+      }),
+    ).toBe(true);
+    expect(fixture.record().pageContextRecoveryRecipe).toMatchObject({
+      sourceCandidateId: firstCandidate.id,
+    });
+
+    expect(fixture.prepareContract(secondCandidate.id, 'neural')).toBe(true);
+    fixture.setAutoConditions([]);
+    expect(fixture.activateContract(secondCandidate.id)).toBe(true);
+    expect(fixture.autoConditions()).toEqual([['component-output-visible', true]]);
+  });
+
+  it('reopens a failed full page when a new partial-path recipe becomes available', () => {
+    const partialCandidate: PageCandidateFixture = {
+      complete: false,
+      edges: secondCandidate.edges,
+      id: 'partial-carousel-checkpoint',
+      renderPath: {
+        id: 'partial-carousel-path',
+        steps: [{ label: 'ExplorePageCarousel' }, { label: 'TaxTypeBadge' }],
+      },
+      root: secondCandidate.root,
+      stopReason: 'render-path-checkpoint',
+      target: secondCandidate.target,
+    };
+    const fixture = createPageContextFixture([firstCandidate, partialCandidate]);
+    fixture.select();
+
+    expect(
+      fixture.observe(firstCandidate, {
+        directTarget: false,
+        exhausted: true,
+        pageRootCommitted: true,
+        status: 'page-blocked',
+        targetHasOutput: false,
+      }),
+    ).toBe(true);
+    expect(fixture.requests.at(-1)?.candidateId).toBe(partialCandidate.id);
+
+    fixture.session.pendingPageCandidateId = undefined;
+    fixture.session.selectedPageCandidateId = partialCandidate.id;
+    fixture.setExecutableCandidateId(partialCandidate.id);
+    fixture.setAutoConditions([['open-authored-overlay', true]]);
+    expect(
+      fixture.retainRecoveryRecipe(partialCandidate, {
+        applicationPath: ['ExplorePageCarousel', 'TaxTypeBadge'],
+        targetExportName: 'TaxTypeBadge',
+      }),
+    ).toBe(true);
+    expect(fixture.record().failedCandidateIds.has(firstCandidate.id)).toBe(false);
+
+    expect(
+      fixture.observe(partialCandidate, {
+        directTarget: false,
+        exhausted: true,
+        pageRootCommitted: true,
+        status: 'page-blocked',
+        targetHasOutput: false,
+      }),
+    ).toBe(true);
+    expect(fixture.requests.at(-1)?.candidateId).toBe(firstCandidate.id);
+
+    fixture.setAutoConditions([]);
+    fixture.session.pendingPageCandidateId = undefined;
+    fixture.session.selectedPageCandidateId = firstCandidate.id;
+    fixture.setExecutableCandidateId(firstCandidate.id);
+    expect(fixture.activateContract(firstCandidate.id)).toBe(true);
+    expect(fixture.autoConditions()).toEqual([['open-authored-overlay', true]]);
   });
 
   it('restores the least invasive successful contract after every mount candidate is evaluated', () => {

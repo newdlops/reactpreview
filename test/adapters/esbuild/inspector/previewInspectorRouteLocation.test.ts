@@ -190,6 +190,114 @@ describe('collectPreviewInspectorRouteLocation', () => {
     });
   });
 
+  /** Preserves a v5 page shell when the nearest route is delegated through PrivateRoute. */
+  it('selects an imported component-style Route adapter before its broad page route', async () => {
+    const targetPath =
+      '/workspace/application/src/scheduling/appointments/AppointmentDetailForm.tsx';
+    const editPath = '/workspace/application/src/scheduling/appointments/edit/EditAppointment.tsx';
+    const appointmentsPath = '/workspace/application/src/scheduling/appointments/Appointments.tsx';
+    const hospitalPath = '/workspace/application/src/HospitalRun.tsx';
+    const privateRoutePath = '/workspace/application/src/shared/components/PrivateRoute.tsx';
+    const sources = {
+      [targetPath]: 'export default function AppointmentDetailForm() { return <form />; }',
+      [editPath]: [
+        'import AppointmentDetailForm from "../AppointmentDetailForm";',
+        'export default function EditAppointment() { return <AppointmentDetailForm />; }',
+      ].join('\n'),
+      [appointmentsPath]: [
+        'import PrivateRoute from "../../shared/components/PrivateRoute";',
+        'import EditAppointment from "./edit/EditAppointment";',
+        'import ViewAppointments from "./ViewAppointments";',
+        '<Switch>',
+        '  <PrivateRoute exact path="/appointments" component={ViewAppointments} />',
+        '  <PrivateRoute exact path="/appointments/edit/:id" component={EditAppointment} />',
+        '</Switch>;',
+      ].join('\n'),
+      [hospitalPath]: [
+        'import Appointments from "./scheduling/appointments/Appointments";',
+        '<Switch><Route path="/appointments" component={Appointments} /></Switch>;',
+      ].join('\n'),
+      [APP_PATH]: [
+        'import HospitalRun from "./HospitalRun";',
+        '<Switch><Route path="/" component={HospitalRun} /></Switch>;',
+      ].join('\n'),
+      [privateRoutePath]: [
+        'import { Route } from "react-router-dom";',
+        'export default function PrivateRoute({ component, ...rest }) {',
+        '  return <Route {...rest} component={component} />;',
+        '}',
+      ].join('\n'),
+      '/workspace/application/src/scheduling/appointments/ViewAppointments.tsx':
+        'export default function ViewAppointments() { return <main />; }',
+    };
+    const renderChain: PreviewRenderChainPlan = {
+      dependencyPaths: [targetPath, editPath, appointmentsPath, hospitalPath, APP_PATH],
+      paths: [
+        {
+          entryPoint: {
+            kind: 'create-root',
+            occurrenceStart: 100,
+            sourcePath: APP_PATH,
+            wrapperNames: [],
+          },
+          id: 'hospital-appointment-edit-path',
+          steps: [
+            {
+              certainty: 'confirmed',
+              kind: 'component-render',
+              label: 'AppointmentDetailForm (default)',
+              occurrenceStart: 10,
+              sourcePath: targetPath,
+              wrapperNames: [],
+            },
+            {
+              certainty: 'confirmed',
+              kind: 'component-render',
+              label: 'EditAppointment',
+              occurrenceStart: 20,
+              sourcePath: editPath,
+              wrapperNames: [],
+            },
+            {
+              certainty: 'confirmed',
+              kind: 'component-render',
+              label: 'Appointments',
+              occurrenceStart: 30,
+              sourcePath: appointmentsPath,
+              wrapperNames: [],
+            },
+            {
+              certainty: 'confirmed',
+              kind: 'component-render',
+              label: 'HospitalRun',
+              occurrenceStart: 40,
+              sourcePath: hospitalPath,
+              wrapperNames: [],
+            },
+          ],
+        },
+      ],
+      reachability: 'entry-connected',
+      target: { exportName: 'default', sourcePath: targetPath },
+      truncated: false,
+    };
+
+    const location = await collectPreviewInspectorRouteLocation(
+      createOptions(sources, renderChain),
+    );
+
+    expect(location).toMatchObject({
+      componentName: 'EditAppointment',
+      pathname: '/appointments/edit/1',
+      pattern: '/appointments/edit/:id',
+      routeMounts: [
+        { contextPattern: '/', sourcePath: hospitalPath },
+        { contextPattern: '/appointments', sourcePath: appointmentsPath },
+      ],
+      sourcePath: appointmentsPath,
+    });
+  });
+
   /** Recovers the outer v5 route when the selected leaf is rendered inside its page component. */
   it('uses a proven routed render ancestor instead of the sibling catch-all route', async () => {
     const targetPath = '/workspace/application/src/Project/IssueCreate.tsx';

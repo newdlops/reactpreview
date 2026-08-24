@@ -837,6 +837,84 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
     }
   });
 
+  /**
+   * A sliced route page intentionally omits a framework layout that can fail independently. Its
+   * retained layout edge is provenance only and must not turn the authored page into an orphan,
+   * otherwise role selection incorrectly promotes the primitive target to the execution root.
+   */
+  it('roots a framework-free page slice at the authored route page', () => {
+    const targetPath = '/workspace/components/Skeleton.tsx';
+    const pagePath = '/workspace/app/explore/page.tsx';
+    const layoutPath = '/workspace/app/layout.tsx';
+    const renderPath: PreviewRenderChainCandidate = {
+      id: 'next-app-page-to-skeleton',
+      steps: [
+        {
+          certainty: 'confirmed',
+          kind: 'component-render',
+          label: 'Skeleton',
+          occurrenceStart: 1,
+          sourcePath: targetPath,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed',
+          kind: 'component-render',
+          label: 'ExplorePage',
+          occurrenceStart: 2,
+          sourcePath: pagePath,
+          wrapperNames: [],
+        },
+      ],
+    };
+    const page = {
+      complete: true,
+      dependencyPaths: [targetPath, pagePath, layoutPath],
+      edges: [],
+      id: 'next-app-explore-page',
+      nextAppLayoutChain: [{ exportName: 'default', params: {}, sourcePath: layoutPath }],
+      renderPath,
+      root: { exportName: 'default', sourcePath: pagePath },
+      rootAutomaticProps: {},
+      rootOwnsRouter: false,
+      rootStepIndex: 1,
+      routeLocation: {
+        componentName: 'NextAppPage',
+        evidenceKind: 'next-app-filesystem',
+        params: {},
+        pathname: '/explore',
+        pattern: '/explore',
+        searchParams: {},
+        sourcePath: pagePath,
+      },
+      stopReason: 'root-reached',
+      targetAutomaticProps: {},
+    } as PreviewInspectorPageCandidate;
+    const plan = {
+      pageCandidates: [page],
+      renderChain: { paths: [renderPath] },
+      renderChainsByExport: { Skeleton: { paths: [renderPath] } },
+      target: { exportName: 'Skeleton', sourcePath: targetPath },
+    } as unknown as PreviewInspectorAncestorPlan;
+
+    const candidates = createPreviewInspectorPageExecutionCandidates({ plan });
+    const authentic = candidates.find((candidate) => candidate.fidelity === 'page-authentic');
+    const sliced = candidates.find((candidate) => candidate.fidelity === 'page-sliced');
+
+    expect(authentic?.browserCandidate.root).toEqual({
+      exportName: 'default',
+      sourcePath: layoutPath,
+    });
+    expect(sliced?.browserCandidate.root).toEqual({
+      exportName: 'default',
+      sourcePath: pagePath,
+    });
+    expect(sliced?.executionRootSurfaceId).toBe(
+      sliced?.criticalSurfaces.find((surface) => surface.sourcePath === pagePath)?.id,
+    );
+    expect(sliced?.executionRootSurfaceId).not.toBe(sliced?.runtimeTargetSurfaceId);
+  });
+
   it('keeps shared descendant chrome outside an outer route mount', () => {
     const contentAndPanelPath = '/workspace/ContentAndPanel.tsx';
     const featureBranchPath = '/workspace/FeatureBranch.tsx';

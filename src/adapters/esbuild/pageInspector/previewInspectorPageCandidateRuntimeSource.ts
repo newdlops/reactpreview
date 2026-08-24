@@ -6,6 +6,7 @@
 import { createPreviewInspectorNeuralPageContextRuntimeSource } from './previewInspectorNeuralPageContextRuntimeSource';
 import { createPreviewInspectorPageContextExecutionContractRuntimeSource } from './previewInspectorPageContextExecutionContractRuntimeSource';
 import { createPreviewInspectorPageContextPathSurfaceRuntimeSource } from './previewInspectorPageContextPathSurfaceRuntimeSource';
+import { createPreviewInspectorPageExecutionContextRuntimeSource } from './previewInspectorPageExecutionContextRuntimeSource';
 import { createPreviewInspectorPageCandidateSelectionRuntimeSource } from './previewInspectorPageCandidateSelectionRuntimeSource';
 
 /**
@@ -22,6 +23,8 @@ export function createPreviewInspectorPageCandidateRuntimeSource(): string {
     createPreviewInspectorPageContextExecutionContractRuntimeSource();
   const pageContextPathSurfaceRuntimeSource =
     createPreviewInspectorPageContextPathSurfaceRuntimeSource();
+  const pageExecutionContextRuntimeSource =
+    createPreviewInspectorPageExecutionContextRuntimeSource();
   const pageCandidateSelectionRuntimeSource =
     createPreviewInspectorPageCandidateSelectionRuntimeSource();
   return String.raw`
@@ -184,6 +187,7 @@ function readSelectedPreviewInspectorPageExecutionCandidate(descriptor) {
     : undefined;
 }
 
+${pageExecutionContextRuntimeSource}
 /** Reconciles browser state with the single caller path actually compiled into this artifact. */
 function reconcilePreviewInspectorPageCandidateSelection(candidateIds) {
   const descriptor = findSelectedPreviewInspectorDescriptor();
@@ -192,18 +196,19 @@ function reconcilePreviewInspectorPageCandidateSelection(candidateIds) {
       ? reconcilePreviewInspectorNeuralPageContextSelection(descriptor)
       : undefined;
   const executableCandidateId = descriptor?.inspector?.executablePageCandidateId;
+  let nextId;
   if (typeof executableCandidateId === 'string' && candidateIds.includes(executableCandidateId)) {
-    if (previewInspectorSession.selectedPageCandidateId === executableCandidateId) return false;
-    previewInspectorSession.selectedPageCandidateId = executableCandidateId;
-    return true;
+    nextId = executableCandidateId;
+  } else {
+    const userSelection = previewInspectorSession.userSelectedPageCandidateId;
+    nextId = typeof userSelection === 'string' && candidateIds.includes(userSelection)
+      ? userSelection
+      : neuralSelection?.candidate?.id ?? candidateIds[0] ?? '';
   }
-  const userSelection = previewInspectorSession.userSelectedPageCandidateId;
-  const nextId = typeof userSelection === 'string' && candidateIds.includes(userSelection)
-    ? userSelection
-    : neuralSelection?.candidate?.id ?? candidateIds[0] ?? '';
-  if (previewInspectorSession.selectedPageCandidateId === nextId) return false;
-  previewInspectorSession.selectedPageCandidateId = nextId;
-  return true;
+  const changed = previewInspectorSession.selectedPageCandidateId !== nextId;
+  if (changed) previewInspectorSession.selectedPageCandidateId = nextId;
+  schedulePreviewInspectorNeuralPageExecutionContextRecoveryActivation(descriptor);
+  return changed;
 }
 
 /** Reports whether the selected authored application root supplies its own Router boundary. */
@@ -654,6 +659,14 @@ function usePreviewInspectorLazyDefinition(definition, loadContext) {
 
 /** Requests at most one host-owned inner Page Execution retry after a selected module load fails. */
 function requestPreviewInspectorPageExecutionRetry(descriptor, candidate) {
+  const recoveryState = typeof readPreviewInspectorTargetReachabilityState === 'function'
+    ? readPreviewInspectorTargetReachabilityState(descriptor, candidate)
+    : undefined;
+  const recoveryRecord = readPreviewInspectorPageExecutionContextRecoveryRecord(recoveryState);
+  if (continuePreviewInspectorNeuralPageExecutionContextRecovery(descriptor, candidate)) {
+    return true;
+  }
+  if (recoveryRecord !== undefined) return false;
   const inspector = descriptor?.inspector;
   const currentId = inspector?.pageExecutionCandidateId;
   const alternatives = Array.isArray(inspector?.pageExecutionCandidates)
@@ -663,24 +676,8 @@ function requestPreviewInspectorPageExecutionRetry(descriptor, candidate) {
   const next = currentIndex < 0 ? undefined : alternatives.slice(currentIndex + 1).find(
     (item) => typeof item?.id === 'string' && item.id !== currentId,
   );
-  if (
-    typeof candidate?.id !== 'string' ||
-    typeof next?.id !== 'string' ||
-    previewInspectorSession.pageExecutionRetryRevision === previewEntryRevision ||
-    typeof previewInspectorPostHostMessage !== 'function'
-  ) {
-    return false;
-  }
-  previewInspectorSession.pageExecutionRetryRevision = previewEntryRevision;
-  previewInspectorPostHostMessage({
-    candidateId: candidate.id,
-    executionCandidateId: next.id,
-    interactionId: 'execution:' + String(readPreviewInspectorHostRuntimeRevision()) + ':' +
-      String(++previewInspectorSession.interactionSequence),
-    runtimeRevision: readPreviewInspectorHostRuntimeRevision(),
-    type: 'react-preview-inspector-page-execution-retry',
-  });
-  return true;
+  return typeof next?.id === 'string' &&
+    postPreviewInspectorPageExecutionCandidate(descriptor, candidate, next.id);
 }
 
 /** Re-throws a rejected dynamic import inside the nearest per-export React error boundary. */

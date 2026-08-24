@@ -438,6 +438,14 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
         (item) => item?.id === pageExecutionCandidateId,
       )
     : undefined;
+  const pageExecutionContext = trackedReachability !== undefined && candidate !== undefined &&
+    typeof readPreviewInspectorPageExecutionContextObservation === 'function'
+      ? readPreviewInspectorPageExecutionContextObservation(
+          descriptor,
+          candidate,
+          trackedReachability,
+        )
+      : undefined;
   const authoredTargetOwner = (
     typeof evidenceSourcePath === 'string' && evidenceSourcePath.length > 0
       ? evidenceSourcePath + '#' + String(targetExportName)
@@ -507,7 +515,22 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     missingShellNames: missingPathNames,
     observedFiberPath: tree.observedFiberPath,
     pageExecution: {
+      contextComplete: pageExecutionContext === undefined
+        ? standalonePageExecution ||
+          (typeof isPreviewInspectorCompletePageCandidateContext === 'function'
+            ? isPreviewInspectorCompletePageCandidateContext(candidate)
+            : candidate?.complete === true) &&
+          !['target-contextual', 'target-only'].includes(
+              String(pageExecutionCandidate?.fidelity ?? 'none'),
+            )
+        : pageExecutionContext.contextComplete === true,
       candidateId: pageExecutionCandidateId ?? 'none',
+      componentOnly: pageExecutionContext === undefined
+        ? !standalonePageExecution && ['target-contextual', 'target-only'].includes(
+            String(pageExecutionCandidate?.fidelity ?? ''),
+          )
+        : pageExecutionContext.componentOnly === true,
+      executionRootExportName: pageExecutionCandidate?.executionRootExportName ?? '',
       executionRootSurfaceId:
         typeof pageExecutionCandidate?.executionRootSurfaceId === 'string'
           ? pageExecutionCandidate.executionRootSurfaceId
@@ -515,6 +538,8 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
       fidelity: typeof pageExecutionCandidate?.fidelity === 'string'
         ? pageExecutionCandidate.fidelity
         : standalonePageExecution ? 'target-only' : 'none',
+      matchedOwnerCount: Number(pageExecutionContext?.matchedOwnerCount) || 0,
+      missingOwnerNames: pageExecutionContext?.missingOwnerNames ?? [],
       nestedMountCount: Number.isSafeInteger(pageExecutionCandidate?.nestedMountCount)
         ? Math.max(0, pageExecutionCandidate.nestedMountCount)
         : 0,
@@ -525,6 +550,19 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
           : standalonePageExecution ? authoredTargetOwner : '',
       standaloneTarget:
         pageExecutionCandidate?.standaloneTarget === true || standalonePageExecution,
+      observedOwnerNames: pageExecutionContext?.observedOwnerNames ?? [],
+      pageCandidateComplete: pageExecutionContext?.pageCandidateComplete ??
+        (typeof isPreviewInspectorCompletePageCandidateContext === 'function'
+          ? isPreviewInspectorCompletePageCandidateContext(candidate)
+          : candidate?.complete === true),
+      pageCandidateCompilerComplete: pageExecutionContext?.pageCandidateCompilerComplete ??
+        candidate?.complete === true,
+      pageCandidateEntryConnected: pageExecutionContext?.pageCandidateEntryConnected ??
+        candidate?.renderPath?.entryPoint !== undefined,
+      pageCandidateStopReason: pageExecutionContext?.pageCandidateStopReason ??
+        candidate?.stopReason ?? 'unknown',
+      pageRootExportName: pageExecutionCandidate?.pageRootExportName ?? '',
+      pageRootObserved: pageExecutionContext?.pageRootObserved === true,
       targetRole: typeof pageExecutionCandidate?.targetRole === 'string'
         ? pageExecutionCandidate.targetRole
         : 'element',
@@ -665,6 +703,8 @@ function hasPreviewInspectorVerifiedTargetOutput(detail) {
     target.mounted === true &&
     target.hasOutput === true &&
     target.pageRootCommitted === true &&
+    detail?.pageExecution?.contextComplete === true &&
+    detail?.pageExecution?.componentOnly !== true &&
     blockers?.active === 0 &&
     Array.isArray(detail?.activeBlockerProvenance) &&
     detail.activeBlockerProvenance.length === 0;

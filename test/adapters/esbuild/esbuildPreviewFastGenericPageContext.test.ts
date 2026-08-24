@@ -101,10 +101,8 @@ describe('EsbuildPreviewCompiler fast generic page context', () => {
       ]).toString('utf8');
 
       expect(javascript).toContain('COMPANY_LIST_PAGE');
-      expect(javascript).toContain(
-        JSON.stringify(path.join(projectRoot, 'src/CompanyListPage.tsx')),
-      );
-      expect(javascript).toContain('initialEntries: ["/company"]');
+      expect(bundle.dependencies).toContain(path.join(projectRoot, 'src/CompanyListPage.tsx'));
+      expect(javascript).toContain('previewInspectorRoutePath = "/company"');
       expect(javascript).toContain('path: "/company"');
       expect(bundle.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual(
         [],

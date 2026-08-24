@@ -287,7 +287,7 @@ function collectJsxRouteChoices(
     if (choices.length >= MAXIMUM_DIRECT_ROUTE_CHOICES) return;
     if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
       const opening = ts.isJsxElement(node) ? node.openingElement : node;
-      if (readJsxTagTerminalName(opening.tagName) === 'Route') {
+      if (isDirectJsxRouteElement(opening, parsed, sourcePath, resolveModule)) {
         const pathAttribute = opening.attributes.properties.find(
           (property): property is ts.JsxAttribute =>
             ts.isJsxAttribute(property) && property.name.getText() === 'path',
@@ -357,6 +357,40 @@ function collectJsxRouteChoices(
     });
   };
   visit(parsed.sourceFile, [], 'resolved');
+}
+
+/**
+ * Recognizes a standard Route or one imported component-style Route adapter.
+ *
+ * React Router v5 applications commonly wrap Route as `PrivateRoute` and forward `path` plus
+ * `component`. Treating only the literal `<Route>` spelling as route evidence drops the nearest
+ * authored branch and leaves the preview at its broad parent pathname. A custom adapter is admitted
+ * only when its local binding resolves to a real source module and the occurrence carries both a
+ * path and an explicit routed component slot; the later render-chain check still has to prove that
+ * exact component on the selected target path.
+ */
+function isDirectJsxRouteElement(
+  opening: ts.JsxOpeningLikeElement,
+  parsed: ParsedRouteModule,
+  sourcePath: string,
+  resolveModule: ResolvePreviewRenderGraphModule | undefined,
+): boolean {
+  const terminalName = readJsxTagTerminalName(opening.tagName);
+  if (terminalName === 'Route') return true;
+  if (!terminalName.endsWith('Route') || !ts.isIdentifier(opening.tagName)) return false;
+  const hasPath = opening.attributes.properties.some(
+    (property) => ts.isJsxAttribute(property) && property.name.getText() === 'path',
+  );
+  const hasComponentSlot = opening.attributes.properties.some(
+    (property) =>
+      ts.isJsxAttribute(property) &&
+      ['Component', 'component', 'element'].includes(property.name.getText()),
+  );
+  if (!hasPath || !hasComponentSlot) return false;
+  const imported = parsed.imports.get(opening.tagName.text);
+  return (
+    imported !== undefined && resolveModule?.(imported.moduleSpecifier, sourcePath) !== undefined
+  );
 }
 
 /** Recovers an absolute base passed to a surrounding conventional app/router factory. */
@@ -1020,12 +1054,10 @@ function addChoice(
                   kind: 'catalog-helper' as const,
                   reference: Object.freeze({
                     ...choice.pathEvidence.reference,
-                    normalizerChain: Object.freeze(
-                      choice.pathEvidence.reference.normalizerChain,
-                    ),
+                    normalizerChain: Object.freeze(choice.pathEvidence.reference.normalizerChain),
                   }),
                 })
-            : Object.freeze({ kind: choice.pathEvidence.kind }),
+              : Object.freeze({ kind: choice.pathEvidence.kind }),
       pathResolution: choice.pathResolution,
       ...(choice.routeBasePath === undefined
         ? {}

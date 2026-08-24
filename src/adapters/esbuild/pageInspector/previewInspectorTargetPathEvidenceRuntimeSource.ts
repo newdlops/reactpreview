@@ -172,14 +172,20 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
 function isPreviewInspectorExactTargetOverlayCondition(condition, evidence) {
   if (condition?.role !== 'overlay') return false;
   if (evidence.exactConditionIds?.has(condition?.id)) return true;
-  const ownerName = typeof condition?.ownerName === 'string' ? condition.ownerName : '';
-  if (ownerName.length === 0) return false;
-  if (evidence.exactTargetNames?.has(ownerName)) return true;
-  if (evidence.localComponentOwnerNames?.has(ownerName)) {
-    return !evidence.repeatedOwnerNames?.has(ownerName);
+  const ownerNames = [...new Set(
+    typeof condition?.runtimeOwnerName === 'string' && condition.runtimeOwnerName.length > 0
+      ? [condition.runtimeOwnerName]
+      : [condition?.ownerName],
+  )]
+    .filter((name) => typeof name === 'string' && name.length > 0);
+  for (const ownerName of ownerNames) {
+    if (evidence.exactTargetNames?.has(ownerName)) return true;
+    if (evidence.localComponentOwnerNames?.has(ownerName) &&
+        !evidence.repeatedOwnerNames?.has(ownerName)) return true;
+    if (evidence.corridorOwnerNames?.has(ownerName) &&
+        !evidence.repeatedOwnerNames?.has(ownerName)) return true;
   }
-  return evidence.corridorOwnerNames?.has(ownerName) &&
-    !evidence.repeatedOwnerNames?.has(ownerName);
+  return false;
 }
 /** Scores component names embedded in one branch label against the proven root-to-target corridor. */
 function scorePreviewInspectorTargetConditionLabel(label, evidence) {
@@ -332,20 +338,24 @@ function evaluatePreviewInspectorNeuralRenderStateExpression(condition, expressi
 /** Requires a gate to belong to a statically proven path source or named path component. */
 function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
   if (evidence.exactConditionIds?.has(condition?.id)) return true;
-  const ownerName = typeof condition?.ownerName === 'string' ? condition.ownerName : '';
-  if (
-    evidence.localComponentOwnerNames?.has(ownerName) &&
-    !evidence.repeatedOwnerNames?.has(ownerName)
-  ) return true;
-  const runtimeOnlyOwner =
-    evidence.runtimeOwnerNames?.has(ownerName) && !evidence.staticNames?.has(ownerName);
-  if (
-    ownerName.length > 0 &&
-    evidence.names.has(ownerName) &&
-    (!runtimeOnlyOwner || evidence.exactTargetNames?.has(ownerName)) &&
-    (!evidence.ambiguousNames?.has(ownerName) || evidence.exactTargetNames?.has(ownerName))
-  ) {
-    return true;
+  const ownerNames = [...new Set(
+    typeof condition?.runtimeOwnerName === 'string' && condition.runtimeOwnerName.length > 0
+      ? [condition.runtimeOwnerName]
+      : [condition?.ownerName],
+  )]
+    .filter((name) => typeof name === 'string' && name.length > 0);
+  for (const ownerName of ownerNames) {
+    if (
+      evidence.localComponentOwnerNames?.has(ownerName) &&
+      !evidence.repeatedOwnerNames?.has(ownerName)
+    ) return true;
+    const runtimeOnlyOwner =
+      evidence.runtimeOwnerNames?.has(ownerName) && !evidence.staticNames?.has(ownerName);
+    if (
+      evidence.names.has(ownerName) &&
+      (!runtimeOnlyOwner || evidence.exactTargetNames?.has(ownerName)) &&
+      (!evidence.ambiguousNames?.has(ownerName) || evidence.exactTargetNames?.has(ownerName))
+    ) return true;
   }
   const sourcePath = normalizePreviewInspectorReachabilityPath(condition?.sourcePath);
   if (sourcePath.length === 0) return false;

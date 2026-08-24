@@ -20,6 +20,7 @@
 export function createPreviewInspectorTargetReachabilityDetailRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_TARGET_RESOLVING_STATUSES = new Set([
+  'activating-authored-state',
   'activating-local-ui',
   'advancing',
   'awaiting-authored-state',

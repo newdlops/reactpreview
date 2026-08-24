@@ -64,7 +64,6 @@ describe('preview headless renderer', () => {
       'Log.enable',
       'Runtime.addBinding',
       'Page.navigate',
-      'Emulation.setVirtualTimePolicy',
     ]);
     expect(bridge).toContain('message.token === expectedToken');
     expect(bridge).toContain('message.revision === expectedRevision');
@@ -86,7 +85,10 @@ describe('preview headless renderer', () => {
       'runtimeErrorText',
     );
     expect(createPreviewHeadlessTimeoutExpression('__reactPreviewHeadless_test')).toContain(
-      'progressVisible',
+      'progress:',
+    );
+    expect(createPreviewHeadlessTimeoutExpression('__reactPreviewHeadless_test')).toContain(
+      'visible: progressHost',
     );
     expect(createPreviewHeadlessTimeoutExpression('__reactPreviewHeadless_test')).toContain(
       "document.querySelector?.('[data-react-preview-mount]')",
@@ -102,6 +104,7 @@ describe('preview headless renderer', () => {
       true,
     );
 
+    expect(bridge).toContain("'activating-authored-state'");
     expect(bridge).toContain("'settling-neural-render-state'");
     expect(bridge).toContain("'retrying-page-execution'");
     expect(bridge).toContain("composition.targetStatus === 'retrying-page-execution'");
@@ -160,13 +163,24 @@ describe('preview headless renderer', () => {
         },
       }),
     ).toBe('ready');
+    const activeAfterConclusiveTarget = {
+      ...healthy,
+      stabilization: {
+        ...healthy.stabilization!,
+        capReached: true,
+        quiet: false,
+      },
+    };
+    expect(classifyPreviewHeadlessStabilizedOutcome(activeAfterConclusiveTarget)).toBe('ready');
     expect(
       classifyPreviewHeadlessStabilizedOutcome({
-        ...healthy,
+        ...activeAfterConclusiveTarget,
         stabilization: {
-          ...healthy.stabilization!,
-          capReached: true,
-          quiet: false,
+          ...activeAfterConclusiveTarget.stabilization,
+          compositionSnapshot: {
+            ...activeAfterConclusiveTarget.stabilization.compositionSnapshot!,
+            targetHasOutput: false,
+          },
         },
       }),
     ).toBe('insufficient-evidence');

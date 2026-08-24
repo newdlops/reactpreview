@@ -41,6 +41,40 @@ function createFixtureResolver(sourcePaths: readonly string[]) {
 }
 
 describe('collectPreviewInspectorFastPageCorridor', () => {
+  /** A confirmed local JSX owner is still a useful provisional first paint without an app shell. */
+  it('retains a nearest local consumer when no page-shaped owner exists', async () => {
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'fast-local-consumer-corridor-'));
+    temporaryRoots.push(projectRoot);
+    const sources = await Promise.all([
+      writeSource(
+        projectRoot,
+        'src/TargetConsumer.tsx',
+        "import TargetCard from './TargetCard'; export default function TargetConsumer() { return <section><TargetCard /></section>; }",
+      ),
+      writeSource(
+        projectRoot,
+        'src/TargetCard.tsx',
+        'export default function TargetCard() { return <article>Target</article>; }',
+      ),
+    ]);
+    const targetPath = path.join(projectRoot, 'src/TargetCard.tsx');
+
+    const corridor = await collectPreviewInspectorFastPageCorridor({
+      additionalSourcePaths: sources,
+      documentPath: targetPath,
+      projectRoot,
+      readSource: (sourcePath) => readFile(sourcePath, 'utf8').catch(() => undefined),
+      resolveModule: createFixtureResolver(sources),
+      workspaceRoot: projectRoot,
+    });
+
+    expect(corridor?.entryConnected).toBe(false);
+    expect(corridor?.importPath.map((sourcePath) => path.basename(sourcePath))).toEqual([
+      'TargetConsumer.tsx',
+      'TargetCard.tsx',
+    ]);
+  });
+
   /** Keeps distinct feature pages that independently consume one shared component. */
   it('retains page consumers outside the selected component directory', async () => {
     const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'fast-shared-page-corridor-'));

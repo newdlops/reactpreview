@@ -220,9 +220,11 @@ function restorePreviewInspectorNeuralPageGenerationBaseline(baseline) {
     );
     for (const [fallbackId, value] of baseline.runtimeFallbackValueEntries ?? []) {
       if (!isManual(fallbackId)) {
+        const restoredValue = restorePreviewInspectorNeuralSuccessRuntimeFallbackValue(value);
+        if (restoredValue === undefined) continue;
         previewInspectorSession.runtimeFallbackValues.set(
           fallbackId,
-          copyPreviewInspectorNeuralSuccessValue(value),
+          restoredValue,
         );
       }
     }

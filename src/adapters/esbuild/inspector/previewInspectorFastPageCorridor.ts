@@ -14,10 +14,7 @@ import { readdir } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecution';
-import {
-  analyzePreviewLocalParentSlices,
-  createPreviewParentSlicePlan,
-} from '../parentSlice';
+import { analyzePreviewLocalParentSlices, createPreviewParentSlicePlan } from '../parentSlice';
 import { analyzePreviewRenderSource } from '../renderGraph/previewRenderSourceAnalysis';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph/previewRenderGraphTypes';
 import { collectPreviewDynamicImportInventory } from '../staticResources/previewDynamicImportInventory';
@@ -200,11 +197,7 @@ export async function collectPreviewInspectorFastPageCorridor(
   });
   const importPath =
     forward?.importPath ??
-    selectProvisionalReversePath(
-      documentPath,
-      reverse.childByOwner,
-      reverse.pageProvenancePaths,
-    );
+    selectProvisionalReversePath(documentPath, reverse.childByOwner, reverse.pageProvenancePaths);
   if (importPath.length < 2) return undefined;
 
   const boundedPath = await trimBroadRouteRegistryPrefix({
@@ -440,9 +433,15 @@ async function collectReverseClosure(options: {
     const childDepth = depthByPath.get(edge.childPath);
     if (childDepth === undefined) return;
     const semanticEdge = readSemanticEdge(edge);
+    const exactPageConsumer = selectedPageConsumerPaths.has(edge.ownerPath);
+    const auxiliaryDynamicCarrier = isExactAuxiliaryDynamicCarrier(
+      edge,
+      options.selectedAuxiliaryRoot,
+      sourceTextByCandidate.get(edge.ownerPath),
+    );
     if (
       semanticEdge === undefined ||
-      semanticEdge.renderStrength < 1 ||
+      (semanticEdge.renderStrength < 1 && !exactPageConsumer && !auxiliaryDynamicCarrier) ||
       !arePreviewInspectorFastExportDemandsCompatible(
         semanticEdge.requestedExportNames,
         requiredExportsByPath.get(edge.childPath),
@@ -454,15 +453,15 @@ async function collectReverseClosure(options: {
     const previousDepth = depthByPath.get(edge.ownerPath);
     if (previousDepth !== undefined && previousDepth <= ownerDepth) return;
     paths.add(edge.ownerPath);
-    if (selectedPageConsumerPaths.has(edge.ownerPath)) {
+    if (
+      exactPageConsumer ||
+      isLikelyProvisionalPageOwnerPath(edge.ownerPath, options.projectRoot)
+    ) {
       pageProvenancePaths.add(edge.ownerPath);
     }
     depthByPath.set(edge.ownerPath, ownerDepth);
     childByOwner.set(edge.ownerPath, edge.childPath);
-    requiredExportsByPath.set(
-      edge.ownerPath,
-      semanticEdge.ownerExportNames,
-    );
+    requiredExportsByPath.set(edge.ownerPath, semanticEdge.ownerExportNames);
     pending.push({ depth: ownerDepth, sourcePath: edge.ownerPath });
     if (
       scheduledDynamicPivots.size < MAXIMUM_DYNAMIC_REVERSE_PIVOTS &&
@@ -502,8 +501,9 @@ async function collectReverseClosure(options: {
   let targetedOffset = 0;
   targetedCandidates: while (targetedOffset < targetedPagePaths.length) {
     const hasPageProvenance = pageProvenancePaths.size > 0;
-    const targetedLimit =
-      hasPageProvenance ? MINIMUM_TARGETED_REVERSE_FILES : MAXIMUM_TARGETED_REVERSE_FILES;
+    const targetedLimit = hasPageProvenance
+      ? MINIMUM_TARGETED_REVERSE_FILES
+      : MAXIMUM_TARGETED_REVERSE_FILES;
     if (readCandidates.size >= targetedLimit) {
       truncated = true;
       break;
@@ -538,10 +538,7 @@ async function collectReverseClosure(options: {
       );
       edgesByCandidate.set(candidatePath, edges);
       indexCandidateEdges(candidatePath, edges);
-      if (
-        pageProvenancePaths.size > 0 &&
-        readCandidates.size >= MINIMUM_TARGETED_REVERSE_FILES
-      ) {
+      if (pageProvenancePaths.size > 0 && readCandidates.size >= MINIMUM_TARGETED_REVERSE_FILES) {
         break targetedCandidates;
       }
     }
@@ -673,6 +670,39 @@ async function collectReverseClosure(options: {
     requiredExportsByPath,
     truncated,
   });
+}
+
+/** Admits only a literal dynamic edge inside the explicitly selected auxiliary subtree. */
+function isExactAuxiliaryDynamicCarrier(
+  edge: PreviewInspectorFastResolvedImportEdge,
+  selectedAuxiliaryRoot: string | undefined,
+  sourceText: string | undefined,
+): boolean {
+  if (
+    selectedAuxiliaryRoot === undefined ||
+    sourceText === undefined ||
+    !isPathInside(selectedAuxiliaryRoot, edge.ownerPath)
+  ) {
+    return false;
+  }
+  const inventory = collectPreviewDynamicImportInventory(edge.ownerPath, sourceText);
+  return inventory.reliable && inventory.specifiers.includes(edge.moduleSpecifier);
+}
+
+/** Recognizes a reverse-discovered page shell without requiring a package-wide path inventory. */
+function isLikelyProvisionalPageOwnerPath(sourcePath: string, projectRoot: string): boolean {
+  if (!SOURCE_FILE_PATTERN.test(sourcePath) || !isPathInside(projectRoot, sourcePath)) return false;
+  const relativeSegments = path.relative(projectRoot, sourcePath).split(path.sep).filter(Boolean);
+  return (
+    PAGE_SHELL_FILE_PATTERN.test(path.basename(sourcePath)) ||
+    relativeSegments
+      .slice(0, -1)
+      .some((segment) =>
+        /^(?:app|layouts?|pages?|routes?|routers?|screens?|shells?|templates?|views?)$/iu.test(
+          segment,
+        ),
+      )
+  );
 }
 
 /**
@@ -976,26 +1006,38 @@ function hasBroadRouteRegistrySyntax(sourceText: string): boolean {
   );
 }
 
-/** Chooses the furthest page-like reverse owner when no conventional app entry reaches it. */
+/** Chooses a page-like reverse owner, or the strongest local JSX consumer when no page exists. */
 function selectProvisionalReversePath(
   documentPath: string,
   childByOwner: ReadonlyMap<string, string>,
   pageProvenancePaths: ReadonlySet<string>,
 ): readonly string[] {
-  const candidates = [...pageProvenancePaths].sort(
-    (left, right) =>
-      scoreProvisionalRoot(right) - scoreProvisionalRoot(left) || left.localeCompare(right),
-  );
-  for (const candidate of candidates) {
-    const pathToTarget = [candidate];
-    let current = candidate;
-    let child = childByOwner.get(current);
-    while (child !== undefined && !pathToTarget.includes(child)) {
-      pathToTarget.push(child);
-      current = child;
-      child = childByOwner.get(current);
-    }
-    if (pathToTarget.at(-1) === documentPath) return pathToTarget;
+  const candidates = [...childByOwner.keys()]
+    .map((candidate) => {
+      const pathToTarget = [candidate];
+      let current = candidate;
+      let child = childByOwner.get(current);
+      while (child !== undefined && !pathToTarget.includes(child)) {
+        pathToTarget.push(child);
+        current = child;
+        child = childByOwner.get(current);
+      }
+      return Object.freeze({ candidate, pathToTarget: Object.freeze(pathToTarget) });
+    })
+    .filter((candidate) => candidate.pathToTarget.at(-1) === documentPath)
+    .sort((left, right) => {
+      const provenanceDifference =
+        Number(pageProvenancePaths.has(right.candidate)) -
+        Number(pageProvenancePaths.has(left.candidate));
+      if (provenanceDifference !== 0) return provenanceDifference;
+      const depthDifference = right.pathToTarget.length - left.pathToTarget.length;
+      return depthDifference !== 0
+        ? depthDifference
+        : scoreProvisionalRoot(right.candidate) - scoreProvisionalRoot(left.candidate) ||
+            left.candidate.localeCompare(right.candidate);
+    });
+  for (const { pathToTarget } of candidates) {
+    return pathToTarget;
   }
   return Object.freeze([documentPath]);
 }

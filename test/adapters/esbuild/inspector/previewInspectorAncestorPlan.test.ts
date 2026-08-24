@@ -286,9 +286,8 @@ describe('createPreviewInspectorAncestorPlan', () => {
       },
       root: { exportName: 'default', sourcePath: pagePath },
     });
-    expect(plan.dependencyPaths).toEqual(
-      [pagePath, profileLayoutPath, rootLayoutPath, unrelatedRegistryPath].sort(),
-    );
+    expect(plan.dependencyPaths).toEqual([pagePath, profileLayoutPath, rootLayoutPath].sort());
+    expect(plan.dependencyPaths).not.toContain(unrelatedRegistryPath);
   });
 
   /** Crosses the implicit layout children slot so layout-only helpers still mount in a real page. */

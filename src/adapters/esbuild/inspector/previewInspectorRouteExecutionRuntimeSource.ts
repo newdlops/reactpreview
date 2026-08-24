@@ -120,10 +120,19 @@ function createV5Runtime(options: CreatePreviewInspectorRouteExecutionRuntimeSou
     options.recipe.pathname,
     options.recipe.searchParams,
   );
+  // React Router v5 route-owner components contain their own nested Switch/Route registry instead
+  // of consuming a v6 Outlet. Mount the outermost compiler-proven owner and let that authored
+  // registry expand the selected pathname. Rendering the terminal leaf here discards application
+  // chrome such as HospitalRun, Appointments, and EditAppointment.
+  const routeOwnerLocal = options.routeSurfaceLocals[0];
+  const selectedBranch =
+    routeOwnerLocal === undefined
+      ? `() => ${options.renderedPage}`
+      : `(routeProps) => React.createElement(${routeOwnerLocal}, routeProps)`;
   return Object.freeze({
     imports: Object.freeze([
       `import { MemoryRouter, Route } from '${options.recipe.routerModuleSpecifier ?? 'react-router-dom'}';`,
     ]),
-    routeElement: `React.createElement(MemoryRouter, { initialEntries: [${JSON.stringify(routeHref)}] }, React.createElement(Route, { path: ${JSON.stringify(pattern)}, render: () => ${options.renderedPage} }))`,
+    routeElement: `React.createElement(MemoryRouter, { initialEntries: [${JSON.stringify(routeHref)}] }, React.createElement(Route, { path: ${JSON.stringify(pattern)}, render: ${selectedBranch} }))`,
   });
 }

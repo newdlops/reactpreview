@@ -586,6 +586,30 @@ export function createPreviewInspectorRootSource(
   const primaryRootIsTarget =
     path.normalize(runtimeOwnershipTarget.sourcePath) === path.normalize(plan.root.sourcePath) &&
     runtimeOwnershipTarget.exportName === plan.root.exportName;
+  const pageExecutionCandidateSummaries = options.pageExecutionCandidates?.map((candidate) => {
+    const executionRoot = candidate.criticalSurfaces.find(
+      (surface) => surface.id === candidate.executionRootSurfaceId,
+    );
+    return {
+      authoredOwnerDepth: candidate.browserCandidate.renderPath?.steps.length ?? 0,
+      executionRootExportName: executionRoot?.exportName,
+      executionRootSourcePath: executionRoot?.sourcePath,
+      executionRootSurfaceId: candidate.executionRootSurfaceId,
+      fidelity: candidate.fidelity,
+      id: candidate.id,
+      nestedMountCount: candidate.routeRecipe?.mounts.length ?? 0,
+      ownsGeneratedRouter:
+        candidate.routeRecipe !== undefined &&
+        !candidate.routeRecipe.rootOwnsRouter &&
+        (candidate.routeRecipe.kind === 'react-router-v5' ||
+          candidate.routeRecipe.kind === 'react-router-v6'),
+      pageRootExportName: candidate.browserCandidate.root.exportName,
+      pageRootSourcePath: candidate.browserCandidate.root.sourcePath,
+      runtimeTargetSurfaceId: candidate.runtimeTargetSurfaceId,
+      standaloneTarget: candidate.standaloneTarget,
+      targetRole: candidate.routeRecipe?.targetRole ?? 'element',
+    };
+  });
   const descriptor = {
     automaticProps: {},
     displayName: options.displayName ?? runtimeOwnershipTarget.exportName,
@@ -606,8 +630,9 @@ export function createPreviewInspectorRootSource(
         : { executablePageCandidateId: executableCandidate.active.browserCandidate.id }),
       // prettier-ignore
       ...(options.pageExecutionCandidate === undefined ? {} : { pageExecutionCandidateId: options.pageExecutionCandidate.id }),
-      // prettier-ignore
-      ...(options.pageExecutionCandidates === undefined ? {} : { pageExecutionCandidates: options.pageExecutionCandidates.map((candidate) => ({ executionRootSurfaceId: candidate.executionRootSurfaceId, fidelity: candidate.fidelity, id: candidate.id, nestedMountCount: candidate.routeRecipe?.mounts.length ?? 0, ownsGeneratedRouter: candidate.routeRecipe !== undefined && !candidate.routeRecipe.rootOwnsRouter && (candidate.routeRecipe.kind === 'react-router-v5' || candidate.routeRecipe.kind === 'react-router-v6'), runtimeTargetSurfaceId: candidate.runtimeTargetSurfaceId, standaloneTarget: candidate.standaloneTarget, targetRole: candidate.routeRecipe?.targetRole ?? 'element' })) }),
+      ...(pageExecutionCandidateSummaries === undefined
+        ? {}
+        : { pageExecutionCandidates: pageExecutionCandidateSummaries }),
       ...(executableCandidate?.requestedCandidateWasUnavailable === true
         ? { requestedPageCandidateUnavailable: true }
         : {}),

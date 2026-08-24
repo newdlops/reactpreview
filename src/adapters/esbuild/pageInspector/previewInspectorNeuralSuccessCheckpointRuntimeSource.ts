@@ -1,5 +1,8 @@
+import { createPreviewInspectorNeuralSuccessSnapshotRuntimeSource } from './previewInspectorNeuralSuccessSnapshotRuntimeSource';
+
 /** Generates bounded success-path checkpoints for exhaustive neural exploration. */
 export function createPreviewInspectorNeuralSuccessCheckpointRuntimeSource(): string {
+  const successSnapshotRuntimeSource = createPreviewInspectorNeuralSuccessSnapshotRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_NEURAL_SUCCESS_PATH_LIMIT = 64;
 const PREVIEW_INSPECTOR_NEURAL_RETAINED_BLOCKER_LIMIT = 24;
@@ -10,150 +13,7 @@ const PREVIEW_INSPECTOR_NEURAL_RESTORATION_VERIFY_DELAY_MS = 320;
 const PREVIEW_INSPECTOR_NEURAL_RESTORATION_SUCCESS_OBSERVATIONS = 3;
 const PREVIEW_INSPECTOR_NEURAL_RESTORATION_FAILURE_OBSERVATIONS = 2;
 const PREVIEW_INSPECTOR_NEURAL_SUCCESS_VALUE_LIMIT = 64;
-/** Copies only the renderer-safe value already admitted by preview prop normalization. */
-function copyPreviewInspectorNeuralSuccessValue(value) {
-  const copied = typeof copyPreviewInspectorBlockerValueForJson === 'function'
-    ? copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 })
-    : value;
-  if (copied === undefined) return undefined;
-  if (typeof normalizePreviewInspectorProps === 'function') {
-    try { return normalizePreviewInspectorProps(copied); } catch { return copied; }
-  }
-  try {
-    return typeof globalThis.structuredClone === 'function'
-      ? globalThis.structuredClone(copied)
-      : copied;
-  } catch { return copied; }
-}
-/** Serializes only checkpoint-safe values and rejects a snapshot that cannot be reproduced. */
-function stringifyPreviewInspectorNeuralSuccessValue(value) {
-  try { return JSON.stringify(value); } catch { return undefined; }
-}
-/** Copies a bounded keyed viewer-state map for exact success restoration. */
-function copyPreviewInspectorNeuralSuccessEntries(map) {
-  if (!(map instanceof Map)) return Object.freeze([]);
-  return Object.freeze([...map]
-    .filter(([id]) => typeof id === 'string' && id.length > 0)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .slice(0, PREVIEW_INSPECTOR_NEURAL_SUCCESS_VALUE_LIMIT)
-    .flatMap(([id, value]) => {
-      const copied = copyPreviewInspectorNeuralSuccessValue(value);
-      return copied === undefined ? [] : [Object.freeze([id, copied])];
-    }));
-}
-/** Reads bounded blocker ids even when their current strategy intentionally has no override. */
-function readPreviewInspectorNeuralSuccessIds(map) {
-  return Object.freeze((map instanceof Map ? [...map.keys()] : [])
-    .filter((id) => typeof id === 'string' && id.length > 0)
-    .sort((left, right) => left.localeCompare(right))
-    .slice(0, PREVIEW_INSPECTOR_NEURAL_SUCCESS_VALUE_LIMIT));
-}
-/** Captures the small mutable viewer state that can reproduce one verified target output. */
-function createPreviewInspectorNeuralSuccessSnapshot(state) {
-  const exportName = typeof state?.targetExportName === 'string'
-    ? state.targetExportName
-    : previewInspectorSession.selectedExportName;
-  if (typeof exportName !== 'string' || exportName.length === 0) return undefined;
-  if (typeof initializePreviewInspectorDataState === 'function') {
-    initializePreviewInspectorDataState();
-  }
-  if (typeof initializePreviewInspectorRuntimeFallbackState === 'function') {
-    initializePreviewInspectorRuntimeFallbackState();
-  }
-  const conditionEntries = previewInspectorSession.renderConditionAutoOverrides instanceof Map
-    ? [...previewInspectorSession.renderConditionAutoOverrides]
-        .filter(([id, value]) => typeof id === 'string' && typeof value === 'boolean')
-        .sort(([left], [right]) => left.localeCompare(right))
-    : [];
-  const resolverMap = previewInspectorSession.resolverPropsByExport;
-  const hasResolverProps = resolverMap instanceof Map && resolverMap.has(exportName);
-  const resolverProps = hasResolverProps
-    ? copyPreviewInspectorNeuralSuccessValue(resolverMap.get(exportName))
-    : undefined;
-  const resolverFingerprint = hasResolverProps &&
-    typeof fingerprintPreviewInspectorSmartPropValue === 'function'
-      ? fingerprintPreviewInspectorSmartPropValue(resolverProps)
-      : resolverProps;
-  const pageCandidateId = typeof previewInspectorSession.selectedPageCandidateId === 'string'
-    ? previewInspectorSession.selectedPageCandidateId
-    : '';
-  const dataAutoEnabled = previewInspectorSession.dataAutoEnabled !== false;
-  const dataRequestIds = readPreviewInspectorNeuralSuccessIds(
-    previewInspectorSession.dataRequests,
-  );
-  const dataPayloadEntries = copyPreviewInspectorNeuralSuccessEntries(
-    previewInspectorSession.dataPayloadOverrides,
-  );
-  const runtimeFallbackIds = readPreviewInspectorNeuralSuccessIds(
-    previewInspectorSession.runtimeFallbacks,
-  );
-  const runtimeFallbackValueEntries = Object.freeze(
-    copyPreviewInspectorNeuralSuccessEntries(
-      previewInspectorSession.runtimeFallbackValues,
-    ).filter(([id]) => runtimeFallbackIds.includes(id)),
-  );
-  const runtimeFallbackSmartIds = Object.freeze((
-    previewInspectorSession.runtimeFallbackSmartIds instanceof Set
-      ? [...previewInspectorSession.runtimeFallbackSmartIds]
-      : []
-  ).filter((id) => runtimeFallbackIds.includes(id)).sort());
-  const runtimeFallbackSmartPathEntries = Object.freeze(
-    copyPreviewInspectorNeuralSuccessEntries(
-      previewInspectorSession.runtimeFallbackSmartPathSignatures,
-    ).filter(([id]) => runtimeFallbackIds.includes(id)),
-  );
-  const fallbackValuesEnabled = previewInspectorSession.fallbackValuesEnabled !== false;
-  const temporalState = typeof createPreviewInspectorNeuralTemporalStateSnapshot === 'function'
-    ? createPreviewInspectorNeuralTemporalStateSnapshot(state)
-    : undefined;
-  const fingerprint = stringifyPreviewInspectorNeuralSuccessValue({
-    conditionEntries,
-    dataAutoEnabled,
-    dataPayloadEntries,
-    dataRequestIds,
-    exportName,
-    fallbackValuesEnabled,
-    pageCandidateId,
-    resolverProps: hasResolverProps ? resolverFingerprint : '[absent]',
-    runtimeFallbackIds,
-    runtimeFallbackSmartIds,
-    runtimeFallbackSmartPathEntries,
-    runtimeFallbackValueEntries,
-    temporalStateFingerprint: temporalState?.fingerprint,
-  });
-  if (typeof fingerprint !== 'string') return undefined;
-  const resolverSize = stringifyPreviewInspectorNeuralSuccessValue(resolverFingerprint ?? '')
-    ?.length ?? 10_000;
-  const viewerValueSize = stringifyPreviewInspectorNeuralSuccessValue({
-    dataPayloadEntries,
-    runtimeFallbackValueEntries,
-  })?.length ?? 10_000;
-  const score = (state?.targetDirectElementOutput === true ? 1_000_000 : 0) +
-    (state?.targetOutputKind === 'target-output' ? 100_000 : 0) - conditionEntries.length * 10 -
-    Math.min(10_000, resolverSize) - Math.min(10_000, viewerValueSize);
-  return Object.freeze({
-    choicePathId: typeof previewInspectorSession.neuralActiveChoicePathId === 'string'
-      ? previewInspectorSession.neuralActiveChoicePathId
-      : undefined,
-    conditionEntries: Object.freeze(conditionEntries),
-    dataAutoEnabled,
-    dataPayloadEntries,
-    dataRequestIds,
-    exportName,
-    fallbackValuesEnabled,
-    fingerprint,
-    hasResolverProps,
-    observedAt: Date.now(),
-    pageCandidateId,
-    resolverProps,
-    runtimeFallbackIds,
-    runtimeFallbackSmartIds,
-    runtimeFallbackSmartPathEntries,
-    runtimeFallbackValueEntries,
-    score,
-    temporalState,
-  });
-}
+${successSnapshotRuntimeSource}
 /** Returns the unique verified-path count retained by one bounded exploration record. */
 function readPreviewInspectorNeuralSuccessfulPathCount(record) {
   return Array.isArray(record?.successfulPaths) ? record.successfulPaths.length : 0;
@@ -221,6 +81,8 @@ function upgradePreviewInspectorNeuralSuccessCollectionRecord(record) {
 function isPreviewInspectorNeuralSuccessCollectionSettled(state) {
   if (
     state?.targetHasOutput !== true ||
+    (typeof hasPreviewInspectorCompletePageExecutionContext === 'function' &&
+      !hasPreviewInspectorCompletePageExecutionContext(state)) ||
     typeof createPreviewInspectorAutomaticNeuralAssistanceKey !== 'function'
   ) return false;
   const key = createPreviewInspectorAutomaticNeuralAssistanceKey(state);
@@ -436,6 +298,8 @@ function isPreviewInspectorNeuralSuccessSnapshotVisible(state, snapshot) {
   if (
     state?.pageRootCommitted !== true || state?.targetWasMounted !== true ||
     state?.targetHasOutput !== true || snapshot === undefined ||
+    (typeof hasPreviewInspectorCompletePageExecutionContext === 'function' &&
+      !hasPreviewInspectorCompletePageExecutionContext(state)) ||
     hasPreviewInspectorNeuralFatalSuccessBlocker()
   ) return false;
   const visible = typeof hasPreviewInspectorTargetHostOutput === 'function'
@@ -515,6 +379,9 @@ function promotePreviewInspectorNeuralProvisionalSuccess(key, record, state, sna
   record.scheduled = false;
   state.neuralStableOutputRegressed = false;
   state.neuralStableOutputVerified = true;
+  if (typeof settlePreviewInspectorNeuralPageExecutionContextOutcome === 'function') {
+    settlePreviewInspectorNeuralPageExecutionContextOutcome(state, true);
+  }
   if (typeof settlePreviewInspectorNeuralChoicePathOutcome === 'function') {
     settlePreviewInspectorNeuralChoicePathOutcome(true);
   }
@@ -672,6 +539,10 @@ function recordPreviewInspectorNeuralSuccessfulPath(state) {
   const snapshot = createPreviewInspectorNeuralSuccessSnapshot(state);
   if (record === undefined || snapshot === undefined) return false;
   upgradePreviewInspectorNeuralSuccessCollectionRecord(record);
+  if (
+    typeof retainPreviewInspectorIncompletePageExecutionSuccess === 'function' &&
+    retainPreviewInspectorIncompletePageExecutionSuccess(state, snapshot, record)
+  ) return true;
   if (typeof activatePreviewInspectorNeuralTemporalStateContract === 'function') {
     activatePreviewInspectorNeuralTemporalStateContract(snapshot.temporalState);
   }
@@ -755,9 +626,11 @@ function restorePreviewInspectorNeuralSuccessViewerValues(best) {
     }
     for (const [fallbackId, value] of best.runtimeFallbackValueEntries ?? []) {
       if (!isManual(fallbackId)) {
+        const restoredValue = restorePreviewInspectorNeuralSuccessRuntimeFallbackValue(value);
+        if (restoredValue === undefined) continue;
         previewInspectorSession.runtimeFallbackValues.set(
           fallbackId,
-          copyPreviewInspectorNeuralSuccessValue(value),
+          restoredValue,
         );
       }
     }

@@ -806,12 +806,19 @@ function readPreviewInspectorPendingAuthoredStateGate(descriptor, candidate, sta
   return [...previewInspectorSession.renderConditions.values()]
     .filter((condition) => {
       if (
-        condition?.requiresAuthoredState !== true ||
+        condition === undefined ||
         condition.reachabilityKey !== state.key ||
+        previewInspectorSession.renderConditionOverrides.has(condition.id) ||
         !isPreviewInspectorConditionOnTargetPath(condition, evidence)
       ) return false;
       const desiredValue = readPreviewInspectorTargetConditionValue(condition, evidence);
-      return typeof desiredValue === 'boolean' && condition.effectiveEnabled !== desiredValue;
+      if (typeof desiredValue !== 'boolean' || condition.effectiveEnabled === desiredValue) {
+        return false;
+      }
+      const canGuide = typeof canPreviewInspectorTargetGuideCondition !== 'function'
+        ? condition.requiresAuthoredState !== true
+        : canPreviewInspectorTargetGuideCondition(condition, desiredValue);
+      return condition.requiresAuthoredState === true || canGuide !== true;
     })
     .sort((left, right) =>
       (left.reachabilityDiscoveryOrder ?? Number.MAX_SAFE_INTEGER) -
@@ -1011,7 +1018,9 @@ function hasReachedPreviewInspectorPageCorridor(state) {
   return state.directTarget !== true &&
     state.pageRootCommitted === true &&
     state.targetMounted === true &&
-    state.targetHasOutput === true;
+    state.targetHasOutput === true &&
+    (typeof hasPreviewInspectorCompletePageExecutionContext !== 'function' ||
+      hasPreviewInspectorCompletePageExecutionContext(state));
 }
 /**
  * Finds only compiler-shaped values whose continuation has one generated answer. Root-only custom
@@ -1268,15 +1277,29 @@ function startPreviewInspectorDeterministicRequirementSearch(descriptor, candida
 function reportPreviewInspectorPageCorridorBlocked(state) {
   if (state.blockedWarningReported === true) return;
   state.blockedWarningReported = true;
-  const message = 'Page context rendered, but did not reach ' + state.targetExportName + '.';
+  const missingPageContext = state.pageExecutionContextObservation?.contextComplete === false;
+  const message = missingPageContext
+    ? 'Component output rendered, but its full page context could not be restored.'
+    : 'Page context rendered, but did not reach ' + state.targetExportName + '.';
   const details = [
     message,
     'Page root: ' + state.rootName,
     'Path: ' + state.applicationPath.join(' > '),
+    ...(missingPageContext
+      ? [state.pageExecutionContextObservation.pageCandidateComplete === false
+          ? 'The selected caller path is only a partial checkpoint (' +
+            String(state.pageExecutionContextObservation.pageCandidateStopReason ?? 'unknown') + ').'
+          : 'Missing live page owners: ' +
+            (state.pageExecutionContextObservation.missingOwnerNames?.join(' > ') || 'unknown')]
+      : []),
     state.appliedConditions.length > 0
       ? 'Auto-passed gates: ' + state.appliedConditions.map((gate) => gate.expression).join(', ')
       : 'No additional statically proven gate was available.',
-    'The page remains mounted. Resolve its next blocker or choose target-only diagnostic mode explicitly.',
+    missingPageContext
+      ? state.pageExecutionContextObservation.pageCandidateComplete === false
+        ? 'The component repair recipe was retained and the next complete page candidate will receive it.'
+        : 'The component repair recipe was retained, but every compiler-proven full-page execution path was exhausted.'
+      : 'The page remains mounted. Resolve its next blocker or choose target-only diagnostic mode explicitly.',
   ].join('\n');
   recordPreviewInspectorConsoleEntry({
     details,
@@ -1391,6 +1414,30 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     recordPreviewInspectorNeuralSuccessfulPath(state);
   } else if (typeof handlePreviewInspectorNeuralSuccessfulPathRestorationFailure === 'function') {
     handlePreviewInspectorNeuralSuccessfulPathRestorationFailure(state);
+  }
+  if (
+    typeof isPreviewInspectorNeuralPageExecutionContextTransitionPending === 'function' &&
+    isPreviewInspectorNeuralPageExecutionContextTransitionPending(state)
+  ) {
+    if (state.status !== 'recovering-page-context') {
+      state.status = 'recovering-page-context';
+      notifyPreviewInspector();
+      schedulePreviewInspectorTreeRefresh();
+    }
+    return;
+  }
+  if (
+    typeof isPreviewInspectorNeuralPageExecutionContextRecoveryExhausted === 'function' &&
+    isPreviewInspectorNeuralPageExecutionContextRecoveryExhausted(state)
+  ) {
+    if (state.exhausted !== true || state.status !== 'page-blocked') {
+      state.exhausted = true;
+      state.status = 'page-blocked';
+      reportPreviewInspectorPageCorridorBlocked(state);
+      notifyPreviewInspector();
+      schedulePreviewInspectorTreeRefresh();
+    }
+    return;
   }
   if (
     state.targetMounted !== true &&
@@ -1525,6 +1572,20 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     state.awaitingAuthoredStateConditionId = authoredStateGate.id;
     state.exhausted = false;
     state.idlePasses = 0;
+    const activatedStateTrigger =
+      typeof autoInvokePreviewInspectorAuthoredStateTrigger === 'function'
+        ? autoInvokePreviewInspectorAuthoredStateTrigger(state, authoredStateGate)
+        : undefined;
+    if (activatedStateTrigger !== undefined) {
+      state.status = 'activating-authored-state';
+      state.probeRevision = Number.isSafeInteger(state.probeRevision)
+        ? state.probeRevision + 1
+        : 1;
+      notifyPreviewInspector();
+      schedulePreviewInspectorTreeRefresh();
+      schedulePreviewInspectorCommitRefresh();
+      return;
+    }
     state.status = 'awaiting-authored-state';
     schedulePreviewInspectorTreeRefresh();
     return;

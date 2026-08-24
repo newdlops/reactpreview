@@ -1086,6 +1086,7 @@ export function createPreviewHeadlessBridgeSource(
     };
   };
   const pendingCompositionStatuses = new Set([
+    'activating-authored-state',
     'advancing',
     'blocked',
     'filling-requirements',

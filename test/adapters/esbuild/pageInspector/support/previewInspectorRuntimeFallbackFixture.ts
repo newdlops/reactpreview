@@ -68,6 +68,7 @@ export interface TestRuntimeFallbackApi {
   ): unknown;
   set(fallbackId: string, value: unknown): void;
   setActiveNeuralAttempt(active: boolean): void;
+  setNestedNeuralRecommendation(fallbackId: string, value: unknown): void;
   setRevision(revision: number): void;
   setRouterOwned(owned: boolean): void;
   setSelectedExport(exportName: string): void;
@@ -240,6 +241,13 @@ export function createRuntimeFallbackFixture(
       ' set: setPreviewInspectorRuntimeFallbackOverride,' +
       ' setActiveNeuralAttempt: (active) => {' +
       "previewInspectorSession.blockerTraceActiveAttempt = active ? { targetReachabilityKey: 'page:Target' } : undefined;" +
+      '},' +
+      ' setNestedNeuralRecommendation: (fallbackId, value) => {' +
+      'const record = previewInspectorSession.runtimeFallbacks.get(fallbackId);' +
+      'if (record !== undefined) previewInspectorSession.runtimeFallbacks.set(fallbackId, {' +
+      '...record, residualHoleKind: "nested-generated-shape-mismatch",' +
+      'neuralRecommendation: { strategy: "shape-only", value }' +
+      '});' +
       '},' +
       ' setRevision: (revision) => { previewEntryRevision = revision; },' +
       ' setRouterOwned: (owned) => {' +

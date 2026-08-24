@@ -86,8 +86,7 @@ export function createPreviewInspectorPageExecutionCandidates(
   const retainsRenderedTargetWithinRouteLeaf =
     isRouteLeafDetachedFromTarget &&
     hasProvenNestedRouteTarget(unmountedBrowserCandidate, options.plan.target);
-  const detachedRouteLeaf =
-    isRouteLeafDetachedFromTarget && !retainsRenderedTargetWithinRouteLeaf;
+  const detachedRouteLeaf = isRouteLeafDetachedFromTarget && !retainsRenderedTargetWithinRouteLeaf;
   const detachedCatalogOwnerRetained = hasRetainedDetachedCatalogOwner(unmountedBrowserCandidate);
   const routeSurfaces =
     detachedRouteLeaf && !detachedCatalogOwnerRetained
@@ -782,10 +781,7 @@ function collectPreviewInspectorTargetPageTabKeys(
       true,
       ts.ScriptKind.TSX,
     );
-    let current = findDeepestPreviewInspectorNodeAtPosition(
-      sourceFile,
-      step.occurrenceStart,
-    );
+    let current = findDeepestPreviewInspectorNodeAtPosition(sourceFile, step.occurrenceStart);
     while (!ts.isSourceFile(current)) {
       if (ts.isJsxElement(current)) {
         const tagName = current.openingElement.tagName.getText(sourceFile).split('.').at(-1) ?? '';
@@ -1213,12 +1209,9 @@ function hasProvenNestedRouteTarget(
   if (steps === undefined) return false;
   const targetPath = path.normalize(target.sourcePath);
   const routeRootPath = path.normalize(candidate.root.sourcePath);
-  const targetStepIndex = steps.findIndex(
-    (step) => path.normalize(step.sourcePath) === targetPath,
-  );
+  const targetStepIndex = steps.findIndex((step) => path.normalize(step.sourcePath) === targetPath);
   const routeRootStepIndex = steps.findIndex(
-    (step, index) =>
-      index > targetStepIndex && path.normalize(step.sourcePath) === routeRootPath,
+    (step, index) => index > targetStepIndex && path.normalize(step.sourcePath) === routeRootPath,
   );
   return targetStepIndex >= 0 && routeRootStepIndex > targetStepIndex;
 }
@@ -1694,7 +1687,12 @@ function derivePageExecutionRoles(options: {
   }
   const childIds = new Set(
     options.compositionEdges
-      .filter((edge) => edge.mode !== 'contains-authored-child')
+      .filter(
+        (edge) =>
+          edge.mode !== 'contains-authored-child' &&
+          surfacesById.has(edge.parentSurfaceId) &&
+          surfacesById.has(edge.childSurfaceId),
+      )
       .map((edge) => edge.childSurfaceId),
   );
   const executionRootSurface =

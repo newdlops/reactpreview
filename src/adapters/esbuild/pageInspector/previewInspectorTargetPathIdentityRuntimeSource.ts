@@ -28,15 +28,16 @@ function isPreviewInspectorSharedOwnerName(value) {
 function readPreviewInspectorTargetOwnerSourceKeys(names) {
   const sourceKeysByName = new Map();
   for (const condition of previewInspectorSession.renderConditions?.values?.() ?? []) {
-    const ownerName = typeof condition?.ownerName === 'string' ? condition.ownerName : '';
-    if (!names.has(ownerName) || ownerName.length === 0) continue;
-    let sourceKeys = sourceKeysByName.get(ownerName);
-    if (!(sourceKeys instanceof Set)) {
-      sourceKeys = new Set();
-      sourceKeysByName.set(ownerName, sourceKeys);
+    for (const ownerName of new Set([condition?.ownerName, condition?.runtimeOwnerName])) {
+      if (typeof ownerName !== 'string' || !names.has(ownerName) || ownerName.length === 0) continue;
+      let sourceKeys = sourceKeysByName.get(ownerName);
+      if (!(sourceKeys instanceof Set)) {
+        sourceKeys = new Set();
+        sourceKeysByName.set(ownerName, sourceKeys);
+      }
+      const sourcePath = normalizePreviewInspectorReachabilityPath(condition?.sourcePath);
+      sourceKeys.add(sourcePath.length > 0 ? sourcePath : 'condition:' + String(condition?.id ?? ''));
     }
-    const sourcePath = normalizePreviewInspectorReachabilityPath(condition?.sourcePath);
-    sourceKeys.add(sourcePath.length > 0 ? sourcePath : 'condition:' + String(condition?.id ?? ''));
   }
   return sourceKeysByName;
 }

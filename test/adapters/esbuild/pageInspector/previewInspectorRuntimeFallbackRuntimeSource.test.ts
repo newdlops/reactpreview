@@ -918,6 +918,66 @@ describe('Preview Inspector runtime fallback source', () => {
     });
   });
 
+  /** Keeps a compiler-proven collection real and non-empty across nested neural retries. */
+  it('preserves a collection whose length guards the rendered branch during Smart fill', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['status', 'data.length', 'refetch()'],
+    };
+    const fallback = {
+      data: [{ id: 'preview-id', name: 'name' }],
+      refetch: () => undefined,
+      status: 'PREVIEW',
+    };
+
+    fixture.api.resolve(
+      () => undefined,
+      () => fallback,
+      metadata,
+    );
+    fixture.api.smart('hook-1');
+    const smart = fixture.api.resolve(
+      () => undefined,
+      () => ({ ignoredAfterStableFallbackCreation: true }),
+      metadata,
+    ) as { data: unknown[]; refetch: () => unknown; status: string };
+
+    expect(Array.isArray(smart.data)).toBe(true);
+    expect(smart.data).toHaveLength(1);
+    expect(smart.status).toBe('PREVIEW');
+    expect(typeof smart.refetch).toBe('function');
+  });
+
+  /** Lets target-path time evidence override a residual that learned only the completed shape. */
+  it('composes a nested neural shape with the compiler-proven pending state', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['data.title', 'status'],
+      smartPathValues: [{ path: 'status', value: 'pending' }],
+    };
+
+    fixture.api.resolve(
+      () => undefined,
+      () => ({ data: { title: 'title' }, status: 'PREVIEW' }),
+      metadata,
+    );
+    fixture.api.setNestedNeuralRecommendation('hook-1', {
+      data: { title: 'title' },
+      status: 'PREVIEW',
+    });
+    fixture.api.smart('hook-1');
+    const smart = fixture.api.resolve(
+      () => undefined,
+      () => ({ ignoredAfterStableFallbackCreation: true }),
+      metadata,
+    ) as { data: { title: string }; status: string };
+
+    expect(smart.status).toBe('pending');
+    expect(smart.data.title).toBe('title');
+  });
+
   /** A compiler-serialized initializer must not lose known fields during automatic retries. */
   it('preserves an authored static state tuple during Smart convergence', () => {
     const fixture = createRuntimeFallbackFixture(true);
@@ -1090,13 +1150,16 @@ describe('Preview Inspector runtime fallback source', () => {
       smartPathValues: [{ path: 'state.status', value: 'open' }],
     };
     const hookIdentity = (): undefined => undefined;
-    const readPanel = (): unknown => fixture.api.resolve(
-      () => undefined,
-      () => 'ctx',
-      innerMetadata,
-    );
+    const readPanel = (): unknown =>
+      fixture.api.resolve(
+        () => undefined,
+        () => 'ctx',
+        innerMetadata,
+      );
     let notifications = 0;
-    fixture.api.subscribeNeural(() => { notifications += 1; });
+    fixture.api.subscribeNeural(() => {
+      notifications += 1;
+    });
     fixture.api.resolve(
       readPanel,
       () => ({ state: { status: 'PREVIEW' } }),

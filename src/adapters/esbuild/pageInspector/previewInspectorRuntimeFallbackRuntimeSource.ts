@@ -2834,9 +2834,22 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
       record.neuralRecommendation.value,
       { nodes: 0 },
     );
-    const recommendedValue = materializePreviewInspectorRuntimeFallbackOverride(
+    const materializedRecommendation = materializePreviewInspectorRuntimeFallbackOverride(
       recommendedDraft,
     );
+    /*
+     * The residual repairs an invalid nested hook shape, while exact Smart path values select the
+     * authored target branch. Compose those two independent decisions instead of letting a learned
+     * shape-only recommendation erase a compiler-proven temporal state such as status=pending.
+     */
+    const recommendedValue = Array.isArray(record.smartPathValues) &&
+      record.smartPathValues.length > 0
+      ? createPreviewInspectorRuntimeFallbackSmartValue(
+          materializedRecommendation,
+          record.requiredPaths,
+          record.smartPathValues,
+        )
+      : materializedRecommendation;
     markPreviewInspectorGeneratedValue(recommendedValue);
     previewInspectorSession.runtimeFallbackValues.set(fallbackId, recommendedValue);
     previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
@@ -2848,7 +2861,7 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
     const sharedRecommendationStored = storePreviewInspectorRuntimeSharedNeuralRecommendation(
       record,
       previewInspectorSession.runtimeFallbackAuthoredValues.get(fallbackId),
-      record.neuralRecommendation,
+      { ...record.neuralRecommendation, value: recommendedValue },
       'smart-selection',
     );
     if (sharedRecommendationStored) schedulePreviewInspectorRuntimeNeuralRecommendationRetry();

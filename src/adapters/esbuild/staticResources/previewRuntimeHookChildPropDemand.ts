@@ -35,7 +35,10 @@ import {
   mergePreviewRuntimeHookCollectionItemExpressions,
 } from './previewRuntimeHookUsageTree';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
-import { isPreviewRuntimeHookJsxCollectionCarrier } from './previewRuntimeHookJsxCollectionCarrier';
+import {
+  isPreviewRuntimeHookJsxCollectionCarrier,
+  isPreviewRuntimeHookJsxCollectionExpressionCarrier,
+} from './previewRuntimeHookJsxCollectionCarrier';
 
 const MAX_COMPONENT_IMPORTS = 32;
 const MAX_PROP_DEMANDS = 32;
@@ -610,9 +613,16 @@ export function readPreviewRuntimeHookDirectChildPropUsages(
  */
 export function inferPreviewRuntimeHookJsxCollectionItemFallback(
   identifier: ts.Identifier,
+  exactCollectionExpression?: ts.Expression,
 ): PreviewRuntimeHookLocalTypeFallback | undefined {
   const owner = findNearestPreviewRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
+  if (
+    exactCollectionExpression !== undefined &&
+    !isPreviewRuntimeHookNestedJsxCollectionValue(exactCollectionExpression)
+  ) {
+    return undefined;
+  }
   let itemShape: PreviewInferredPropShape | undefined;
 
   const mergeItemShape = (shape: PreviewInferredPropShape | undefined): void => {
@@ -646,12 +656,13 @@ export function inferPreviewRuntimeHookJsxCollectionItemFallback(
   };
   const appendCallback = (callback: ts.ArrowFunction | ts.FunctionExpression): void => {
     const inferred = inferReactFunctionParameterUsageShape(callback, 0);
-    const wrappers = inferred?.kind === 'object'
-      ? Object.entries(inferred.properties ?? {}).filter(
-          ([name, child]) =>
-            JSX_COLLECTION_ITEM_WRAPPER_NAMES.has(name.toLowerCase()) && child.kind === 'object',
-        )
-      : [];
+    const wrappers =
+      inferred?.kind === 'object'
+        ? Object.entries(inferred.properties ?? {}).filter(
+            ([name, child]) =>
+              JSX_COLLECTION_ITEM_WRAPPER_NAMES.has(name.toLowerCase()) && child.kind === 'object',
+          )
+        : [];
     mergeItemShape(wrappers.length === 1 ? wrappers[0]?.[1] : inferred);
   };
   const collectConfig = (
@@ -709,7 +720,9 @@ export function inferPreviewRuntimeHookJsxCollectionItemFallback(
         return (
           propName !== undefined &&
           JSX_COLLECTION_PROP_NAMES.has(propName) &&
-          isPreviewRuntimeHookJsxCollectionCarrier(value, identifier.text)
+          (exactCollectionExpression === undefined
+            ? isPreviewRuntimeHookJsxCollectionCarrier(value, identifier.text)
+            : isPreviewRuntimeHookJsxCollectionExpressionCarrier(value, exactCollectionExpression))
         );
       });
       if (collectionAttribute !== undefined) {
@@ -751,6 +764,24 @@ export function inferPreviewRuntimeHookJsxCollectionItemFallback(
     label: 'generated row from JSX collection configuration',
     requiredPaths: Object.freeze(collectPreviewRuntimeHookChildShapePaths(itemShape)),
   });
+}
+
+/** Quickly rejects property reads that cannot be the value of a familiar JSX collection prop. */
+function isPreviewRuntimeHookNestedJsxCollectionValue(expression: ts.Expression): boolean {
+  let current: ts.Node = expression;
+  for (let depth = 0; depth <= 8; depth += 1) {
+    const parent = current.parent;
+    if (ts.isJsxExpression(parent) && parent.expression === current) {
+      const attribute = parent.parent;
+      if (!ts.isJsxAttribute(attribute)) return false;
+      const propName = readPreviewRuntimeHookJsxAttributeName(attribute)?.toLowerCase();
+      return propName !== undefined && JSX_COLLECTION_PROP_NAMES.has(propName);
+    }
+    if (isPreviewRuntimeFunction(parent)) return false;
+    if (!ts.isExpression(parent)) return false;
+    current = parent;
+  }
+  return false;
 }
 
 /** Reads one ordinary JSX attribute name without admitting namespace syntax. */

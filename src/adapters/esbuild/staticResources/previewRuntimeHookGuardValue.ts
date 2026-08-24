@@ -7,6 +7,7 @@
  * not guess from project names, route conventions, or runtime package behavior.
  */
 import ts from 'typescript';
+import { createPreviewComparisonFalseExpression } from './previewRuntimeHookComparison';
 import {
   findNearestPreviewRuntimeFunction,
   isPreviewRuntimeFunction,
@@ -15,6 +16,7 @@ import {
   type PreviewRuntimeFunction,
 } from './previewRuntimeHookSyntax';
 import {
+  createPreviewRuntimeSemanticString,
   inferPreviewRuntimeSemanticFallback,
   type PreviewRuntimeSemanticFallback,
 } from './previewRuntimeHookSemantics';
@@ -30,8 +32,9 @@ export function inferPreviewRuntimeHookGuardPassFallback(
 ): PreviewRuntimeSemanticFallback | undefined {
   const owner = findNearestPreviewRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
-  const value = inferGuardPassBoolean(owner, (expression) =>
-    ts.isIdentifier(expression) && expression.text === identifier.text,
+  const value = inferGuardPassBoolean(
+    owner,
+    (expression) => ts.isIdentifier(expression) && expression.text === identifier.text,
   );
   return value === undefined ? undefined : createBooleanGuardFallback(value);
 }
@@ -57,12 +60,28 @@ export function inferPreviewRuntimeHookExpressionGuardPassFallback(
     candidate.kind === expression.kind && candidate.getText(sourceFile) === expressionText;
   const booleanValue = inferGuardPassBoolean(owner, matchesExpression);
   if (booleanValue !== undefined) return createBooleanGuardFallback(booleanValue);
-  return inferGuardPeerFallback(
-    expression,
-    owner,
-    availableBeforePosition,
-    sourceFile,
-  );
+  return inferGuardPeerFallback(expression, owner, availableBeforePosition, sourceFile);
+}
+
+/**
+ * Infers only a comparison scalar required to continue past an early return.
+ *
+ * Direct hook property reads use this narrower entry point so a literal empty/loading sentinel can
+ * be avoided without turning unrelated truthy capability guards into automatic choices.
+ */
+export function inferPreviewRuntimeHookExpressionLiteralGuardPassFallback(
+  expression: ts.Expression,
+  availableBeforePosition: number,
+): PreviewRuntimeSemanticFallback | undefined {
+  const owner = findNearestPreviewRuntimeFunction(expression);
+  return owner === undefined
+    ? undefined
+    : inferGuardPeerFallback(
+        expression,
+        owner,
+        availableBeforePosition,
+        expression.getSourceFile(),
+      );
 }
 
 /**
@@ -87,6 +106,106 @@ export function inferPreviewRuntimeHookExpressionThrowGuardPassFallback(
     statementAlwaysThrows,
   );
   return booleanValue === undefined ? undefined : createBooleanGuardFallback(booleanValue);
+}
+
+/**
+ * Proves whether a collection length must be truthy to continue beyond an authored early return.
+ *
+ * The length read may feed one immutable local through a nullish/falsy zero default before the
+ * guard (`const count = rows?.length ?? 0; if (!count) return ...`). Treating `.length` as only a
+ * structural Array requirement creates an empty list, after which a condition override can expose
+ * a hollow page without ever mounting the collection's event handlers. This helper follows only
+ * that one const alias and leaves general value-flow inference deliberately out of scope.
+ */
+export function inferPreviewRuntimeHookCollectionLengthGuardPassValue(
+  expression: ts.Expression,
+): boolean | undefined {
+  const owner = findNearestPreviewRuntimeFunction(expression);
+  if (owner === undefined) return undefined;
+  const sourceFile = expression.getSourceFile();
+  const expressionText = expression.getText(sourceFile);
+  const directValue = inferGuardPassBoolean(
+    owner,
+    (candidate) =>
+      candidate.kind === expression.kind && candidate.getText(sourceFile) === expressionText,
+  );
+  if (directValue !== undefined) return directValue;
+  const alias = readPreviewRuntimeCollectionLengthConstAlias(expression, owner);
+  return alias === undefined
+    ? undefined
+    : inferGuardPassBoolean(
+        owner,
+        (candidate) => ts.isIdentifier(candidate) && candidate.text === alias,
+      );
+}
+
+/** Reads one same-function const alias whose initializer preserves length truthiness. */
+function readPreviewRuntimeCollectionLengthConstAlias(
+  expression: ts.Expression,
+  owner: PreviewRuntimeFunction,
+): string | undefined {
+  let current: ts.Expression = expression;
+  while (true) {
+    const parent = current.parent;
+    if (
+      (ts.isParenthesizedExpression(parent) ||
+        ts.isAsExpression(parent) ||
+        ts.isSatisfiesExpression(parent) ||
+        ts.isNonNullExpression(parent) ||
+        ts.isTypeAssertionExpression(parent)) &&
+      parent.expression === current
+    ) {
+      current = parent;
+      continue;
+    }
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.left === current &&
+      (parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken) &&
+      isPreviewRuntimeFalsyLengthDefault(parent.right)
+    ) {
+      current = parent;
+      continue;
+    }
+    break;
+  }
+  const declaration = current.parent;
+  if (
+    !ts.isVariableDeclaration(declaration) ||
+    declaration.initializer !== current ||
+    !ts.isIdentifier(declaration.name) ||
+    !ts.isVariableDeclarationList(declaration.parent) ||
+    (declaration.parent.flags & ts.NodeFlags.Const) === 0
+  ) {
+    return undefined;
+  }
+  const alias = declaration.name.text;
+  let bindingCount = owner.parameters.filter((parameter) =>
+    previewRuntimeBindingContainsName(parameter.name, alias),
+  ).length;
+  visitOwnerDirectNodes(owner, (candidate) => {
+    if (
+      ts.isVariableDeclaration(candidate) &&
+      previewRuntimeBindingContainsName(candidate.name, alias)
+    ) {
+      bindingCount += 1;
+    }
+  });
+  return bindingCount === 1 ? alias : undefined;
+}
+
+/** Admits only defaults whose Boolean value is certainly false. */
+function isPreviewRuntimeFalsyLengthDefault(expression: ts.Expression): boolean {
+  const current = unwrapPreviewRuntimeExpression(expression);
+  return (
+    current.kind === ts.SyntaxKind.FalseKeyword ||
+    current.kind === ts.SyntaxKind.NullKeyword ||
+    (ts.isNumericLiteral(current) && Number(current.text) === 0) ||
+    (ts.isStringLiteral(current) && current.text.length === 0) ||
+    (ts.isIdentifier(current) && current.text === 'undefined') ||
+    ts.isVoidExpression(current)
+  );
 }
 
 /**
@@ -150,10 +269,7 @@ function readStaticAssignmentTarget(
 ): { readonly root: string; readonly path: readonly string[] } | undefined {
   const current = unwrapPreviewRuntimeExpression(expression);
   if (ts.isIdentifier(current)) return { root: current.text, path: Object.freeze([]) };
-  if (
-    ts.isPropertyAccessExpression(current) &&
-    current.questionDotToken === undefined
-  ) {
+  if (ts.isPropertyAccessExpression(current) && current.questionDotToken === undefined) {
     const owner = readStaticAssignmentTarget(current.expression);
     return owner === undefined
       ? undefined
@@ -173,7 +289,10 @@ function isOwnerBindingReachable(
     if (previewRuntimeBindingContainsName(parameter.name, root)) declarations += 1;
   }
   visitOwnerDirectNodes(owner, (candidate) => {
-    if (ts.isVariableDeclaration(candidate) && previewRuntimeBindingContainsName(candidate.name, root)) {
+    if (
+      ts.isVariableDeclaration(candidate) &&
+      previewRuntimeBindingContainsName(candidate.name, root)
+    ) {
       declarations += 1;
     }
   });
@@ -181,12 +300,19 @@ function isOwnerBindingReachable(
   let current: ts.Node | undefined = node;
   while (current !== undefined && current !== owner) {
     if (isPreviewRuntimeFunction(current) && current !== owner) {
-      if (current.parameters.some((parameter) => previewRuntimeBindingContainsName(parameter.name, root))) {
+      if (
+        current.parameters.some((parameter) =>
+          previewRuntimeBindingContainsName(parameter.name, root),
+        )
+      ) {
         return false;
       }
       let shadowed = false;
       visitOwnerDirectNodes(current, (candidate) => {
-        if (ts.isVariableDeclaration(candidate) && previewRuntimeBindingContainsName(candidate.name, root)) {
+        if (
+          ts.isVariableDeclaration(candidate) &&
+          previewRuntimeBindingContainsName(candidate.name, root)
+        ) {
           shadowed = true;
         }
       });
@@ -198,7 +324,10 @@ function isOwnerBindingReachable(
 }
 
 /** Visits one function body while excluding nested runtime scopes. */
-function visitOwnerDirectNodes(scope: PreviewRuntimeFunction, visitor: (node: ts.Node) => void): void {
+function visitOwnerDirectNodes(
+  scope: PreviewRuntimeFunction,
+  visitor: (node: ts.Node) => void,
+): void {
   const visit = (node: ts.Node): void => {
     if (node !== scope && isPreviewRuntimeFunction(node)) return;
     if (node !== scope) visitor(node);
@@ -236,22 +365,14 @@ function inferGuardPassBoolean(
     if (node !== owner && isPreviewRuntimeFunction(node)) return;
     if (ts.isIfStatement(node)) {
       if (acceptsExit(node.thenStatement) && node.elseStatement === undefined) {
-        const passValue = readConditionTrackedValue(
-          node.expression,
-          matchesExpression,
-          false,
-        );
+        const passValue = readConditionTrackedValue(node.expression, matchesExpression, false);
         if (passValue !== undefined) demandedValues.add(passValue);
       } else if (
         node.elseStatement !== undefined &&
         acceptsExit(node.elseStatement) &&
         !acceptsExit(node.thenStatement)
       ) {
-        const passValue = readConditionTrackedValue(
-          node.expression,
-          matchesExpression,
-          true,
-        );
+        const passValue = readConditionTrackedValue(node.expression, matchesExpression, true);
         if (passValue !== undefined) demandedValues.add(passValue);
       }
     }
@@ -307,10 +428,7 @@ function readPossibleConditionValues(
   ) {
     return new Set([false]);
   }
-  if (
-    ts.isPrefixUnaryExpression(current) &&
-    current.operator === ts.SyntaxKind.ExclamationToken
-  ) {
+  if (ts.isPrefixUnaryExpression(current) && current.operator === ts.SyntaxKind.ExclamationToken) {
     return new Set(
       [...readPossibleConditionValues(current.operand, matchesExpression, trackedValue)].map(
         (value) => !value,
@@ -322,16 +440,8 @@ function readPossibleConditionValues(
     (current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
       current.operatorToken.kind === ts.SyntaxKind.BarBarToken)
   ) {
-    const leftValues = readPossibleConditionValues(
-      current.left,
-      matchesExpression,
-      trackedValue,
-    );
-    const rightValues = readPossibleConditionValues(
-      current.right,
-      matchesExpression,
-      trackedValue,
-    );
+    const leftValues = readPossibleConditionValues(current.left, matchesExpression, trackedValue);
+    const rightValues = readPossibleConditionValues(current.right, matchesExpression, trackedValue);
     const values = new Set<boolean>();
     for (const left of leftValues) {
       for (const right of rightValues) {
@@ -368,8 +478,7 @@ function inferGuardPeerFallback(
   const desiredComparisonValue = inferGuardPassBoolean(
     owner,
     (candidate) =>
-      candidate.kind === comparison.node.kind &&
-      candidate.getText(sourceFile) === comparisonText,
+      candidate.kind === comparison.node.kind && candidate.getText(sourceFile) === comparisonText,
   );
   if (desiredComparisonValue === undefined) return undefined;
   const equality =
@@ -378,10 +487,31 @@ function inferGuardPeerFallback(
   const inequality =
     comparison.node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken ||
     comparison.node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
-  const mustEqual =
-    (equality && desiredComparisonValue) || (inequality && !desiredComparisonValue);
-  if (!mustEqual) return undefined;
+  const mustEqual = (equality && desiredComparisonValue) || (inequality && !desiredComparisonValue);
   const peer = unwrapPreviewRuntimeExpression(comparison.peer);
+  const literalKind = readPreviewRuntimeGuardLiteralKind(peer);
+  if (literalKind !== undefined) {
+    const rawExpression = mustEqual
+      ? peer.getText(sourceFile)
+      : createPreviewComparisonFalseExpression(
+          createPreviewRuntimeSemanticString(readPreviewRuntimeGuardSemanticName(expression)),
+          peer,
+          ts.SyntaxKind.EqualsEqualsEqualsToken,
+          sourceFile,
+        );
+    return {
+      expression:
+        comparison.wrapper === undefined
+          ? rawExpression
+          : `${comparison.wrapper}(${rawExpression})`,
+      kind:
+        comparison.wrapper === undefined
+          ? literalKind
+          : readPreviewRuntimeGuardWrapperKind(comparison.wrapper),
+      label: 'generated scalar to continue past an early return',
+    };
+  }
+  if (!mustEqual) return undefined;
   if (
     !ts.isIdentifier(peer) ||
     peer.text === 'undefined' ||
@@ -391,9 +521,7 @@ function inferGuardPeerFallback(
   }
   const peerText = peer.getText(sourceFile);
   const expressionText =
-    comparison.wrapper === undefined
-      ? peerText
-      : `${comparison.wrapper}(${peerText})`;
+    comparison.wrapper === undefined ? peerText : `${comparison.wrapper}(${peerText})`;
   const semantic = inferPreviewRuntimeSemanticFallback(peer.text);
   return {
     expression: expressionText,
@@ -405,6 +533,35 @@ function inferGuardPeerFallback(
           : (semantic?.kind ?? 'string'),
     label: 'generated value matching a prior local guard peer',
   };
+}
+
+/** Reads the bounded literal families that can be safely copied or inverted in a render guard. */
+function readPreviewRuntimeGuardLiteralKind(
+  expression: ts.Expression,
+): PreviewRuntimeSemanticFallback['kind'] | undefined {
+  if (ts.isStringLiteralLike(expression)) return 'string';
+  if (ts.isNumericLiteral(expression) && Number.isFinite(Number(expression.text))) return 'number';
+  if (
+    expression.kind === ts.SyntaxKind.TrueKeyword ||
+    expression.kind === ts.SyntaxKind.FalseKeyword
+  ) {
+    return 'boolean';
+  }
+  return expression.kind === ts.SyntaxKind.NullKeyword ? 'null' : undefined;
+}
+
+/** Uses the exact leaf name only to choose a type-compatible neutral comparison value. */
+function readPreviewRuntimeGuardSemanticName(expression: ts.Expression): string {
+  const current = unwrapPreviewRuntimeExpression(expression);
+  if (ts.isPropertyAccessExpression(current)) return current.name.text;
+  return ts.isIdentifier(current) ? current.text : 'value';
+}
+
+/** A built-in scalar coercion determines the fallback family visible to the comparison. */
+function readPreviewRuntimeGuardWrapperKind(
+  wrapper: 'Boolean' | 'Number' | 'String',
+): PreviewRuntimeSemanticFallback['kind'] {
+  return wrapper === 'Boolean' ? 'boolean' : wrapper === 'Number' ? 'number' : 'string';
 }
 
 /** Exact equality comparison containing the tracked leaf, with one inert built-in coercion allowed. */
@@ -450,8 +607,10 @@ function readGuardComparison(expression: ts.Expression):
   ) {
     return undefined;
   }
-  if (parent.left === current) return { node: parent, peer: parent.right, ...(wrapper ? { wrapper } : {}) };
-  if (parent.right === current) return { node: parent, peer: parent.left, ...(wrapper ? { wrapper } : {}) };
+  if (parent.left === current)
+    return { node: parent, peer: parent.right, ...(wrapper ? { wrapper } : {}) };
+  if (parent.right === current)
+    return { node: parent, peer: parent.left, ...(wrapper ? { wrapper } : {}) };
   return undefined;
 }
 

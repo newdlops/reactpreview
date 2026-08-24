@@ -58,6 +58,25 @@ describe('React conditional rendering instrumentation', () => {
     );
   });
 
+  /** Retains target components nested below a host layout branch such as an authored page shell. */
+  it('labels component descendants hidden by an intrinsic ternary wrapper', () => {
+    const source = [
+      'export function ExplorePage({ filtered }) {',
+      '  return filtered ? <PosterCardsGrid /> : (',
+      '    <div><section><ExplorePageCarousel /></section><PosterCardScrollBox /></div>',
+      '  );',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering(
+      '/workspace/src/ExplorePage.tsx',
+      source,
+    );
+
+    expect(transformed).toContain('"truthyLabel":"<PosterCardsGrid>"');
+    expect(transformed).toContain('"falsyLabel":"<div: ExplorePageCarousel, PosterCardScrollBox>"');
+  });
+
   /** Retains primitive condition logic so one learned state cannot activate contradictory branches. */
   it('records bounded scalar predicate trees for render-state branch coherence', () => {
     const source = [
@@ -413,6 +432,7 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"role":"overlay"');
     expect(transformed).toContain('"expression":"<DeleteModal>.open: open"');
     expect(transformed).toContain('"ownerName":"DeleteModal"');
+    expect(transformed).toContain('"runtimeOwnerName":"Page"');
     expect(transformed).toContain('"truthyLabel":"visible <DeleteModal> overlay"');
     expect(transformed).toContain('"truthyLabel":"<ConfirmDialog> portal overlay"');
     expect(transformed).toContain('"role":"overlay"');

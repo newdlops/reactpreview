@@ -56,6 +56,50 @@ describe('instrumentPreviewDeferredUiTriggers', () => {
     expect(instrumentation.registrations[0]).toContain('"ownerName":"Panel"');
   });
 
+  /** Captures a positive local state setter separately from the authored click guards. */
+  it('registers a replayable local state transition for a selected collection item', () => {
+    const source = [
+      'export function Carousel({ contents }) {',
+      '  const [selectedContent, setSelectedContent] = useState(null);',
+      '  const [currentIndex] = useState(-1);',
+      '  const [isDragging] = useState(false);',
+      '  return contents.map((content, index) => (',
+      '    <div onClick={() => !isDragging && index === currentIndex && setSelectedContent(content)} />',
+      '  ));',
+      '}',
+    ].join('\n');
+
+    const instrumentation = instrumentPreviewDeferredUiTriggers(SOURCE_PATH, source);
+
+    expect(instrumentation.replacements).toHaveLength(1);
+    expect(instrumentation.registrations).toHaveLength(1);
+    expect(instrumentation.registrations[0]).toContain('"kind":"local-state-transition"');
+    expect(instrumentation.registrations[0]).toContain('"methodName":"setSelectedContent"');
+    expect(instrumentation.registrations[0]).toContain('"stateName":"selectedContent"');
+    expect(instrumentation.replacements[0]?.replacement).toContain(
+      ', () => (setSelectedContent(content))',
+    );
+  });
+
+  /** Declines closing/reset transitions because they cannot reveal a positive target branch. */
+  it('does not register nullish or false local state transitions', () => {
+    const source = [
+      'export function Panel() {',
+      '  const [selected, setSelected] = useState({ id: 1 });',
+      '  const [open, setOpen] = React.useState(true);',
+      '  return <>',
+      '    <button onClick={() => setSelected(null)}>Clear</button>',
+      '    <button onClick={() => setOpen(false)}>Close</button>',
+      '  </>;',
+      '}',
+    ].join('\n');
+
+    expect(instrumentPreviewDeferredUiTriggers(SOURCE_PATH, source)).toEqual({
+      registrations: [],
+      replacements: [],
+    });
+  });
+
   /** Follows a click callback through local component props to a stateful modal controller. */
   it('traces an event through nested JSX callback props before registering deferred UI', () => {
     const source = [

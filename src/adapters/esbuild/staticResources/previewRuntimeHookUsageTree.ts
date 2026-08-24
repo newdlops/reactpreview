@@ -188,6 +188,9 @@ function formatPreviewRuntimeHookUsagePath(path_: PreviewRuntimeHookAliasUsagePa
   if (path_.collectionProperty === 'spread' || path_.collectionProperty === '[]') {
     return `${base}[]`;
   }
+  if (path_.collectionProperty === 'jsx-collection-prop') {
+    return base.length === 0 ? '[]' : base;
+  }
   const suffix = path_.collectionProperty + (path_.collectionProperty === 'length' ? '' : '()');
   return base.length === 0 ? suffix : `${base}.${suffix}`;
 }

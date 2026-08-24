@@ -7,16 +7,27 @@ import {
 } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorDeferredUiTriggerRuntimeSource';
 
 interface DeferredUiTriggerHarness {
+  readonly autoInvoke: (
+    state: Record<string, unknown>,
+    condition: Record<string, unknown>,
+  ) => unknown;
   readonly getOwnDataReadCount: () => number;
   readonly invoke: (id: string) => boolean;
   readonly read: () => readonly Record<string, unknown>[];
-  readonly register: (handler: unknown, metadata: Record<string, unknown>) => unknown;
+  readonly register: (
+    handler: unknown,
+    metadata: Record<string, unknown>,
+    activation?: unknown,
+  ) => unknown;
   readonly registerMetadata: (metadata: Record<string, unknown>) => void;
   readonly resetOwnDataReadCount: () => void;
   readonly session: {
     boundariesByExport: Map<string, Set<{ fiber: TestFiber }>>;
     deferredUiTriggerRecords?: Map<string, unknown>;
+    activeTargetReachabilityKey?: string;
+    renderConditionRevision?: number;
     selectedExportName: string;
+    targetReachabilityByKey?: Map<string, Record<string, unknown>>;
   };
   readonly warnings: unknown[][];
 }
@@ -169,6 +180,105 @@ describe('Preview Inspector deferred UI trigger runtime source', () => {
     expect(harness.invoke(BASE_METADATA.id)).toBe(true);
     expect(mountedHandler).toHaveBeenCalledOnce();
     expect(laterUnmountedHandler).not.toHaveBeenCalled();
+  });
+
+  /** Replays a positive captured setter from the authored page before the target exists. */
+  it('selects an active collection state transition from the full page root', () => {
+    const harness = createHarness();
+    const firstHandler = vi.fn();
+    const activeHandler = vi.fn();
+    const firstActivation = vi.fn();
+    const activeActivation = vi.fn();
+    const metadata = {
+      ...BASE_METADATA,
+      expression: '() => isCurrent && setSelectedContent(content)',
+      kind: 'local-state-transition',
+      methodName: 'setSelectedContent',
+      ownerName: 'ExplorePageCarousel',
+      sourcePath: '/workspace/ExplorePageCarousel.tsx',
+      stateName: 'selectedContent',
+    };
+    harness.register(firstHandler, metadata, firstActivation);
+    harness.register(activeHandler, metadata, activeActivation);
+    const pageCommitBoundary = {
+      fiber: {
+        child: {
+          memoizedProps: { onClick: firstHandler, tabIndex: -1 },
+          sibling: {
+            memoizedProps: {
+              'aria-label': 'Details',
+              onClick: activeHandler,
+              tabIndex: 0,
+            },
+          },
+        },
+      },
+    };
+    const reachability = {
+      directTarget: false,
+      key: 'page:DetailBottomSheetSkeleton',
+      pageCommitBoundary,
+      pageRootCommitted: true,
+      targetExportName: 'DetailBottomSheetSkeleton',
+    };
+    harness.session.activeTargetReachabilityKey = reachability.key;
+    harness.session.targetReachabilityByKey = new Map([[reachability.key, reachability]]);
+
+    expect(harness.read()[0]).toMatchObject({
+      ambiguous: false,
+      available: true,
+      kind: 'local-state-transition',
+      mounted: true,
+    });
+    expect(harness.invoke(metadata.id)).toBe(true);
+    expect(activeActivation).toHaveBeenCalledOnce();
+    expect(firstActivation).not.toHaveBeenCalled();
+    expect(firstHandler).not.toHaveBeenCalled();
+    expect(activeHandler).not.toHaveBeenCalled();
+  });
+
+  /** Correlates source, owner, and state token once for each page-remount generation. */
+  it('replays a matching authored state gate again after a resolver remount', () => {
+    const harness = createHarness();
+    const handler = vi.fn();
+    const activation = vi.fn();
+    const metadata = {
+      ...BASE_METADATA,
+      kind: 'local-state-transition',
+      methodName: 'setSelectedContent',
+      ownerName: 'ExplorePageCarousel',
+      sourcePath: '/workspace/ExplorePageCarousel.tsx',
+      stateName: 'selectedContent',
+    };
+    harness.register(handler, metadata, activation);
+    const pageCommitBoundary = {
+      fiber: { child: { memoizedProps: { onClick: handler, tabIndex: 0 } } },
+    };
+    const state = {
+      directTarget: false,
+      key: 'page:DetailBottomSheetSkeleton',
+      pageCommitBoundary,
+      pageRootCommitted: true,
+      targetExportName: 'DetailBottomSheetSkeleton',
+    };
+    const condition = {
+      effectiveEnabled: false,
+      expression: '<ExplorePageCarousel> gate: selectedContent',
+      id: 'selected-content-gate',
+      ownerName: 'ExplorePageCarousel',
+      reachabilityKey: state.key,
+      sourcePath: '/workspace/ExplorePageCarousel.tsx',
+    };
+    harness.session.activeTargetReachabilityKey = state.key;
+    harness.session.targetReachabilityByKey = new Map([[state.key, state]]);
+
+    expect(harness.autoInvoke(state, condition)).toMatchObject({ metadata });
+    expect(harness.autoInvoke(state, condition)).toBeUndefined();
+    harness.session.renderConditionRevision = 1;
+    expect(harness.autoInvoke(state, condition)).toMatchObject({ metadata });
+    expect(harness.autoInvoke(state, condition)).toBeUndefined();
+    expect(activation).toHaveBeenCalledTimes(2);
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it('does not escape through a boundary root sibling and rejects shared occurrence identities', () => {
@@ -375,6 +485,18 @@ describe('Preview Inspector deferred UI trigger runtime source', () => {
     expect(harness.register(handler, { ...BASE_METADATA, methodName: 'deleteEverything' })).toBe(
       handler,
     );
+    expect(
+      harness.register(
+        handler,
+        {
+          ...BASE_METADATA,
+          kind: 'local-state-transition',
+          methodName: 'setSelected',
+          stateName: '',
+        },
+        vi.fn(),
+      ),
+    ).toBe(handler);
     expect(harness.read()).toEqual([]);
     expect(handler).not.toHaveBeenCalled();
   });
@@ -421,10 +543,12 @@ function createHarness(): DeferredUiTriggerHarness {
       globalThis.__register = registerPreviewInspectorDeferredUiTrigger;
       globalThis.__read = readPreviewInspectorDeferredUiTriggers;
       globalThis.__invoke = invokePreviewInspectorDeferredUiTrigger;
+      globalThis.__autoInvoke = autoInvokePreviewInspectorAuthoredStateTrigger;
     `,
     context,
   );
   return {
+    autoInvoke: context.__autoInvoke as DeferredUiTriggerHarness['autoInvoke'],
     getOwnDataReadCount: () => context.__readCount as number,
     invoke: context.__invoke as DeferredUiTriggerHarness['invoke'],
     read: context.__read as DeferredUiTriggerHarness['read'],

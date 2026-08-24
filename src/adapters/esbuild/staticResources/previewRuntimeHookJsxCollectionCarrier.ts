@@ -17,9 +17,36 @@ export function isPreviewRuntimeHookJsxCollectionCarrier(
   identifierName: string,
   depth = 0,
 ): boolean {
+  return isPreviewRuntimeHookJsxCollectionCarrierMatching(
+    expression,
+    (value) => ts.isIdentifier(value) && value.text === identifierName,
+    depth,
+  );
+}
+
+/** Proves that a JSX collection carrier contains one exact hook-owned property occurrence. */
+export function isPreviewRuntimeHookJsxCollectionExpressionCarrier(
+  expression: ts.Expression,
+  target: ts.Expression,
+  depth = 0,
+): boolean {
+  const unwrappedTarget = unwrapPreviewRuntimeExpression(target);
+  return isPreviewRuntimeHookJsxCollectionCarrierMatching(
+    expression,
+    (value) => value === unwrappedTarget,
+    depth,
+  );
+}
+
+/** Shares the bounded carrier grammar between root identifiers and exact nested expressions. */
+function isPreviewRuntimeHookJsxCollectionCarrierMatching(
+  expression: ts.Expression,
+  matchesTarget: (value: ts.Expression) => boolean,
+  depth: number,
+): boolean {
   if (depth > MAX_COLLECTION_CARRIER_DEPTH) return false;
   const value = unwrapPreviewRuntimeExpression(expression);
-  if (ts.isIdentifier(value)) return value.text === identifierName;
+  if (matchesTarget(value)) return true;
   if (
     ts.isCallExpression(value) &&
     value.questionDotToken === undefined &&
@@ -27,9 +54,9 @@ export function isPreviewRuntimeHookJsxCollectionCarrier(
     value.expression.questionDotToken === undefined
   ) {
     if (IDENTITY_COLLECTION_METHOD_NAMES.has(value.expression.name.text)) {
-      return isPreviewRuntimeHookJsxCollectionCarrier(
+      return isPreviewRuntimeHookJsxCollectionCarrierMatching(
         value.expression.expression,
-        identifierName,
+        matchesTarget,
         depth + 1,
       );
     }
@@ -37,18 +64,22 @@ export function isPreviewRuntimeHookJsxCollectionCarrier(
       value.expression.name.text === 'map' &&
       isIdentityPreservingMapCallback(value.arguments[0])
     ) {
-      return isPreviewRuntimeHookJsxCollectionCarrier(
+      return isPreviewRuntimeHookJsxCollectionCarrierMatching(
         value.expression.expression,
-        identifierName,
+        matchesTarget,
         depth + 1,
       );
     }
   }
   if (ts.isConditionalExpression(value)) {
     return (
-      (isPreviewRuntimeHookJsxCollectionCarrier(value.whenTrue, identifierName, depth + 1) &&
+      (isPreviewRuntimeHookJsxCollectionCarrierMatching(value.whenTrue, matchesTarget, depth + 1) &&
         ts.isArrayLiteralExpression(unwrapPreviewRuntimeExpression(value.whenFalse))) ||
-      (isPreviewRuntimeHookJsxCollectionCarrier(value.whenFalse, identifierName, depth + 1) &&
+      (isPreviewRuntimeHookJsxCollectionCarrierMatching(
+        value.whenFalse,
+        matchesTarget,
+        depth + 1,
+      ) &&
         ts.isArrayLiteralExpression(unwrapPreviewRuntimeExpression(value.whenTrue)))
     );
   }
@@ -56,7 +87,7 @@ export function isPreviewRuntimeHookJsxCollectionCarrier(
     ts.isBinaryExpression(value) &&
     (value.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
       value.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) &&
-    isPreviewRuntimeHookJsxCollectionCarrier(value.left, identifierName, depth + 1) &&
+    isPreviewRuntimeHookJsxCollectionCarrierMatching(value.left, matchesTarget, depth + 1) &&
     ts.isArrayLiteralExpression(unwrapPreviewRuntimeExpression(value.right))
   );
 }

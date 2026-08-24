@@ -211,7 +211,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
 
     expect(transformed).toContain('"companyWithDeletionStatus": Object.freeze({');
     expect(transformed).toContain('"my": Object.freeze({ "role": Object.freeze({');
-    expect(transformed).toContain('"hasOwnerAccess": false');
+    expect(transformed).toContain('"hasOwnerAccess": true');
     expect(transformed).toContain('"name": "name"');
     expect(transformed).toContain(
       '"requiredPaths":["data.companyWithDeletionStatus.my.role.hasOwnerAccess","data.companyWithDeletionStatus.name","data.companyWithDeletionStatus","loading"]',
@@ -653,7 +653,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     );
 
     expect(transformed).toContain(
-      'Object.freeze(Object.assign({}, Object.freeze({ "name": "name" }), Object.freeze({ "id": "preview-id", "my": Object.freeze({ "role": Object.freeze({ "hasOwnerAccess": false }) })',
+      'Object.freeze(Object.assign({}, Object.freeze({ "name": "name" }), Object.freeze({ "id": "preview-id", "my": Object.freeze({ "role": Object.freeze({ "hasOwnerAccess": true }) })',
     );
     expect(transformed).toContain('"id": "preview-id"');
     expect(transformed).toContain('"shortName": "shortName"');
@@ -985,6 +985,43 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('data.[].endDate');
   });
 
+  /** Combines a nested query collection, sibling row config, and its empty-state guard. */
+  it('materializes nested table rows and continues beyond a zero-count early return', () => {
+    const source = [
+      `import usePatients from './use-patients';`,
+      'export function PatientsTable() {',
+      '  const { data, status } = usePatients({ queryString: "" });',
+      '  if (data === undefined || status === "loading") return <p>Loading</p>;',
+      '  if (data.totalCount === 0) return <p>No patients</p>;',
+      '  return <Table',
+      '    data={data.patients}',
+      '    getID={(row) => row.id}',
+      '    columns={[',
+      '      { key: "code" },',
+      '      { key: "givenName" },',
+      '      { key: "familyName" },',
+      '      { key: "dateOfBirth", formatter: (row) => formatDate(row.dateOfBirth) },',
+      '    ]}',
+      '    actions={[{ label: "View", action: (row) => navigate(row.id) }]}',
+      '  />;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/PatientsTable.tsx', source),
+    );
+
+    expect(transformed).toContain('"totalCount": 1');
+    expect(transformed).toContain('"patients": ((__createPreviewItem)');
+    expect(transformed).toContain('"code": "code"');
+    expect(transformed).toContain('"dateOfBirth": "2024-01-01T00:00:00.000Z"');
+    expect(transformed).toContain('"givenName": "givenName"');
+    expect(transformed).toContain('"id": "preview-id"');
+    expect(transformed).toContain('"renderGuardPaths":["data.totalCount","status"]');
+    expect(transformed).toContain('data.patients[].familyName');
+  });
+
   /** Keeps ReactNode-style Context arrays renderable when their map callback returns each item. */
   it('infers a scalar item for an identity map that flows directly into React children', () => {
     const source = [
@@ -1141,7 +1178,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
 
     expect(replacements).toHaveLength(2);
     expect(replacements[0]?.replacement).toContain('useQuery(DOCUMENT, queryOptions)');
-    expect(replacements[0]?.replacement).toContain('"data": Object.freeze({})');
+    expect(replacements[0]?.replacement).toContain('"data": "data"');
     expect(replacements[0]?.replacement).toContain(
       ', () => (DOCUMENT), () => (queryOptions), () => (useQuery))',
     );
@@ -1333,6 +1370,32 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"agendaSelection": Object.freeze([])');
     expect(transformed).not.toContain('"agendaSelection": 0');
     expect(transformed).toContain('meetingFormValues.agendaSelection.map()');
+  });
+
+  /** A derived length guard needs a real item so downstream collection controls can mount. */
+  it('populates a hook collection whose const length alias guards the rendered page', () => {
+    const source = [
+      `import { useLatestContents } from './use-latest-contents';`,
+      'export function Carousel() {',
+      '  const latestContentsQuery = useLatestContents();',
+      '  const { data: contents, status } = latestContentsQuery;',
+      '  const contentsLength = contents?.length ?? 0;',
+      '  const extended = contentsLength ? Array(21).fill(contents).flat() : [];',
+      "  if (status === 'pending') return <p>Loading</p>;",
+      '  if (!contentsLength) return <p>Empty</p>;',
+      '  return extended.map((content) => <button key={content.id}>{content.name}</button>);',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Carousel.tsx', source),
+    );
+
+    expect(transformed).toContain('react-file-preview.generated-list-runtime');
+    expect(transformed).toContain('Object.freeze({ id: "preview-id", name: "name" })');
+    expect(transformed).toContain('"requiredPaths":["status","data.length"]');
+    expect(transformed).not.toContain('"data": Object.freeze([])');
   });
 
   /** Handles callable and conditional hook bindings without guessing their package semantics. */

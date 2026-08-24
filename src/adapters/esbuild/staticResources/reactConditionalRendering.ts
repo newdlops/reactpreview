@@ -97,6 +97,8 @@ interface ReactConditionalRenderMetadata {
   readonly sourcePath: string;
   /** Nearest statically named render owner, used to attach a blocker to its tree position. */
   readonly ownerName?: string;
+  /** Enclosing authored component when an overlay tag keeps its own display name as ownerName. */
+  readonly runtimeOwnerName?: string;
   /** Optional render-control classification used for navigation and dormant overlay handling. */
   readonly role?: 'navigation' | 'overlay';
   /** Serializable scalar logic whose value can be checked against one learned hook-state choice. */
@@ -975,7 +977,7 @@ function createConditionalRenderReplacement(
   const authoredExpression = sourceFile.text.slice(start, end);
   const location = sourceFile.getLineAndCharacterOfPosition(start);
   const runtimeOwner = findNearestOverlayRuntimeFunction(candidate.condition);
-  const ownerName =
+  const runtimeOwnerName =
     runtimeOwner === undefined
       ? undefined
       : readOverlayRuntimeFunctionName(runtimeOwner, sourceFile);
@@ -989,10 +991,13 @@ function createConditionalRenderReplacement(
     ),
     expressionFingerprint: createPreviewRenderExpressionFingerprint(authoredExpression),
     line: location.line + 1,
-    ...(ownerName === undefined ? {} : { ownerName }),
+    ...(runtimeOwnerName === undefined ? {} : { ownerName: runtimeOwnerName }),
     ...(scalarExpression === undefined ? {} : { scalarExpression }),
     sourcePath: path.normalize(sourcePath),
     ...candidate.metadata,
+    ...(candidate.metadata.kind === 'overlay-visibility' && runtimeOwnerName !== undefined
+      ? { runtimeOwnerName }
+      : {}),
   };
   const conditionId = createConditionalRenderIdentity(sourcePath, metadata, occurrence);
   const apiExpression = `globalThis[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_API_SYMBOL)})]`;
@@ -1023,10 +1028,7 @@ function inferConditionalScalarExpression(
 ): ReactConditionalScalarExpression | undefined {
   if (depth > 6) return undefined;
   const current = unwrapConditionalExpression(expression);
-  if (
-    ts.isPrefixUnaryExpression(current) &&
-    current.operator === ts.SyntaxKind.ExclamationToken
-  ) {
+  if (ts.isPrefixUnaryExpression(current) && current.operator === ts.SyntaxKind.ExclamationToken) {
     const operand = inferConditionalScalarExpression(current.operand, depth + 1);
     return operand === undefined ? undefined : { kind: 'not', operand };
   }
@@ -1085,7 +1087,9 @@ function readConditionalScalarPath(expression: ts.Expression): string | undefine
 }
 
 /** Distinguishes an unsupported expression from the supported `undefined`-free literal set. */
-function readConditionalScalarLiteral(expression: ts.Expression):
+function readConditionalScalarLiteral(
+  expression: ts.Expression,
+):
   | { readonly supported: false }
   | { readonly supported: true; readonly value: boolean | null | number | string } {
   const current = unwrapConditionalExpression(expression);
@@ -1306,6 +1310,34 @@ function describeJsxFragment(fragment: ts.JsxFragment, sourceFile: ts.SourceFile
   return componentNames.length === 0 ? '<Fragment>' : `<Fragment: ${componentNames.join(', ')}>`;
 }
 
+/** Keeps component descendants visible when an intrinsic layout shell owns the branch root. */
+function collectJsxLayoutComponentNames(
+  node: ts.JsxElement | ts.JsxFragment,
+  sourceFile: ts.SourceFile,
+  names: string[],
+  depth = 0,
+): void {
+  if (depth > 4 || names.length >= 8) return;
+  for (const child of node.children) {
+    if (ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child)) {
+      const tagName = ts.isJsxElement(child)
+        ? child.openingElement.tagName.getText(sourceFile)
+        : child.tagName.getText(sourceFile);
+      const leafName = tagName.split('.').at(-1) ?? tagName;
+      if (/^[$_\p{Lu}]/u.test(leafName) && !names.includes(tagName)) {
+        names.push(boundMetadataText(tagName));
+      }
+      if (ts.isJsxElement(child)) {
+        collectJsxLayoutComponentNames(child, sourceFile, names, depth + 1);
+      }
+      continue;
+    }
+    if (ts.isJsxFragment(child)) {
+      collectJsxLayoutComponentNames(child, sourceFile, names, depth + 1);
+    }
+  }
+}
+
 /** Reads the authored component/tag name from a direct JSX branch. */
 function describeJsxRenderExpression(expression: ts.Expression, sourceFile: ts.SourceFile): string {
   const unwrapped = unwrapConditionalExpression(expression);
@@ -1313,7 +1345,15 @@ function describeJsxRenderExpression(expression: ts.Expression, sourceFile: ts.S
     return describeJsxFragment(unwrapped, sourceFile);
   }
   if (ts.isJsxElement(unwrapped)) {
-    return `<${boundMetadataText(unwrapped.openingElement.tagName.getText(sourceFile))}>`;
+    const tagName = boundMetadataText(unwrapped.openingElement.tagName.getText(sourceFile));
+    if (/^[a-z]/u.test(tagName)) {
+      const componentNames: string[] = [];
+      collectJsxLayoutComponentNames(unwrapped, sourceFile, componentNames);
+      if (componentNames.length > 0) {
+        return boundMetadataText(`<${tagName}: ${componentNames.join(', ')}>`);
+      }
+    }
+    return `<${tagName}>`;
   }
   if (ts.isJsxSelfClosingElement(unwrapped)) {
     return `<${boundMetadataText(unwrapped.tagName.getText(sourceFile))}>`;

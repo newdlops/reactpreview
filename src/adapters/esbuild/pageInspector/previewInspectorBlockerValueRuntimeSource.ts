@@ -300,8 +300,24 @@ function materializePreviewInspectorRequiredPath(template, rawPath, seedValue, e
   const smartMinimum = arguments.length >= 3;
   let root = template;
   const indexedRoot = /^\d+$/u.test(path[0]);
-  if (root === null || typeof root !== 'object') root = indexedRoot ? [] : {};
-  if (Array.isArray(root) !== indexedRoot) return root;
+  const seededArrayRoot = smartMinimum && Array.isArray(seedValue);
+  const expectsArrayRoot = indexedRoot || seededArrayRoot;
+  if (
+    root === null || typeof root !== 'object' ||
+    (seededArrayRoot && !Array.isArray(root))
+  ) {
+    root = seededArrayRoot
+      ? createPreviewInspectorRequiredPathSmartLeaf('', false, seedValue)
+      : expectsArrayRoot
+        ? []
+        : {};
+  }
+  /*
+   * Numeric demand alone must not reinterpret an explicit authored object fallback as a tuple.
+   * A real array seed is stronger compiler evidence and is the only object-kind mismatch repaired
+   * above; all other incompatible roots remain untouched for the caller's normal completion path.
+   */
+  if (Array.isArray(root) !== expectsArrayRoot) return root;
   let current = root;
   for (const [index, propertyName] of path.entries()) {
     if (blockedInspectorPropNames.has(propertyName)) return root;
@@ -341,7 +357,11 @@ function materializePreviewInspectorRequiredPath(template, rawPath, seedValue, e
       break;
     }
     const nextName = path[index + 1] ?? '';
-    const expectsArray = /^\d+$/u.test(nextName);
+    const childSeed = smartMinimum
+      ? readPreviewInspectorRequiredPathSeed(seedValue, path.slice(0, index + 1))
+      : undefined;
+    const seededArray = Array.isArray(childSeed);
+    const expectsArray = /^\d+$/u.test(nextName) || seededArray;
     if (
       current[propertyName] === null ||
       typeof current[propertyName] !== 'object' ||
@@ -354,7 +374,11 @@ function materializePreviewInspectorRequiredPath(template, rawPath, seedValue, e
        * existing Array remains valid for non-index descendants such as items.length and must not
        * be narrowed back to an object merely because the next segment is a named property.
        */
-      current[propertyName] = expectsArray ? [] : {};
+      current[propertyName] = seededArray
+        ? createPreviewInspectorRequiredPathSmartLeaf(propertyName, false, childSeed)
+        : expectsArray
+          ? []
+          : {};
     }
     current = current[propertyName];
   }

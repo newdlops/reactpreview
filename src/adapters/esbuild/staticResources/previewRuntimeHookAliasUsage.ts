@@ -16,7 +16,10 @@ import {
   unwrapPreviewRuntimeExpression,
   type PreviewRuntimeFunction,
 } from './previewRuntimeHookSyntax';
-import { inferPreviewRuntimeHookExpressionGuardPassFallback } from './previewRuntimeHookGuardValue';
+import {
+  inferPreviewRuntimeHookCollectionLengthGuardPassValue,
+  inferPreviewRuntimeHookExpressionGuardPassFallback,
+} from './previewRuntimeHookGuardValue';
 import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHookLocalScalarDemand';
 import { inferPreviewRuntimeHookMembershipItemFallback } from './previewRuntimeHookMembershipItem';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
@@ -890,6 +893,9 @@ function normalizeAliasUsage(
   );
   const collection =
     isPreviewRuntimeHookArrayUsageProperty(terminal) || membershipItem !== undefined;
+  const collectionLengthRequiresItem =
+    terminal === 'length' &&
+    inferPreviewRuntimeHookCollectionLengthGuardPassValue(expression) === true;
   const stringReceiver =
     called &&
     isPreviewRuntimeHookStringUsageProperty(terminal) &&
@@ -911,11 +917,14 @@ function normalizeAliasUsage(
     : undefined;
   return Object.freeze({
     called: !collection && !stringReceiver && called,
-    ...(membershipItem === undefined
+    ...(membershipItem === undefined && !collectionLengthRequiresItem
       ? {}
       : {
-          collectionItemExpression: membershipItem.expression,
-          collectionItemRequiredPaths: Object.freeze([...(membershipItem.requiredPaths ?? [])]),
+          collectionItemExpression:
+            membershipItem?.expression ?? 'Object.freeze({ id: "preview-id", name: "name" })',
+          collectionItemRequiredPaths: Object.freeze([
+            ...(membershipItem?.requiredPaths ?? ['id', 'name']),
+          ]),
         }),
     ...(collection && terminal !== undefined ? { collectionProperty: terminal } : {}),
     names: Object.freeze(collection || stringReceiver ? names.slice(0, -1) : [...names]),

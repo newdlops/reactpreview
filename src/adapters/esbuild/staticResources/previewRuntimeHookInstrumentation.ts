@@ -27,6 +27,8 @@ import {
   isPreviewRuntimeHookRenderedJsxValue,
 } from './previewRuntimeHookDirectUsage';
 import {
+  inferPreviewRuntimeHookCollectionLengthGuardPassValue,
+  inferPreviewRuntimeHookExpressionLiteralGuardPassFallback,
   inferPreviewRuntimeHookExpressionThrowGuardPassFallback,
   inferPreviewRuntimeHookGuardPassFallback,
 } from './previewRuntimeHookGuardValue';
@@ -680,7 +682,10 @@ function createBindingFallback(
   if (ts.isIdentifier(binding)) {
     const layoutDimensionDemand = inferPreviewRuntimeHookLayoutDimensionDemand(binding);
     const overlayStateDemand = inferPreviewRuntimeHookOverlayStateDemand(binding, sourceFile);
-    const renderableStateDemands = inferPreviewRuntimeHookRenderableStateDemands(binding, sourceFile);
+    const renderableStateDemands = inferPreviewRuntimeHookRenderableStateDemands(
+      binding,
+      sourceFile,
+    );
     const withOverlayStateDemand = (
       fallback: PreviewRuntimeHookValueFallback,
     ): PreviewRuntimeHookValueFallback => {
@@ -698,12 +703,14 @@ function createBindingFallback(
         ...(overlayStateDemand === undefined
           ? []
           : [Object.freeze({ expression: overlayStateDemand.expression, path: '<root>' })]),
-        ...renderableStateDemands.map((demand) => Object.freeze({
-          deterministicRank: demand.deterministicRank,
-          expression: demand.expression,
-          path: demand.path,
-          role: 'render-state' as const,
-        })),
+        ...renderableStateDemands.map((demand) =>
+          Object.freeze({
+            deterministicRank: demand.deterministicRank,
+            expression: demand.expression,
+            path: demand.path,
+            role: 'render-state' as const,
+          }),
+        ),
       ];
       return smartPathValueExpressions.length === 0
         ? safeFallback
@@ -1002,10 +1009,16 @@ function createIdentifierUsageFallback(
           usagePath.names.at(-2) ?? identifier.text,
           sourceFile,
         );
+        const jsxCollectionItemFallback = inferPreviewRuntimeHookJsxCollectionItemFallback(
+          identifier,
+          node,
+        );
+        const directJsxCollection = jsxCollectionItemFallback !== undefined;
         const collection =
           spreadCollection ||
           isPreviewRuntimeHookArrayUsageProperty(collectionProperty) ||
-          membershipItemFallback !== undefined;
+          membershipItemFallback !== undefined ||
+          directJsxCollection;
         const terminalCalled = ts.isCallExpression(node.parent) && node.parent.expression === node;
         const terminalCallable = terminalCalled || isPreviewRuntimeHookCallableJsxValue(node);
         const terminalMutableRef = isPreviewRuntimeHookMutableRefJsxValue(node);
@@ -1031,14 +1044,24 @@ function createIdentifierUsageFallback(
         const smartCallable = terminalCalled
           ? inferPreviewRuntimeHookCallableSmartValue(node)
           : undefined;
+        const collectionLengthRequiresItem =
+          collectionProperty === 'length' &&
+          inferPreviewRuntimeHookCollectionLengthGuardPassValue(node) === true;
         const collectionItemFallback =
           membershipItemFallback ??
+          jsxCollectionItemFallback ??
           (usagePath.collectionItemType === undefined
             ? spreadCollection
               ? inferPreviewRuntimeHookSpreadItemFallback(node)
               : terminalCalled
                 ? inferPreviewRuntimeArrayItemFallback(node, identifier.getSourceFile())
-                : undefined
+                : collectionLengthRequiresItem
+                  ? {
+                      expression: 'Object.freeze({ id: "preview-id", name: "name" })',
+                      label: 'generated item required by collection length guard',
+                      requiredPaths: ['id', 'name'],
+                    }
+                  : undefined
             : localTypeFallbackBySourceFile
                 .get(identifier.getSourceFile())
                 ?.call(undefined, usagePath.collectionItemType));
@@ -1049,7 +1072,10 @@ function createIdentifierUsageFallback(
             'generated object';
         const guardPass =
           !terminalCalled && !collection && !stringReceiver
-            ? inferPreviewRuntimeHookExpressionThrowGuardPassFallback(node)
+            ? (inferPreviewRuntimeHookExpressionLiteralGuardPassFallback(
+                node,
+                identifier.getStart(sourceFile),
+              ) ?? inferPreviewRuntimeHookExpressionThrowGuardPassFallback(node))
             : undefined;
         const guardSemantic = inferPreviewRuntimeSemanticFallback(
           usagePath.names.at(-1) ?? identifier.text,
@@ -1069,6 +1095,7 @@ function createIdentifierUsageFallback(
           !usagePath.optional &&
           collection &&
           !spreadCollection &&
+          !directJsxCollection &&
           usagePath.names.length === 1
         ) {
           arrayRootEvidence.push(usagePath.names[0] ?? 'array operation');
@@ -1093,10 +1120,17 @@ function createIdentifierUsageFallback(
                   ]),
                 }),
             ...(collection
-              ? { collectionProperty: spreadCollection ? 'spread' : (collectionProperty ?? '') }
+              ? {
+                  collectionProperty: directJsxCollection
+                    ? 'jsx-collection-prop'
+                    : spreadCollection
+                      ? 'spread'
+                      : (collectionProperty ?? ''),
+                }
               : {}),
-            names:
-              (collection && !spreadCollection) || stringReceiver
+            names: directJsxCollection
+              ? usagePath.names
+              : (collection && !spreadCollection) || stringReceiver
                 ? usagePath.names.slice(0, -1)
                 : usagePath.names,
             ...(guardPass === undefined ? {} : { renderGuard: true as const }),

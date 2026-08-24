@@ -39,12 +39,16 @@ export interface PreviewDeferredUiTriggerMetadata {
   readonly id: string;
   /** Whether static syntax proves that user activation calls the visibility method with zero args. */
   readonly invocationSafe: boolean;
+  /** Distinguishes imperative services from a compiler-proven local React state transition. */
+  readonly kind?: 'imperative-visibility' | 'local-state-transition';
   /** One-based source line of the JSX event-handler expression. */
   readonly line: number;
   /** Proven zero-argument visibility method reached by the handler. */
   readonly methodName: string;
   /** Nearest statically named function used to attach the placeholder to the component tree. */
   readonly ownerName?: string;
+  /** Local useState value changed by a state-transition trigger. */
+  readonly stateName?: string;
   /** Absolute workspace source path used only for local Inspector source navigation. */
   readonly sourcePath: string;
 }
@@ -59,14 +63,18 @@ export interface PreviewDeferredUiTriggerInstrumentation {
 
 /** One event handler proven to reach a supported zero-argument visibility method. */
 interface DeferredUiTriggerCandidate {
+  readonly activationExpression?: ts.CallExpression;
   readonly expression: ts.Expression;
   readonly metadata: PreviewDeferredUiTriggerMetadata;
 }
 
 /** Proven imperative method plus whether the authored event handler supplies a zero-arg contract. */
 interface ImperativeVisibilityEvidence {
+  readonly activationExpression?: ts.CallExpression;
   readonly invocationSafe: boolean;
+  readonly kind?: 'imperative-visibility' | 'local-state-transition';
   readonly methodName: string;
+  readonly stateName?: string;
 }
 
 /** Traversal context distinguishes a direct function reference from a call inside a safe wrapper. */
@@ -115,9 +123,13 @@ export function instrumentPreviewDeferredUiTriggers(
   );
   return {
     registrations: candidates.map(({ metadata }) => createMetadataRegistration(metadata)),
-    replacements: candidates.map(({ expression, metadata }) => ({
+    replacements: candidates.map(({ activationExpression, expression, metadata }) => ({
       end: expression.end,
-      replacement: createHandlerRegistration(expression.getText(sourceFile), metadata),
+      replacement: createHandlerRegistration(
+        expression.getText(sourceFile),
+        metadata,
+        activationExpression?.getText(sourceFile),
+      ),
       start: expression.getStart(sourceFile),
     })),
   };
@@ -158,11 +170,26 @@ function collectDeferredUiTriggerCandidates(
               0,
               'event',
             );
+      const stateTransitionEvidence =
+        directEvidence !== undefined || expression === undefined
+          ? undefined
+          : findLocalStateTransitionEvidence(
+              expression,
+              collectVisibleLocalHandlerDeclarations(node, sourceFile),
+              collectVisibleLocalStateSetters(node),
+              new Set(),
+              0,
+              'event',
+            );
       const evidence =
         directEvidence ??
+        stateTransitionEvidence ??
         (expression === undefined ? undefined : propFlowAnalyzer.find(expression));
       if (expression !== undefined && evidence !== undefined) {
+        const activationExpression =
+          'activationExpression' in evidence ? evidence.activationExpression : undefined;
         candidates.push({
+          ...(activationExpression === undefined ? {} : { activationExpression }),
           expression,
           metadata: createTriggerMetadata(
             sourceFile,
@@ -205,6 +232,53 @@ function collectVisibleLocalHandlerDeclarations(
     for (const [name, declaration] of localAliases) aliases.set(name, declaration);
   }
   return aliases;
+}
+
+/** Reads lexically visible React useState tuples without crossing into sibling callbacks. */
+function collectVisibleLocalStateSetters(node: ts.Node): ReadonlyMap<string, string> {
+  const setters = new Map<string, string>();
+  let ancestor: ts.Node = node.parent;
+  while (!ts.isSourceFile(ancestor)) {
+    if (ts.isFunctionLike(ancestor)) {
+      const owner = ancestor as ts.FunctionLikeDeclaration & {
+        readonly body?: ts.ConciseBody;
+      };
+      if (owner.body === undefined) {
+        ancestor = ancestor.parent;
+        continue;
+      }
+      const visit = (current: ts.Node): void => {
+        if (current !== owner.body && ts.isFunctionLike(current)) return;
+        if (ts.isVariableDeclaration(current) && ts.isArrayBindingPattern(current.name)) {
+          const [stateElement, setterElement] = current.name.elements;
+          const initializer = current.initializer;
+          const callee =
+            initializer !== undefined && ts.isCallExpression(initializer)
+              ? unwrapExpression(initializer.expression)
+              : undefined;
+          const useStateCall =
+            callee !== undefined &&
+            ((ts.isIdentifier(callee) && callee.text === 'useState') ||
+              (ts.isPropertyAccessExpression(callee) && callee.name.text === 'useState'));
+          if (
+            useStateCall &&
+            stateElement !== undefined &&
+            setterElement !== undefined &&
+            ts.isBindingElement(stateElement) &&
+            ts.isIdentifier(stateElement.name) &&
+            ts.isBindingElement(setterElement) &&
+            ts.isIdentifier(setterElement.name) &&
+            !setters.has(setterElement.name.text)
+          )
+            setters.set(setterElement.name.text, stateElement.name.text);
+        }
+        ts.forEachChild(current, visit);
+      };
+      visit(owner.body);
+    }
+    ancestor = ancestor.parent;
+  }
+  return setters;
 }
 
 /** Collects unique direct declarations from one lexical block without descending into siblings. */
@@ -408,6 +482,135 @@ function findImperativeVisibilityEvidence(
   return undefined;
 }
 
+/** Accepts a non-null value that can reveal a locally state-gated UI without evaluating it now. */
+function isPositiveLocalStateTransitionArgument(expression: ts.Expression): boolean {
+  const value = unwrapExpression(expression);
+  if (value.kind === ts.SyntaxKind.NullKeyword || value.kind === ts.SyntaxKind.FalseKeyword) {
+    return false;
+  }
+  if (ts.isIdentifier(value)) return value.text !== 'undefined';
+  if (ts.isStringLiteralLike(value) || ts.isNoSubstitutionTemplateLiteral(value)) {
+    return value.text.length > 0;
+  }
+  if (ts.isNumericLiteral(value)) return Number(value.text) !== 0;
+  return value.kind === ts.SyntaxKind.TrueKeyword;
+}
+
+/** Restricts an authored short-circuit prefix to side-effect-free scalar reads. */
+function isSafeLocalStateTransitionGuard(expression: ts.Expression, depth = 0): boolean {
+  if (depth > 8) return false;
+  const value = unwrapExpression(expression);
+  if (
+    ts.isIdentifier(value) ||
+    ts.isPropertyAccessExpression(value) ||
+    ts.isElementAccessExpression(value) ||
+    ts.isLiteralExpression(value) ||
+    value.kind === ts.SyntaxKind.TrueKeyword ||
+    value.kind === ts.SyntaxKind.FalseKeyword ||
+    value.kind === ts.SyntaxKind.NullKeyword
+  )
+    return true;
+  if (ts.isPrefixUnaryExpression(value) && value.operator === ts.SyntaxKind.ExclamationToken) {
+    return isSafeLocalStateTransitionGuard(value.operand, depth + 1);
+  }
+  if (!ts.isBinaryExpression(value)) return false;
+  const safeOperators = new Set([
+    ts.SyntaxKind.AmpersandAmpersandToken,
+    ts.SyntaxKind.BarBarToken,
+    ts.SyntaxKind.EqualsEqualsToken,
+    ts.SyntaxKind.ExclamationEqualsToken,
+    ts.SyntaxKind.EqualsEqualsEqualsToken,
+    ts.SyntaxKind.ExclamationEqualsEqualsToken,
+    ts.SyntaxKind.GreaterThanToken,
+    ts.SyntaxKind.GreaterThanEqualsToken,
+    ts.SyntaxKind.LessThanToken,
+    ts.SyntaxKind.LessThanEqualsToken,
+  ]);
+  return (
+    safeOperators.has(value.operatorToken.kind) &&
+    isSafeLocalStateTransitionGuard(value.left, depth + 1) &&
+    isSafeLocalStateTransitionGuard(value.right, depth + 1)
+  );
+}
+
+/** Finds one positive useState setter call behind optional Boolean event guards. */
+function findLocalStateTransitionCall(
+  expression: ts.Expression,
+  setters: ReadonlyMap<string, string>,
+  depth = 0,
+): ImperativeVisibilityEvidence | undefined {
+  if (depth > 8) return undefined;
+  const value = unwrapExpression(expression);
+  if (ts.isCallExpression(value)) {
+    const callee = unwrapExpression(value.expression);
+    const stateName = ts.isIdentifier(callee) ? setters.get(callee.text) : undefined;
+    const argument = value.arguments[0];
+    return stateName !== undefined &&
+      value.arguments.length === 1 &&
+      argument !== undefined &&
+      isPositiveLocalStateTransitionArgument(argument)
+      ? {
+          activationExpression: value,
+          invocationSafe: true,
+          kind: 'local-state-transition',
+          methodName: (callee as ts.Identifier).text,
+          stateName,
+        }
+      : undefined;
+  }
+  if (
+    !ts.isBinaryExpression(value) ||
+    value.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken ||
+    !isSafeLocalStateTransitionGuard(value.left)
+  )
+    return undefined;
+  return findLocalStateTransitionCall(value.right, setters, depth + 1);
+}
+
+/** Follows the same immutable handler aliases while retaining the exact setter call for replay. */
+function findLocalStateTransitionEvidence(
+  expression: ts.Expression | ts.FunctionDeclaration,
+  aliases: ReadonlyMap<string, LocalHandlerDeclaration>,
+  setters: ReadonlyMap<string, string>,
+  visitedAliases: ReadonlySet<string>,
+  depth: number,
+  position: ImperativeHandlerPosition,
+): ImperativeVisibilityEvidence | undefined {
+  if (depth > MAX_LOCAL_ALIAS_DEPTH) return undefined;
+  const value = unwrapExpression(expression);
+  if (ts.isIdentifier(value)) {
+    if (visitedAliases.has(value.text)) return undefined;
+    const alias = aliases.get(value.text);
+    if (alias === undefined) return undefined;
+    const nextVisited = new Set(visitedAliases);
+    nextVisited.add(value.text);
+    return findLocalStateTransitionEvidence(
+      alias,
+      aliases,
+      setters,
+      nextVisited,
+      depth + 1,
+      position,
+    );
+  }
+  if (
+    (ts.isArrowFunction(value) ||
+      ts.isFunctionExpression(value) ||
+      ts.isFunctionDeclaration(value)) &&
+    value.parameters.length === 0 &&
+    value.body !== undefined
+  ) {
+    const bodyExpression = readSingleFunctionBodyExpression(value.body);
+    return bodyExpression === undefined
+      ? undefined
+      : findLocalStateTransitionCall(bodyExpression, setters);
+  }
+  if (position === 'called-alias' && ts.isCallExpression(value)) {
+    return findLocalStateTransitionCall(value, setters);
+  }
+  return undefined;
+}
+
 /**
  * Requires a UI-shaped receiver name before treating generic methods such as open/show as visual.
  * This excludes unrelated domain calls like billing.show() while retaining modalRef.current.open().
@@ -470,7 +673,9 @@ function createTriggerMetadata(
     sourcePath,
     expression.getStart(sourceFile),
     eventName,
+    evidence.kind ?? 'imperative-visibility',
     evidence.methodName,
+    evidence.stateName ?? '',
   ].join('\0');
   return {
     column: position.character + 1,
@@ -478,9 +683,11 @@ function createTriggerMetadata(
     expression: expression.getText(sourceFile).trim().slice(0, MAX_METADATA_TEXT_LENGTH),
     id: `deferred-ui:${createHash('sha256').update(identity).digest('hex').slice(0, 20)}`,
     invocationSafe: evidence.invocationSafe,
+    ...(evidence.kind === undefined ? {} : { kind: evidence.kind }),
     line: position.line + 1,
     methodName: evidence.methodName,
     ...(ownerName === undefined ? {} : { ownerName }),
+    ...(evidence.stateName === undefined ? {} : { stateName: evidence.stateName }),
     sourcePath: path.normalize(sourcePath),
   };
 }
@@ -514,10 +721,13 @@ function findNearestNamedFunction(node: ts.Node): string | undefined {
 function createHandlerRegistration(
   expressionText: string,
   metadata: PreviewDeferredUiTriggerMetadata,
+  activationExpressionText?: string,
 ): string {
   const api = `globalThis[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_API_SYMBOL)})]`;
   const serialized = JSON.stringify(metadata);
-  return `((__reactPreviewDeferredUiHandler) => { try { ${api}?.registerDeferredUiTrigger?.(__reactPreviewDeferredUiHandler, ${serialized}); } catch { /* Preserve authored event semantics. */ } return __reactPreviewDeferredUiHandler; })(${expressionText})`;
+  const activation =
+    activationExpressionText === undefined ? '' : `, () => (${activationExpressionText})`;
+  return `((__reactPreviewDeferredUiHandler) => { try { ${api}?.registerDeferredUiTrigger?.(__reactPreviewDeferredUiHandler, ${serialized}${activation}); } catch { /* Preserve authored event semantics. */ } return __reactPreviewDeferredUiHandler; })(${expressionText})`;
 }
 
 /** Registers inert source evidence without constructing or invoking the authored handler. */

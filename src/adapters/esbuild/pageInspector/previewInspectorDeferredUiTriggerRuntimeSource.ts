@@ -32,6 +32,8 @@ function initializePreviewInspectorDeferredUiTriggerState() {
   if (previewInspectorSession.deferredUiTriggerEntryRevision !== previewEntryRevision) {
     previewInspectorSession.deferredUiTriggerEntryRevision = previewEntryRevision;
     previewInspectorSession.deferredUiTriggerRecords = new Map();
+    previewInspectorSession.deferredUiTriggerActivations = new WeakMap();
+    previewInspectorSession.deferredUiTriggerAutomaticAttemptKeys = new Set();
     previewInspectorSession.deferredUiTriggerHandlerSources = new WeakMap();
     previewInspectorSession.deferredUiTriggerSequence = 0;
     previewInspectorSession.deferredUiTriggerRefreshScheduled = false;
@@ -41,6 +43,12 @@ function initializePreviewInspectorDeferredUiTriggerState() {
   }
   if (!(previewInspectorSession.deferredUiTriggerHandlerSources instanceof WeakMap)) {
     previewInspectorSession.deferredUiTriggerHandlerSources = new WeakMap();
+  }
+  if (!(previewInspectorSession.deferredUiTriggerActivations instanceof WeakMap)) {
+    previewInspectorSession.deferredUiTriggerActivations = new WeakMap();
+  }
+  if (!(previewInspectorSession.deferredUiTriggerAutomaticAttemptKeys instanceof Set)) {
+    previewInspectorSession.deferredUiTriggerAutomaticAttemptKeys = new Set();
   }
   if (!Number.isSafeInteger(previewInspectorSession.deferredUiTriggerSequence)) {
     previewInspectorSession.deferredUiTriggerSequence = 0;
@@ -53,10 +61,17 @@ function normalizePreviewInspectorDeferredUiTriggerMetadata(metadata) {
   const id = typeof source.id === 'string' ? source.id.slice(0, 128) : '';
   const eventName = typeof source.eventName === 'string' ? source.eventName.slice(0, 64) : '';
   const methodName = typeof source.methodName === 'string' ? source.methodName.slice(0, 64) : '';
+  const kind = source.kind === 'local-state-transition'
+    ? 'local-state-transition'
+    : 'imperative-visibility';
+  const stateName = typeof source.stateName === 'string' ? source.stateName.slice(0, 160) : '';
   if (
     id.length === 0 ||
     !/^on[A-Z][A-Za-z0-9]*$/u.test(eventName) ||
-    !previewInspectorDeferredUiMethodNames.has(methodName)
+    (kind === 'imperative-visibility' && !previewInspectorDeferredUiMethodNames.has(methodName)) ||
+    (kind === 'local-state-transition' &&
+      (!/^set[A-Z_$][A-Za-z0-9_$]*$/u.test(methodName) ||
+        !/^[$_\p{ID_Start}][$_\u200C\u200D\p{ID_Continue}]*$/u.test(stateName)))
   ) {
     return undefined;
   }
@@ -68,10 +83,12 @@ function normalizePreviewInspectorDeferredUiTriggerMetadata(metadata) {
     expression: readText('expression'),
     id,
     invocationSafe: source.invocationSafe === true,
+    kind,
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
     methodName,
     ownerName: readText('ownerName', 160),
     sourcePath: readText('sourcePath', 1024),
+    ...(kind === 'local-state-transition' ? { stateName } : {}),
   };
 }
 
@@ -133,13 +150,16 @@ function registerPreviewInspectorDeferredUiTriggerMetadata(metadata) {
  * Registers a reached JSX event handler and returns the exact same function object.
  *
  * Handler-to-source membership lives in a WeakMap so repeated inline closures are not retained by
- * the pinned webview. A later Fiber scan must still prove that exactly one registered closure for
- * this source occurrence is mounted before activation becomes available.
+ * the pinned webview. A later Fiber scan must still prove a mounted closure. Imperative handlers
+ * require one exact occurrence; positive local-state collection items are ranked as safe variants.
  */
-function registerPreviewInspectorDeferredUiTrigger(handler, metadata) {
+function registerPreviewInspectorDeferredUiTrigger(handler, metadata, activation) {
   if (typeof handler !== 'function') return handler;
   const normalized = normalizePreviewInspectorDeferredUiTriggerMetadata(metadata);
   if (normalized === undefined) return handler;
+  if (normalized.kind === 'local-state-transition' && typeof activation !== 'function') {
+    return handler;
+  }
   const record = admitPreviewInspectorDeferredUiTriggerRecord(normalized);
   const firstCallable = record.hasCallableRegistration !== true;
   const handlerSources = previewInspectorSession.deferredUiTriggerHandlerSources;
@@ -149,6 +169,15 @@ function registerPreviewInspectorDeferredUiTrigger(handler, metadata) {
     handlerSources.set(handler, sourceIds);
   }
   sourceIds.add(normalized.id);
+  if (normalized.kind === 'local-state-transition') {
+    const activations = previewInspectorSession.deferredUiTriggerActivations;
+    let activationsBySource = activations.get(handler);
+    if (!(activationsBySource instanceof Map)) {
+      activationsBySource = new Map();
+      activations.set(handler, activationsBySource);
+    }
+    activationsBySource.set(normalized.id, activation);
+  }
   record.hasCallableRegistration = true;
   record.metadata = normalized;
   if (firstCallable) schedulePreviewInspectorDeferredUiTriggerRefresh();
@@ -180,6 +209,12 @@ function createPreviewInspectorDeferredUiTriggerMountIndex(records) {
     }
   }
   const pending = [];
+  const appendBoundaryRoot = (boundary) => {
+    const boundaryRoot = readPreviewInspectorBoundaryFiber(boundary);
+    const child = readPreviewInspectorFiberLink(boundaryRoot, 'child');
+    if (child === undefined) return;
+    pending.push({ ancestorMatches: new Set(), fiber: child });
+  };
   const selectedBoundaries =
     typeof readPreviewInspectorActiveTargetBoundaries === 'function'
       ? readPreviewInspectorActiveTargetBoundaries(previewInspectorSession.selectedExportName)
@@ -187,13 +222,18 @@ function createPreviewInspectorDeferredUiTriggerMountIndex(records) {
           previewInspectorSession.selectedExportName,
         ) ?? new Set();
   if (selectedBoundaries !== null && typeof selectedBoundaries?.[Symbol.iterator] === 'function') {
-    for (const boundary of selectedBoundaries) {
-      const boundaryRoot = readPreviewInspectorBoundaryFiber(boundary);
-      pending.push({
-        ancestorMatches: new Set(),
-        fiber: readPreviewInspectorFiberLink(boundaryRoot, 'child'),
-      });
-    }
+    for (const boundary of selectedBoundaries) appendBoundaryRoot(boundary);
+  }
+  const activeReachabilityKey = previewInspectorSession.activeTargetReachabilityKey;
+  const activeReachability = typeof activeReachabilityKey === 'string'
+    ? previewInspectorSession.targetReachabilityByKey?.get?.(activeReachabilityKey)
+    : undefined;
+  if (
+    activeReachability?.directTarget !== true &&
+    activeReachability?.pageRootCommitted === true &&
+    activeReachability?.pageCommitBoundary !== undefined
+  ) {
+    appendBoundaryRoot(activeReachability.pageCommitBoundary);
   }
   const visited = new Set();
   let pendingIndex = 0;
@@ -232,9 +272,30 @@ function createPreviewInspectorDeferredUiTriggerMountIndex(records) {
         }
         let evidence = byHandler.get(handler);
         if (evidence === undefined) {
-          evidence = { handler, mountedCount: 0, sharedSource: false };
+          evidence = {
+            activation: previewInspectorSession.deferredUiTriggerActivations
+              .get(handler)?.get?.(record.metadata.id),
+            discoveryOrder: visited.size,
+            handler,
+            mountedCount: 0,
+            selectionPriority: 0,
+            sharedSource: false,
+          };
           byHandler.set(handler, evidence);
         }
+        const tabIndex = readPreviewInspectorOwnData(props, 'tabIndex');
+        const ariaSelected = readPreviewInspectorOwnData(props, 'aria-selected');
+        const ariaCurrent = readPreviewInspectorOwnData(props, 'aria-current');
+        const ariaLabel = readPreviewInspectorOwnData(props, 'aria-label');
+        const dataState = readPreviewInspectorOwnData(props, 'data-state');
+        evidence.selectionPriority = Math.max(
+          evidence.selectionPriority,
+          tabIndex === 0 ? 80 : 0,
+          ariaSelected === true || ariaSelected === 'true' ? 70 : 0,
+          ariaCurrent === true || ariaCurrent === 'true' ? 60 : 0,
+          dataState === 'active' || dataState === 'open' ? 50 : 0,
+          typeof ariaLabel === 'string' && ariaLabel.length > 0 ? 20 : 0,
+        );
         if (matchedRecords.length > 1) evidence.sharedSource = true;
         if (item.ancestorMatches.has(evidence)) continue;
         evidence.mountedCount += 1;
@@ -262,23 +323,35 @@ function createPreviewInspectorDeferredUiTriggerMountIndex(records) {
       ? [...handlerEvidence.values()].filter((evidence) => evidence.mountedCount > 0)
       : [];
     const mounted = mountedEvidence.length > 0;
-    const ambiguous =
-      mountedEvidence.length > 1 ||
-      mountedEvidence.some(
-        (evidence) => evidence.mountedCount > 1 || evidence.sharedSource === true,
-      ) ||
+    const localStateTransition = record.metadata?.kind === 'local-state-transition';
+    const ambiguousSource =
+      mountedEvidence.some((evidence) => evidence.sharedSource === true) ||
       (identifierSourceCounts.get(record.identifierSourceSignature) ?? 0) > 1;
+    const ambiguousOccurrence =
+      mountedEvidence.length > 1 || mountedEvidence.some((evidence) => evidence.mountedCount > 1);
+    const ambiguous = ambiguousSource || (!localStateTransition && ambiguousOccurrence);
     const invocationSafe = record.metadata?.invocationSafe === true;
+    const selectedEvidence = [...mountedEvidence].sort((left, right) =>
+      (right.selectionPriority ?? 0) - (left.selectionPriority ?? 0) ||
+      (left.discoveryOrder ?? Number.MAX_SAFE_INTEGER) -
+        (right.discoveryOrder ?? Number.MAX_SAFE_INTEGER),
+    )[0];
+    const activationAvailable = !localStateTransition ||
+      typeof selectedEvidence?.activation === 'function';
     result.set(record.metadata.id, {
       ambiguous,
-      available: mounted && invocationSafe && !ambiguous,
-      handler: mountedEvidence.length === 1 ? mountedEvidence[0].handler : undefined,
+      activation: selectedEvidence?.activation,
+      available: mounted && invocationSafe && !ambiguous && activationAvailable,
+      handler: selectedEvidence?.handler,
       invocationSafe,
       mounted,
+      selectionPriority: selectedEvidence?.selectionPriority ?? 0,
       unavailableReason: !invocationSafe
         ? 'zero-argument invocation contract not proven'
         : ambiguous
           ? 'handler occurrence cannot be uniquely matched to this source'
+          : !activationAvailable
+            ? 'authored state transition is not callable'
           : mounted
             ? undefined
             : 'event handler is not mounted',
@@ -357,7 +430,10 @@ function invokePreviewInspectorDeferredUiTrigger(triggerId) {
     return false;
   }
   try {
-    const result = Reflect.apply(availability.handler, undefined, []);
+    const callable = record.metadata?.kind === 'local-state-transition'
+      ? availability.activation
+      : availability.handler;
+    const result = Reflect.apply(callable, undefined, []);
     record.activationCount += 1;
     record.lastError = undefined;
     record.status = 'invoked';
@@ -372,6 +448,151 @@ function invokePreviewInspectorDeferredUiTrigger(triggerId) {
     recordPreviewInspectorDeferredUiTriggerFailure(record, error);
     return false;
   }
+}
+
+/** Normalizes only separators needed to compare compiler and runtime source identities. */
+function normalizePreviewInspectorDeferredUiSourcePath(value) {
+  return typeof value === 'string' ? value.replaceAll('\\\\', '/').replaceAll('\\', '/') : '';
+}
+
+/** Matches one local state binding as an identifier instead of a loose text fragment. */
+function hasPreviewInspectorDeferredUiStateToken(condition, stateName) {
+  const expression = [condition?.expression, condition?.authoredExpression]
+    .filter((value) => typeof value === 'string')
+    .join(' ');
+  let offset = expression.indexOf(stateName);
+  const isIdentifierCharacter = (value) =>
+    typeof value === 'string' && value.length > 0 && /[A-Za-z0-9_$]/u.test(value);
+  while (offset >= 0) {
+    const left = expression[offset - 1];
+    const right = expression[offset + stateName.length];
+    if (!isIdentifierCharacter(left) && !isIdentifierCharacter(right)) return true;
+    offset = expression.indexOf(stateName, offset + stateName.length);
+  }
+  return false;
+}
+
+/** Scopes one replay to the current page-remount generation, not the whole editor revision. */
+function createPreviewInspectorDeferredUiAutomaticAttemptKey(state, condition, record) {
+  const renderGeneration = Number.isSafeInteger(previewInspectorSession.renderConditionRevision)
+    ? previewInspectorSession.renderConditionRevision
+    : 0;
+  return [
+    previewEntryRevision,
+    renderGeneration,
+    state?.key,
+    condition?.id,
+    record?.metadata?.id,
+  ].join(':');
+}
+
+/**
+ * Replays one compiler-proven positive useState transition inside the mounted authored page.
+ *
+ * This is intentionally narrower than a synthetic click: the generated closure calls only the
+ * exact setter expression captured by React's mounted render. Repeated collection items are safe
+ * alternatives for the same positive state hole; active/selected Fiber props rank the first probe.
+ */
+function autoInvokePreviewInspectorAuthoredStateTrigger(state, condition) {
+  initializePreviewInspectorDeferredUiTriggerState();
+  if (
+    state === undefined || condition === undefined || state.directTarget === true ||
+    previewInspectorSession.activeTargetReachabilityKey !== state.key ||
+    condition.reachabilityKey !== state.key
+  ) return undefined;
+  const conditionSourcePath = normalizePreviewInspectorDeferredUiSourcePath(condition.sourcePath);
+  const conditionOwner = typeof condition.runtimeOwnerName === 'string' &&
+    condition.runtimeOwnerName.length > 0
+    ? condition.runtimeOwnerName
+    : condition.ownerName;
+  const records = [...previewInspectorSession.deferredUiTriggerRecords.values()]
+    .filter((record) => {
+      const metadata = record?.metadata;
+      return metadata?.kind === 'local-state-transition' &&
+        metadata.invocationSafe === true &&
+        normalizePreviewInspectorDeferredUiSourcePath(metadata.sourcePath) === conditionSourcePath &&
+        typeof conditionOwner === 'string' && conditionOwner.length > 0 &&
+        metadata.ownerName === conditionOwner &&
+        hasPreviewInspectorDeferredUiStateToken(condition, metadata.stateName);
+    });
+  if (records.length === 0) return undefined;
+  const mountIndex = createPreviewInspectorDeferredUiTriggerMountIndex(records);
+  const candidates = records
+    .map((record) => ({ availability: mountIndex.get(record.metadata.id), record }))
+    .filter(({ availability, record }) => {
+      if (availability?.available !== true) return false;
+      const attemptKey = createPreviewInspectorDeferredUiAutomaticAttemptKey(
+        state,
+        condition,
+        record,
+      );
+      return !previewInspectorSession.deferredUiTriggerAutomaticAttemptKeys.has(attemptKey);
+    });
+  if (candidates.length === 0) return undefined;
+  const specification = {
+    blockerKind: 'target-reachability',
+    holeKind: 'authored-local-state-transition',
+    numbers: {
+      candidateCount: candidates.length,
+      conditionLine: condition.line ?? 0,
+    },
+    texts: [condition.expression, conditionOwner, conditionSourcePath],
+    tokens: [
+      'condition-kind:' + String(condition.kind ?? 'condition'),
+      'desired:true',
+      'target:' + String(state.targetExportName ?? ''),
+    ],
+  };
+  const portfolio = candidates.map(({ availability, record }) => ({
+    deterministicRank:
+      (100 - Math.min(100, availability.selectionPriority ?? 0)) * 1000 +
+      (record.sequence ?? 0),
+    id: record.metadata.id,
+    numbers: { selectionPriority: availability.selectionPriority ?? 0 },
+    texts: [record.metadata.expression, record.metadata.ownerName, record.metadata.stateName],
+    tokens: ['event:' + record.metadata.eventName, 'setter:' + record.metadata.methodName],
+  }));
+  const neuralSelection = typeof selectPreviewInspectorNeuralResidualCandidate === 'function'
+    ? selectPreviewInspectorNeuralResidualCandidate(specification, portfolio)
+    : undefined;
+  const selectedId = neuralSelection?.candidateId ?? [...portfolio]
+    .sort((left, right) => left.deterministicRank - right.deterministicRank)[0]?.id;
+  const selected = candidates.find(({ record }) => record.metadata.id === selectedId);
+  if (selected === undefined) return undefined;
+  const attemptKey = createPreviewInspectorDeferredUiAutomaticAttemptKey(
+    state,
+    condition,
+    selected.record,
+  );
+  previewInspectorSession.deferredUiTriggerAutomaticAttemptKeys.add(attemptKey);
+  while (previewInspectorSession.deferredUiTriggerAutomaticAttemptKeys.size > 512) {
+    previewInspectorSession.deferredUiTriggerAutomaticAttemptKeys.delete(
+      previewInspectorSession.deferredUiTriggerAutomaticAttemptKeys.values().next().value,
+    );
+  }
+  if (!invokePreviewInspectorDeferredUiTrigger(selected.record.metadata.id)) return undefined;
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Replay authored page state transition',
+      blockerId: 'target-reachability:' + state.key,
+      blockerKind: 'target-reachability',
+      blockerName: 'Target not reached · ' + String(state.targetExportName ?? ''),
+      line: selected.record.metadata.line,
+      mode: 'authored-state-transition-auto',
+      neuralResidualDecision: neuralSelection?.decision,
+      ownerName: selected.record.metadata.ownerName,
+      reason: 'A mounted page callback supplies the positive local state required by the target path',
+      selectedValue: {
+        stateName: selected.record.metadata.stateName,
+        triggerId: selected.record.metadata.id,
+      },
+      startsRenderAttempt: true,
+    });
+  }
+  return {
+    metadata: selected.record.metadata,
+    neuralResidualDecision: neuralSelection?.decision,
+  };
 }
 `;
 }

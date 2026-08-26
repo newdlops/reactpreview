@@ -37,6 +37,65 @@ describe('createPreviewLargePackageBarrelPlugin', () => {
     }
   });
 
+  /** Treats an omitted exports map as Node's legacy public-deep-import contract. */
+  it('projects a verified legacy deep subpath when the package omits exports', async () => {
+    const fixture = await createLargeBarrelFixture({ omitExports: true });
+    try {
+      await writeFile(
+        fixture.entryPath,
+        `import { Icon255 } from '${PACKAGE_NAME}'; globalThis.previewResult = Icon255;`,
+        'utf8',
+      );
+
+      const result = await buildFixture(fixture, fixture.entryPath);
+
+      expect(executePreview(result)).toBe('icon-255');
+      expect(hasInput(result, 'dist/Icon255.js')).toBe(true);
+      expect(hasInput(result, 'dist/Icon127.js')).toBe(false);
+      expect(hasInput(result, 'dist/index.js')).toBe(false);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  /** Keeps legacy root evaluation when a browser map could redirect a physical leaf. */
+  it('preserves an exports-less barrel when its browser map changes a deep import', async () => {
+    const fixture = await createLargeBarrelFixture({ browserMap: true, omitExports: true });
+    try {
+      await writeFile(
+        fixture.entryPath,
+        `import { Icon255 } from '${PACKAGE_NAME}'; globalThis.previewResult = Icon255;`,
+        'utf8',
+      );
+
+      const result = await buildFixture(fixture, fixture.entryPath);
+
+      expect(executePreview(result)).toBe('icon-000');
+      expect(hasInput(result, 'dist/index.js')).toBe(true);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  /** Keeps root semantics when public runtime conditions do not all select the barrel leaf. */
+  it('preserves the barrel when conditional public subpaths can select another leaf', async () => {
+    const fixture = await createLargeBarrelFixture({ conditionalSubpaths: true });
+    try {
+      await writeFile(
+        fixture.entryPath,
+        `import { Icon255 } from '${PACKAGE_NAME}'; globalThis.previewResult = Icon255;`,
+        'utf8',
+      );
+
+      const result = await buildFixture(fixture, fixture.entryPath);
+
+      expect(executePreview(result)).toBe('icon-255');
+      expect(hasInput(result, 'dist/index.js')).toBe(true);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   /** Supports legacy side-effect-free barrels only inside an explicitly selected fast corridor. */
   it('projects exact physical leaves without a public subpath only for selected importers', async () => {
     const fixture = await createLargeBarrelFixture({
@@ -258,7 +317,10 @@ interface OrdinaryPackageFixture extends LargeBarrelFixture {
 /** Optional package evidence variations used to exercise the optimizer's fail-closed boundaries. */
 interface LargeBarrelFixtureOptions {
   readonly ambiguousSubpath?: boolean;
+  readonly browserMap?: boolean;
+  readonly conditionalSubpaths?: boolean;
   readonly directoryLeaves?: boolean;
+  readonly omitExports?: boolean;
   readonly publicSubpaths?: boolean;
   readonly sideEffects?: boolean;
 }
@@ -276,18 +338,25 @@ async function createLargeBarrelFixture(
     mkdir(path.dirname(entryPath), { recursive: true }),
   ]);
   const exportMap: Record<string, unknown> = { '.': './dist/index.js' };
-  if (options.publicSubpaths !== false) exportMap['./*'] = './dist/*.js';
+  if (options.publicSubpaths !== false) {
+    exportMap['./*'] =
+      options.conditionalSubpaths === true
+        ? { browser: './browser/*.js', default: './dist/*.js' }
+        : './dist/*.js';
+  }
   if (options.ambiguousSubpath === true) exportMap['./alias/*'] = './dist/*.js';
-  await writeFile(
-    path.join(packageRoot, 'package.json'),
-    `${JSON.stringify({
-      exports: exportMap,
-      name: PACKAGE_NAME,
-      sideEffects: options.sideEffects ?? false,
-      type: 'module',
-    })}\n`,
-    'utf8',
-  );
+  const manifest = {
+    ...(options.browserMap === true
+      ? { browser: { './dist/Icon255.js': './dist/Icon000.js' } }
+      : {}),
+    ...(options.omitExports === true ? {} : { exports: exportMap }),
+    main: './dist/index.js',
+    module: './dist/index.js',
+    name: PACKAGE_NAME,
+    sideEffects: options.sideEffects ?? false,
+    type: 'module',
+  };
+  await writeFile(path.join(packageRoot, 'package.json'), `${JSON.stringify(manifest)}\n`, 'utf8');
   const names = Array.from(
     { length: EXPORT_COUNT },
     (_, index) => `Icon${index.toString().padStart(3, '0')}`,

@@ -1,7 +1,7 @@
 /**
  * Narrows very large, side-effect-free package barrels to the exact named exports one importer uses.
- * The optimization is evidence driven: the package manifest, root ESM barrel, public export map,
- * physical leaf file, and esbuild's own deep-subpath resolution must all agree before substitution.
+ * The optimization is evidence driven: the package manifest, root ESM barrel, package resolution
+ * contract, and physical leaf file must all agree before substitution.
  */
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
@@ -26,7 +26,8 @@ export interface PreviewLargePackageBarrelPluginOptions {
    * Allows a side-effect-free package's exact barrel leaf when no public subpath maps to it.
    *
    * This is reserved for a statically selected preview corridor whose package code is local and
-   * immutable for the build; the default optimizer continues to require public export proof.
+   * immutable for the build. The default optimizer permits physical leaves only for legacy
+   * packages that expose deep files directly by omitting both `exports` and browser remapping.
    */
   readonly allowPhysicalLeafProjection?: boolean;
   /** Optional lower bound used by a selected-corridor fast build instead of the global default. */
@@ -43,8 +44,9 @@ export interface PreviewLargePackageBarrelPluginOptions {
   /**
    * Resolves a package root without re-entering esbuild from an onResolve callback.
    *
-   * Selected fast corridors must provide this synchronous project resolver. If it cannot prove a
-   * runtime/source entry, optimization fails open and esbuild handles the authored root import.
+   * Compiler-composed preview builds provide this synchronous project resolver. If it cannot
+   * prove a runtime/source entry, optimization fails open and esbuild handles the authored root
+   * import.
    */
   readonly resolvePackageRoot?: (packageName: string, importerPath: string) => string | undefined;
   /** Optional exact authored importers; other workspace files retain ordinary package resolution. */
@@ -96,15 +98,16 @@ interface LargePackageBarrelEvidence {
 
 /** Bounded package manifest fields required by the proof. */
 interface LargePackageManifest {
+  readonly browser?: unknown;
   readonly exports?: unknown;
   readonly name?: unknown;
   readonly sideEffects?: unknown;
 }
 
-/** One public export key and runtime target pattern extracted without executing package code. */
-interface PackageSubpathPattern {
+/** One public export key and all of its possible non-type runtime targets. */
+interface PackageSubpathContract {
   readonly key: string;
-  readonly target: string;
+  readonly targets: readonly string[];
 }
 
 /** Validated mapping transported to the private virtual module loader. */
@@ -126,8 +129,9 @@ interface LargeBarrelPluginData {
  * Creates a fail-closed optimizer for enormous ESM package barrels.
  *
  * Only ordinary named import statements are eligible. A package must declare `sideEffects: false`,
- * expose at least 256 direct named re-exports, and publicly export a deep subpath that esbuild resolves
- * to the same physical leaf. Any uncertainty returns `undefined` and preserves normal root bundling.
+ * expose at least 256 direct named re-exports, and expose the selected leaf through either one
+ * condition-invariant exports-map subpath or the legacy deep-import contract. Any uncertainty
+ * returns `undefined` and preserves normal root bundling.
  */
 export function createPreviewLargePackageBarrelPlugin(
   options: PreviewLargePackageBarrelPluginOptions,
@@ -148,7 +152,7 @@ export function createPreviewLargePackageBarrelPlugin(
   let demandInventoryByImporter = new Map<string, Promise<NamedImportDemandInventory>>();
   let resolutionByImport = new Map<string, Promise<OnResolveResult | undefined>>();
   let evidenceByEntry = new Map<string, Promise<LargePackageBarrelEvidence | undefined>>();
-  let resolvedMappingByIdentity = new Map<string, Promise<ResolvedBarrelProjection | undefined>>();
+  let resolvedMappingByIdentity = new Map<string, ResolvedBarrelProjection | undefined>();
   let selectedPackageSpecifiersPromise: Promise<ReadonlySet<string>> | undefined;
 
   return {
@@ -159,10 +163,7 @@ export function createPreviewLargePackageBarrelPlugin(
         demandInventoryByImporter = new Map<string, Promise<NamedImportDemandInventory>>();
         resolutionByImport = new Map<string, Promise<OnResolveResult | undefined>>();
         evidenceByEntry = new Map<string, Promise<LargePackageBarrelEvidence | undefined>>();
-        resolvedMappingByIdentity = new Map<
-          string,
-          Promise<ResolvedBarrelProjection | undefined>
-        >();
+        resolvedMappingByIdentity = new Map<string, ResolvedBarrelProjection | undefined>();
         selectedPackageSpecifiersPromise = undefined;
       });
 
@@ -220,7 +221,6 @@ export function createPreviewLargePackageBarrelPlugin(
           build,
           arguments_,
           importerPath,
-          options.allowPhysicalLeafProjection === true,
           options.resolvePackageRoot,
           workspaceRoot,
         );
@@ -253,24 +253,20 @@ export function createPreviewLargePackageBarrelPlugin(
           return undefined;
         }
 
-        const mappings = await Promise.all(
-          demand.exportNames.map(async (exportName) => {
-            const mappingIdentity = `${evidenceIdentity}\0${exportName}`;
-            let mappingPromise = resolvedMappingByIdentity.get(mappingIdentity);
-            if (mappingPromise === undefined) {
-              mappingPromise = resolveBarrelProjection(
-                build,
-                arguments_,
+        const mappings = demand.exportNames.map((exportName) => {
+          const mappingIdentity = `${evidenceIdentity}\0${exportName}`;
+          if (!resolvedMappingByIdentity.has(mappingIdentity)) {
+            resolvedMappingByIdentity.set(
+              mappingIdentity,
+              resolveBarrelProjection(
                 evidence,
                 exportName,
                 options.allowPhysicalLeafProjection === true,
-                workspaceRoot,
-              );
-              resolvedMappingByIdentity.set(mappingIdentity, mappingPromise);
-            }
-            return await mappingPromise;
-          }),
-        );
+              ),
+            );
+          }
+          return resolvedMappingByIdentity.get(mappingIdentity);
+        });
         if (mappings.some((mapping) => mapping === undefined)) return undefined;
         const projections = mappings as ResolvedBarrelProjection[];
         const manifestPath = path.join(evidence.packageRoot, 'package.json');
@@ -329,21 +325,20 @@ function isEligibleRootImport(arguments_: OnResolveArgs): boolean {
 /**
  * Resolves one package entry without letting an optional fast-path optimization block the build.
  *
- * Fast Page Inspector builds use the compiler's already-cached static resolver. Calling
+ * Preview builds use the compiler's already-cached static resolver when one is available. Calling
  * `build.resolve()` from this plugin's own onResolve callback can wait on the outer package edge in
- * large graphs, leaving both Node and esbuild idle until the worker watchdog fires. Full builds
- * retain esbuild's exact condition-aware proof because their optimizer is graph-wide and strict.
+ * large graphs, leaving both Node and esbuild idle until the worker watchdog fires. The nested
+ * resolver remains only as a compatibility fallback for isolated plugin consumers.
  */
 async function resolvePackageEntry(
   build: Parameters<Plugin['setup']>[0],
   arguments_: OnResolveArgs,
   importerPath: string,
-  useNonRecursiveFastResolution: boolean,
   resolvePackageRoot: PreviewLargePackageBarrelPluginOptions['resolvePackageRoot'],
   workspaceRoot: string,
 ): Promise<string | undefined> {
-  if (useNonRecursiveFastResolution) {
-    const staticallyResolvedPath = resolvePackageRoot?.(arguments_.path, importerPath);
+  if (resolvePackageRoot !== undefined) {
+    const staticallyResolvedPath = resolvePackageRoot(arguments_.path, importerPath);
     if (
       staticallyResolvedPath === undefined ||
       /\.d\.[cm]?ts$/iu.test(staticallyResolvedPath) ||
@@ -659,15 +654,12 @@ function resolveBarrelLeafPath(
   return undefined;
 }
 
-/** Proves a public deep specifier whose active esbuild conditions select the exact barrel leaf. */
-async function resolveBarrelProjection(
-  build: Parameters<Plugin['setup']>[0],
-  arguments_: OnResolveArgs,
+/** Proves a public deep specifier without recursively entering esbuild package resolution. */
+function resolveBarrelProjection(
   evidence: LargePackageBarrelEvidence,
   exportName: string,
   allowPhysicalLeafProjection: boolean,
-  workspaceRoot: string,
-): Promise<ResolvedBarrelProjection | undefined> {
+): ResolvedBarrelProjection | undefined {
   const mapping = evidence.mappingsByName.get(exportName);
   if (mapping === undefined) return undefined;
   /*
@@ -675,91 +667,108 @@ async function resolveBarrelProjection(
    * root barrel and canonical package containment. Return that physical leaf immediately instead
    * of recursively calling `build.resolve()` from the package-root onResolve callback. Esbuild can
    * deadlock when several named exports perform those nested resolves concurrently in a large
-   * authored graph; the graph-wide optimizer below still requires public export-map proof.
+   * authored graph. The graph-wide optimizer may use the physical leaf only when the legacy
+   * package contract exposes deep imports without an `exports` boundary or browser remapping.
    */
-  if (allowPhysicalLeafProjection) {
+  const exposesUnmappedLegacyDeepImports =
+    evidence.manifest.exports === undefined && evidence.manifest.browser === undefined;
+  if (allowPhysicalLeafProjection || exposesUnmappedLegacyDeepImports) {
     return { ...mapping, specifier: mapping.sourcePath };
   }
-  const candidates = derivePublicDeepSpecifiers(
-    arguments_.path,
+  if (evidence.manifest.browser !== undefined) return undefined;
+  const publicSpecifier = deriveUnambiguousPublicDeepSpecifier(
+    typeof evidence.manifest.name === 'string' ? evidence.manifest.name : undefined,
     evidence.packageRoot,
     mapping.sourcePath,
     evidence.manifest.exports,
   );
-  const confirmedSpecifiers: string[] = [];
-  for (const specifier of candidates) {
-    const resolution = await build.resolve(specifier, {
-      importer: arguments_.importer,
-      kind: 'import-statement',
-      namespace: 'file',
-      pluginData: PREVIEW_RESOLVE_GUARD,
-      resolveDir: arguments_.resolveDir,
-    });
-    const physicalResolution =
-      resolution.errors.length === 0 && resolution.namespace === 'file' && !resolution.external
-        ? resolvePreviewYarnVirtualPath(resolution.path, workspaceRoot)
-        : undefined;
+  return publicSpecifier === undefined ? undefined : { ...mapping, specifier: publicSpecifier };
+}
+
+/** Inverts one condition-invariant public export contract to the exact physical barrel leaf. */
+function deriveUnambiguousPublicDeepSpecifier(
+  packageName: string | undefined,
+  packageRoot: string,
+  sourcePath: string,
+  exportsField: unknown,
+): string | undefined {
+  if (packageName === undefined || !PACKAGE_ROOT_PATTERN.test(packageName)) return undefined;
+  const relativeLeaf = `./${path.relative(packageRoot, sourcePath).replaceAll(path.sep, '/')}`;
+  const specifiers = new Set<string>();
+  for (const contract of collectPackageSubpathContracts(exportsField)) {
+    const contractSpecifiers = new Set<string>();
+    let exactForEveryRuntimeCondition = true;
+    for (const target of contract.targets) {
+      const capture = matchSingleWildcardPattern(target, relativeLeaf);
+      const subpath =
+        capture === undefined ? undefined : substituteSingleWildcard(contract.key, capture);
+      if (subpath === undefined || !subpath.startsWith('./') || subpath === '.') {
+        exactForEveryRuntimeCondition = false;
+        break;
+      }
+      contractSpecifiers.add(`${packageName}/${subpath.slice(2)}`);
+    }
+    const [specifier, duplicateSpecifier] = contractSpecifiers;
     if (
-      physicalResolution !== undefined &&
-      sourceIdentity(physicalResolution) === sourceIdentity(mapping.sourcePath)
+      exactForEveryRuntimeCondition &&
+      specifier !== undefined &&
+      duplicateSpecifier === undefined
     ) {
-      confirmedSpecifiers.push(specifier);
+      specifiers.add(specifier);
     }
   }
   // More than one public spelling for the same leaf is intentionally not guessed. Besides making
   // the generated module deterministic, this prevents an alias export from silently becoming the
   // canonical package API when package authors expose overlapping wildcard patterns.
-  const [confirmedSpecifier, duplicateSpecifier] = confirmedSpecifiers;
-  if (confirmedSpecifier !== undefined && duplicateSpecifier === undefined) {
-    return { ...mapping, specifier: confirmedSpecifier };
-  }
-  return undefined;
-}
-
-/** Inverts public export targets to candidate subpaths for one exact physical leaf. */
-function derivePublicDeepSpecifiers(
-  packageName: string,
-  packageRoot: string,
-  sourcePath: string,
-  exportsField: unknown,
-): readonly string[] {
-  const relativeLeaf = `./${path.relative(packageRoot, sourcePath).replaceAll(path.sep, '/')}`;
-  const subpaths = new Set<string>();
-  for (const pattern of collectPackageSubpathPatterns(exportsField)) {
-    const capture = matchSingleWildcardPattern(pattern.target, relativeLeaf);
-    if (capture === undefined) continue;
-    const subpath = substituteSingleWildcard(pattern.key, capture);
-    if (subpath === undefined || !subpath.startsWith('./') || subpath === '.') continue;
-    subpaths.add(`${packageName}/${subpath.slice(2)}`);
-  }
-  return [...subpaths].sort(
+  const [specifier, duplicateSpecifier] = [...specifiers].sort(
     (left, right) => left.length - right.length || left.localeCompare(right),
   );
+  return specifier !== undefined && duplicateSpecifier === undefined ? specifier : undefined;
 }
 
-/** Extracts bounded subpath/target pairs from inert conditional package exports. */
-function collectPackageSubpathPatterns(exportsField: unknown): readonly PackageSubpathPattern[] {
+/** Extracts bounded subpath contracts and rejects incomplete runtime condition trees. */
+function collectPackageSubpathContracts(exportsField: unknown): readonly PackageSubpathContract[] {
   if (!isUnknownRecord(exportsField)) return [];
-  const output: PackageSubpathPattern[] = [];
+  const output: PackageSubpathContract[] = [];
   let visited = 0;
-  const collectTargets = (key: string, value: unknown): void => {
-    if (visited >= MAXIMUM_EXPORT_TREE_NODES) return;
+  const collectTargets = (value: unknown): readonly string[] | undefined => {
+    if (visited >= MAXIMUM_EXPORT_TREE_NODES) return undefined;
     visited += 1;
     if (typeof value === 'string') {
-      if (value.startsWith('./')) output.push({ key, target: value });
-      return;
+      return value.startsWith('./') ? [value] : undefined;
     }
     if (Array.isArray(value)) {
-      for (const child of value) collectTargets(key, child);
-      return;
+      if (value.length === 0) return undefined;
+      const targets: string[] = [];
+      for (const child of value) {
+        const childTargets = collectTargets(child);
+        if (childTargets === undefined) return undefined;
+        targets.push(...childTargets);
+      }
+      return targets;
     }
-    if (!isUnknownRecord(value)) return;
-    for (const [condition, child] of Object.entries(value)) {
-      if (condition !== 'types') collectTargets(key, child);
+    if (!isUnknownRecord(value)) return undefined;
+    const runtimeConditions = Object.entries(value).filter(([condition]) => condition !== 'types');
+    if (
+      runtimeConditions.length === 0 ||
+      runtimeConditions.some(([condition]) => condition.startsWith('.'))
+    ) {
+      return undefined;
     }
+    const targets: string[] = [];
+    for (const [, child] of runtimeConditions) {
+      const childTargets = collectTargets(child);
+      if (childTargets === undefined) return undefined;
+      targets.push(...childTargets);
+    }
+    return targets;
   };
   for (const [key, value] of Object.entries(exportsField)) {
-    if (key.startsWith('./') && key !== '.') collectTargets(key, value);
+    if (!key.startsWith('./') || key === '.') continue;
+    const targets = collectTargets(value);
+    if (targets !== undefined && targets.length > 0) {
+      output.push({ key, targets: [...new Set(targets)] });
+    }
   }
   return output;
 }

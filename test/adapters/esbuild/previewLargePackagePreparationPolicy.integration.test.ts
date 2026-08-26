@@ -139,7 +139,10 @@ async function buildFixture(
       createPreviewMissingSourceFallbackPlugin({
         selectedCorridorPreparation,
         staticModuleResolver: {
-          resolve: () => undefined,
+          resolve: (specifier) =>
+            specifier === PACKAGE_NAME
+              ? path.join(fixture.workspaceRoot, 'node_modules', PACKAGE_NAME, 'dist', 'index.js')
+              : undefined,
           resolveMissingPathAliasCandidate: () => undefined,
         },
         workspaceRoot: fixture.workspaceRoot,

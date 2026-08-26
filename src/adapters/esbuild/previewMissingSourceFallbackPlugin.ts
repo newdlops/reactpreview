@@ -48,6 +48,7 @@ export function createPreviewMissingSourceFallbackPlugin(
       if (options.selectedCorridorPreparation !== true) {
         void createPreviewLargePackageBarrelPlugin({
           ...(options.readSource === undefined ? {} : { readSource: options.readSource }),
+          resolvePackageRoot: options.staticModuleResolver.resolve,
           workspaceRoot: options.workspaceRoot,
         }).setup(build);
       }

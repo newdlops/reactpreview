@@ -297,8 +297,8 @@ describe('createPreviewTailwindPlugin', () => {
     expect(result.warnings[0]?.text).toContain('Unplug @tailwindcss/postcss');
   });
 
-  /** Never invokes executable CSS directives or explicit source scans outside the workspace. */
-  it('blocks unsafe Tailwind directives before loading project adapters', async () => {
+  /** Omits direct executable directives and still blocks unsafe nested code or source scans. */
+  it('makes direct Tailwind plugins inert before loading project adapters', async () => {
     const projectRoot = await createProject('tailwind-unsafe-');
     const pluginPath = path.join(projectRoot, 'plugin.css');
     const sourcePath = path.join(projectRoot, 'outside-source.css');
@@ -325,8 +325,9 @@ describe('createPreviewTailwindPlugin', () => {
     ]);
 
     const pluginResult = await buildStylesheet(projectRoot, pluginPath);
-    expect(readCssOutput(pluginResult)).not.toContain('.fake-v4-generated');
-    expect(pluginResult.warnings[0]?.text).toContain('@plugin and @config');
+    expect(readCssOutput(pluginResult)).toContain('.fake-v4-generated');
+    expect(readCssOutput(pluginResult)).not.toContain('@plugin');
+    expect(pluginResult.warnings[0]?.text).toContain('omitted direct Tailwind');
     const sourceResult = await buildStylesheet(projectRoot, sourcePath);
     expect(readCssOutput(sourceResult)).not.toContain('.fake-v4-generated');
     expect(sourceResult.warnings[0]?.text).toContain('outside workspace-owned source');
@@ -342,6 +343,75 @@ describe('createPreviewTailwindPlugin', () => {
     const malformedResult = await buildStylesheet(projectRoot, malformedRootPath);
     expect(readCssOutput(malformedResult)).not.toContain('.fake-v4-generated');
     expect(malformedResult.warnings[0]?.text).toContain('unterminated @import');
+  });
+
+  /** Loads compiler tooling from an immutable managed package root after project resolution misses. */
+  it('uses a managed Tailwind adapter without linking node_modules into the project', async () => {
+    const projectRoot = await createProject('tailwind-managed-adapter-');
+    const managedRoot = path.join(projectRoot, 'managed-environment');
+    const stylesheetPath = path.join(projectRoot, 'globals.css');
+    await Promise.all([
+      writeFile(stylesheetPath, '@tailwind utilities;\n@plugin "./must-not-run.js";', 'utf8'),
+      mkdir(managedRoot, { recursive: true }),
+    ]);
+    await Promise.all([installFakePostcss(managedRoot), installFakeTailwindV4(managedRoot)]);
+
+    const result = await build({
+      absWorkingDir: projectRoot,
+      bundle: true,
+      entryPoints: [stylesheetPath],
+      logLevel: 'silent',
+      outdir: path.join(projectRoot, 'out'),
+      plugins: [
+        createPreviewTailwindPlugin({
+          fallbackNodeModulesPaths: [path.join(managedRoot, 'node_modules')],
+          projectRoot,
+          workspaceRoot: projectRoot,
+        }),
+      ],
+      write: false,
+    });
+
+    expect(readCssOutput(result)).toContain('.fake-v4-generated');
+    expect(readCssOutput(result)).not.toContain('@plugin');
+    expect(result.warnings[0]?.text).toContain('omitted direct Tailwind');
+  });
+
+  /** Routes a declared missing compiler through the ordinary lock-backed acquisition diagnostic. */
+  it('reports a missing required Tailwind compiler package at the inert config boundary', async () => {
+    const projectRoot = await createProject('tailwind-required-adapter-');
+    const stylesheetPath = path.join(projectRoot, 'globals.css');
+    await writeFile(stylesheetPath, '@tailwind utilities;', 'utf8');
+
+    const failure = await build({
+      absWorkingDir: projectRoot,
+      bundle: true,
+      entryPoints: [stylesheetPath],
+      logLevel: 'silent',
+      outdir: path.join(projectRoot, 'out'),
+      plugins: [
+        createPreviewTailwindPlugin({
+          projectRoot,
+          requiredCompilerPackage: '@tailwindcss/postcss',
+          workspaceRoot: projectRoot,
+        }),
+      ],
+      write: false,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    const errors =
+      typeof failure === 'object' && failure !== null && 'errors' in failure
+        ? (
+            failure as {
+              readonly errors?: readonly { location?: { file?: string }; text?: string }[];
+            }
+          ).errors
+        : undefined;
+
+    expect(errors?.[0]?.text).toBe('Could not resolve "@tailwindcss/postcss"');
+    expect(errors?.[0]?.location?.file).toBe('postcss.config.mjs');
   });
 
   /** Keeps CSS Modules local naming after Tailwind transforms their declarations. */

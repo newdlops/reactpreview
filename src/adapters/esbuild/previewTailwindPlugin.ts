@@ -21,15 +21,18 @@ import {
   appendPreviewTailwindInlineCandidates,
   collectPreviewTailwindSnapshotSources,
   scanPreviewTailwindInlineCandidates,
-  type PreviewTailwindScannerConstructor,
-  type PreviewTailwindSnapshotSource,
 } from './previewTailwindCandidates';
+import {
+  loadPreviewTailwindImplementation,
+  type PreviewPostcssMessage,
+  type PreviewTailwindImplementation,
+} from './previewTailwindImplementation';
 import {
   createPreviewWorkspacePackageResolver,
   type PreviewWorkspacePackageResolver,
 } from './previewWorkspacePackageResolver';
 
-/** Project-anchored CommonJS resolver returned by Node's `createRequire`. */
+/** Project-anchored resolver used while rewriting admitted CSS package imports. */
 type PreviewProjectRequire = ReturnType<typeof createRequire>;
 
 const CSS_FILTER = /\.css$/i;
@@ -39,47 +42,10 @@ const TAILWIND_MARKER_PATTERN =
 const EXECUTABLE_DIRECTIVE_PATTERN = /@(?:config|plugin)\b/iu;
 const EXPLICIT_SOURCE_PATTERN = /@source\s+(?!inline\s*\()(["'])(.*?)\1\s*;/giu;
 const IMPORT_SOURCE_MODIFIER_PATTERN = /\bsource\s*\(\s*(none|(["'])(.*?)\2)\s*\)/giu;
-const PROJECT_SOURCE_EXTENSIONS = 'html,js,jsx,md,mdx,ts,tsx,vue,svelte';
 const MAX_DEPENDENCY_PATHS = 128;
 const MAX_EXPLICIT_SOURCE_DIRECTORIES = 16;
 const MAX_PREFLIGHT_CSS_FILES = 32;
 const MAX_PREFLIGHT_CSS_BYTES = 2 * 1024 * 1024;
-
-/** Minimal PostCSS message fields used for bounded dependency and directory watching. */
-interface PreviewPostcssMessage {
-  /** Filesystem directory reported by a `dir-dependency` message. */
-  readonly dir?: unknown;
-  /** Filesystem dependency reported by Tailwind's processor. */
-  readonly file?: unknown;
-  /** PostCSS result message kind. */
-  readonly type?: unknown;
-}
-
-/** Structural PostCSS result returned by supported project-local releases. */
-interface PreviewPostcssResult {
-  /** Fully transformed CSS. */
-  readonly css: string;
-  /** Optional dependency messages emitted by Tailwind. */
-  readonly messages?: readonly PreviewPostcssMessage[];
-}
-
-/** Structural PostCSS processor kept independent from any project package's type declarations. */
-interface PreviewPostcssProcessor {
-  /** Processes one stylesheet while retaining its original filesystem identity. */
-  process(source: string, options: { readonly from: string }): Promise<PreviewPostcssResult>;
-}
-
-/** Loaded project implementation and the policy required to instantiate one safe processor. */
-interface PreviewTailwindImplementation {
-  /** Adapter generation selected from exact installed packages. */
-  readonly kind: 'legacy' | 'v4';
-  /** Optional native scanner paired with the v4 adapter. */
-  readonly Scanner?: PreviewTailwindScannerConstructor;
-  /** Creates a processor for the current bounded dirty-source inventory. */
-  createProcessor(
-    snapshotSources: readonly PreviewTailwindSnapshotSource[],
-  ): PreviewPostcssProcessor;
-}
 
 /** Validated explicit `@source` paths used only as narrowly scoped watch evidence. */
 interface PreviewExplicitSourceValidation {
@@ -95,8 +61,20 @@ interface PreviewCssImportPreflight {
   readonly dependencyPaths: readonly string[];
   /** Explicit safe source directories discovered across the imported style graph. */
   readonly sourceDirectories: readonly string[];
+  /** Bare root imports still absent after project and managed-package resolution. */
+  readonly unresolvedRootImports: readonly string[];
   /** Diagnostic explaining why adapter execution was refused. */
   readonly unsafeReason?: string;
+}
+
+/** Result of removing direct executable Tailwind directives without evaluating their modules. */
+interface PreviewTailwindExecutableDirectiveOmission {
+  /** Whether one or more complete quoted directives were made inert. */
+  readonly omitted: boolean;
+  /** Source with each omitted statement replaced by spaces while preserving newlines. */
+  readonly source: string;
+  /** True when an executable directive remained because its grammar was not safely understood. */
+  readonly unsafeRemainder: boolean;
 }
 
 /** Result of removing only proven-unresolvable Tailwind package imports from fail-soft CSS. */
@@ -111,10 +89,19 @@ interface PreviewTailwindImportFallback {
 export interface PreviewTailwindPluginOptions {
   /** Disables package-wide v4 scans after a complete page corridor supplied bounded sources. */
   readonly boundedSourceDiscovery?: boolean;
+  /** Immutable managed-store package roots used only after ordinary project resolution misses. */
+  readonly fallbackNodeModulesPaths?: readonly string[];
+  /** Exact retry-scoped CSS imports already admitted for an empty render-only contract. */
+  readonly hintedStyleFallbacks?: readonly {
+    readonly moduleSpecifier: string;
+    readonly sourcePath: string;
+  }[];
   /** Nearest package boundary selected for the active preview target. */
   readonly projectRoot: string;
   /** Reads the current serialized rebuild's dirty editor overlays. */
   readonly readSourceSnapshots?: () => readonly PreviewSourceSnapshot[];
+  /** Declared lock-backed compiler package whose absence should trigger managed acquisition. */
+  readonly requiredCompilerPackage?: string;
   /** Workspace boundary outside which source scanning is forbidden. */
   readonly workspaceRoot: string;
 }
@@ -133,6 +120,14 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
   const lexicalWorkspaceRoot = path.resolve(options.workspaceRoot);
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
   const defaultProjectRoot = canonicalizeExistingPath(options.projectRoot);
+  const fallbackNodeModulesPaths = Object.freeze([
+    ...new Set((options.fallbackNodeModulesPaths ?? []).map(canonicalizeExistingPath)),
+  ]);
+  const hintedStyleFallbacks = new Set(
+    (options.hintedStyleFallbacks ?? []).map(
+      (hint) => `${canonicalizeExistingPath(hint.sourcePath)}\0${hint.moduleSpecifier}`,
+    ),
+  );
   const implementationByStyleRoot = new Map<string, PreviewTailwindImplementation>();
   const processingQueueByStyleRoot = new Map<string, Promise<void>>();
   const workspacePackageResolver = createPreviewWorkspacePackageResolver(workspaceRoot);
@@ -149,18 +144,19 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
         const source = await readFile(sourcePath, 'utf8');
         if (!TAILWIND_MARKER_PATTERN.test(source)) return undefined;
         const loader = selectCssLoader(sourcePath);
-        if (EXECUTABLE_DIRECTIVE_PATTERN.test(source)) {
+        const executableDirectives = omitPreviewTailwindExecutableDirectives(source);
+        if (executableDirectives.unsafeRemainder) {
           return createFailSoftResult(
             source,
             sourcePath,
             loader,
-            'Tailwind @plugin and @config directives were not executed because preview styles cannot run project-authored configuration code.',
+            'Tailwind @plugin and @config directives were not executed because one or more executable directives could not be made inert safely.',
           );
         }
 
         const boundedSource = options.boundedSourceDiscovery
-          ? boundPreviewTailwindSourceDiscovery(source).source
-          : source;
+          ? boundPreviewTailwindSourceDiscovery(executableDirectives.source).source
+          : executableDirectives.source;
         const explicitSources = validateExplicitSources(boundedSource, sourcePath, workspaceRoot);
         if (explicitSources.unsafeReason !== undefined) {
           return createFailSoftResult(source, sourcePath, loader, explicitSources.unsafeReason);
@@ -177,16 +173,37 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
           styleRoot,
           workspaceRoot,
           workspacePackageResolver,
+          fallbackNodeModulesPaths,
         );
         if (importPreflight.unsafeReason !== undefined) {
           return createFailSoftResult(source, sourcePath, loader, importPreflight.unsafeReason);
         }
+        const admittedUnresolvedImports = new Set(
+          importPreflight.unresolvedRootImports.filter((moduleSpecifier) =>
+            hintedStyleFallbacks.has(`${sourcePath}\0${moduleSpecifier}`),
+          ),
+        );
+        const unadmittedUnresolvedImports = importPreflight.unresolvedRootImports.filter(
+          (moduleSpecifier) => !admittedUnresolvedImports.has(moduleSpecifier),
+        );
         let implementation = implementationByStyleRoot.get(styleRoot);
         if (implementation === undefined) {
-          implementation = loadTailwindImplementation(styleRoot);
+          implementation = loadPreviewTailwindImplementation(styleRoot, fallbackNodeModulesPaths);
           if (implementation !== undefined) {
             implementationByStyleRoot.set(styleRoot, implementation);
           }
+        }
+        const requiredCompilerPackage = options.requiredCompilerPackage;
+        if (
+          requiredCompilerPackage !== undefined &&
+          (implementation === undefined || unadmittedUnresolvedImports.length > 0)
+        ) {
+          return createMissingTailwindDependencyResult(
+            sourcePath,
+            defaultProjectRoot,
+            implementation === undefined ? requiredCompilerPackage : undefined,
+            unadmittedUnresolvedImports,
+          );
         }
         if (implementation === undefined) {
           const pnpManifestPath = findNearestPnpManifest(styleRoot, workspaceRoot);
@@ -207,6 +224,14 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
               path.join(styleRoot, 'package.json'),
               ...(pnpManifestPath === undefined ? [] : [pnpManifestPath]),
             ],
+          );
+        }
+        if (unadmittedUnresolvedImports.length > 0) {
+          return createFailSoftResult(
+            source,
+            sourcePath,
+            loader,
+            `Tailwind CSS imports could not be safely inspected before compilation: ${unadmittedUnresolvedImports.join(', ')}`,
           );
         }
         if (
@@ -240,6 +265,8 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
           styleRoot,
           workspaceRoot,
           workspacePackageResolver,
+          fallbackNodeModulesPaths,
+          admittedUnresolvedImports,
         );
         const processorInput = appendPreviewTailwindInlineCandidates(
           processorSource,
@@ -271,6 +298,13 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
             contents: result.css,
             loader,
             resolveDir: path.dirname(sourcePath),
+            warnings: executableDirectives.omitted
+              ? [
+                  {
+                    text: 'React Preview omitted direct Tailwind @plugin/@config execution while compiling the remaining bounded application styles.',
+                  },
+                ]
+              : [],
             watchDirs: [...evidence.watchDirectories],
             watchFiles: [...evidence.dependencyPaths],
           };
@@ -288,6 +322,121 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
       build.onLoad({ filter: CSS_FILTER, namespace: 'file' }, loadTailwindStylesheet);
     },
   };
+}
+
+/** Makes direct quoted module directives inert while preserving CSS offsets and authored rules. */
+function omitPreviewTailwindExecutableDirectives(
+  source: string,
+): PreviewTailwindExecutableDirectiveOmission {
+  const ranges: { readonly end: number; readonly start: number }[] = [];
+  let unsafeRemainder = false;
+  let index = 0;
+  while (index < source.length) {
+    if (source.startsWith('/*', index)) {
+      const commentEnd = source.indexOf('*/', index + 2);
+      if (commentEnd < 0) break;
+      index = commentEnd + 2;
+      continue;
+    }
+    const character = source[index];
+    if (character === '"' || character === "'") {
+      index = findPreviewCssStringEnd(source, index, character);
+      continue;
+    }
+    const directive = readPreviewTailwindExecutableDirective(source, index);
+    if (directive === undefined) {
+      index += 1;
+      continue;
+    }
+    let cursor = directive.keywordEnd;
+    while (/\s/u.test(source[cursor] ?? '')) cursor += 1;
+    const quote = source[cursor];
+    if (quote !== '"' && quote !== "'") {
+      unsafeRemainder = true;
+      index = directive.keywordEnd;
+      continue;
+    }
+    const stringEnd = findPreviewCssStringEnd(source, cursor, quote);
+    if (stringEnd <= cursor || stringEnd >= source.length) {
+      unsafeRemainder = true;
+      break;
+    }
+    cursor = stringEnd;
+    while (/\s/u.test(source[cursor] ?? '')) cursor += 1;
+    if (source[cursor] !== ';') {
+      unsafeRemainder = true;
+      index = cursor + 1;
+      continue;
+    }
+    ranges.push({ end: cursor + 1, start: index });
+    index = cursor + 1;
+  }
+  let output = source;
+  for (const range of ranges.reverse()) {
+    const statement = output.slice(range.start, range.end);
+    output =
+      output.slice(0, range.start) +
+      statement.replaceAll(/[^\r\n]/gu, ' ') +
+      output.slice(range.end);
+  }
+  return { omitted: ranges.length > 0, source: output, unsafeRemainder };
+}
+
+/** Reads one complete executable at-rule keyword outside comments and strings. */
+function readPreviewTailwindExecutableDirective(
+  source: string,
+  index: number,
+): { readonly keywordEnd: number } | undefined {
+  for (const keyword of ['@plugin', '@config']) {
+    if (source.slice(index, index + keyword.length).toLowerCase() !== keyword) continue;
+    if (/[-_a-z\d]/iu.test(source[index + keyword.length] ?? '')) continue;
+    return { keywordEnd: index + keyword.length };
+  }
+  return undefined;
+}
+
+/** Returns the character after a CSS string, or the source length when it is malformed. */
+function findPreviewCssStringEnd(source: string, start: number, quote: string): number {
+  for (let index = start + 1; index < source.length; index += 1) {
+    if (source[index] === '\\') {
+      index += 1;
+      continue;
+    }
+    if (source[index] === quote) return index + 1;
+  }
+  return source.length;
+}
+
+/** Emits ordinary missing-package diagnostics so the existing lock-backed recovery can cooperate. */
+function createMissingTailwindDependencyResult(
+  sourcePath: string,
+  projectRoot: string,
+  compilerPackage: string | undefined,
+  stylesheetImports: readonly string[],
+): OnLoadResult {
+  const missing = [
+    ...(compilerPackage === undefined
+      ? []
+      : [{ file: path.join(projectRoot, 'postcss.config.mjs'), specifier: compilerPackage }]),
+    ...stylesheetImports.map((specifier) => ({ file: sourcePath, specifier })),
+  ];
+  return {
+    errors: [...new Map(missing.map((item) => [item.specifier, item] as const)).values()].map(
+      ({ file, specifier }) => ({
+        location: { column: 0, file, length: specifier.length, line: 1, lineText: '' },
+        text: `Could not resolve ${JSON.stringify(specifier)}`,
+      }),
+    ),
+  };
+}
+
+/** Distinguishes package CSS requests from relative paths and URL schemes. */
+function isBareCssModuleSpecifier(specifier: string): boolean {
+  return (
+    !specifier.startsWith('.') &&
+    !path.isAbsolute(specifier) &&
+    !/^[a-z][a-z\d+.-]*:/iu.test(specifier)
+  );
 }
 
 /** Detects a v4-invalid independent @apply leaf without mistaking a contextual stylesheet. */
@@ -332,184 +481,6 @@ function omitUnresolvedTailwindRootImports(
   }
 }
 
-/** Loads v4 first, then a configuration-free v2/v3 PostCSS fallback from the same package graph. */
-function loadTailwindImplementation(styleRoot: string): PreviewTailwindImplementation | undefined {
-  const projectRequire = createRequire(path.join(styleRoot, 'package.json'));
-  const v4 = loadTailwindV4Implementation(projectRequire, styleRoot);
-  return v4 ?? loadLegacyTailwindImplementation(projectRequire, styleRoot);
-}
-
-/** Loads Tailwind v4's canonical adapter and its own PostCSS/Oxide dependencies by exact issuer. */
-function loadTailwindV4Implementation(
-  projectRequire: PreviewProjectRequire,
-  styleRoot: string,
-): PreviewTailwindImplementation | undefined {
-  try {
-    const adapterPath = projectRequire.resolve('@tailwindcss/postcss');
-    const adapterRequire = createRequire(adapterPath);
-    const postcss = readCallableExport(adapterRequire('postcss'));
-    const loadFreshAdapter = (): ((...arguments_: unknown[]) => unknown) | undefined => {
-      // Tailwind v4's PostCSS package keeps its compiler LRU at module scope and keys it only by
-      // stylesheet path/base/options. Preview-only inline candidates are intentionally in-memory,
-      // so their changes cannot advance that cache key or any filesystem mtime. Retire exactly the
-      // project adapter module before a new preview CSS load; transitive project packages remain
-      // cached, while the adapter receives a clean compiler inventory for the current route.
-      Reflect.deleteProperty(adapterRequire.cache, adapterPath);
-      return readCallableExport(adapterRequire(adapterPath));
-    };
-    let initialTailwind = loadFreshAdapter();
-    if (postcss === undefined || initialTailwind === undefined) return undefined;
-    const Scanner = readScannerConstructor(safeRequire(adapterRequire, '@tailwindcss/oxide'));
-    return {
-      kind: 'v4',
-      ...(Scanner === undefined ? {} : { Scanner }),
-      createProcessor: () => {
-        const tailwind = initialTailwind ?? loadFreshAdapter();
-        initialTailwind = undefined;
-        if (tailwind === undefined) {
-          throw new TypeError('The project Tailwind v4 adapter could not be reloaded.');
-        }
-        return readPostcssProcessor(postcss([tailwind({ base: styleRoot, optimize: false })]));
-      },
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-/** Loads Tailwind v2/v3 with inert default content options instead of executing its config file. */
-function loadLegacyTailwindImplementation(
-  projectRequire: PreviewProjectRequire,
-  styleRoot: string,
-): PreviewTailwindImplementation | undefined {
-  try {
-    const tailwindPath = projectRequire.resolve('tailwindcss');
-    const tailwindRequire = createRequire(tailwindPath);
-    const postcss =
-      readCallableExport(safeRequire(tailwindRequire, 'postcss')) ??
-      readCallableExport(projectRequire('postcss'));
-    const tailwind = readCallableExport(projectRequire('tailwindcss'));
-    if (postcss === undefined || tailwind === undefined) return undefined;
-    const majorVersion = readPackageMajorVersion(tailwindPath, 'tailwindcss');
-    return {
-      kind: 'legacy',
-      createProcessor: (snapshotSources) => {
-        const content = createLegacyContentInventory(styleRoot, snapshotSources);
-        const safeConfiguration =
-          majorVersion !== undefined && majorVersion < 3 ? { purge: content } : { content };
-        return readPostcssProcessor(postcss([tailwind(safeConfiguration)]));
-      },
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-/** Reads a function from CommonJS, transpiled default, or native ESM interop values. */
-function readCallableExport(value: unknown): ((...arguments_: unknown[]) => unknown) | undefined {
-  if (typeof value === 'function') return value as (...arguments_: unknown[]) => unknown;
-  if (typeof value !== 'object' || value === null || !('default' in value)) return undefined;
-  const defaultExport = (value as { readonly default?: unknown }).default;
-  return typeof defaultExport === 'function'
-    ? (defaultExport as (...arguments_: unknown[]) => unknown)
-    : undefined;
-}
-
-/** Narrows an arbitrary processor value before project code can influence later compiler logic. */
-function readPostcssProcessor(value: unknown): PreviewPostcssProcessor {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    !('process' in value) ||
-    typeof (value as { readonly process?: unknown }).process !== 'function'
-  ) {
-    throw new TypeError('The project PostCSS package returned no compatible processor.');
-  }
-  return value as PreviewPostcssProcessor;
-}
-
-/** Attempts one package import without allowing an optional dependency miss to escape. */
-function safeRequire(require_: PreviewProjectRequire, specifier: string): unknown {
-  try {
-    return require_(specifier) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Reads the native scanner constructor without trusting unrelated package export properties. */
-function readScannerConstructor(value: unknown): PreviewTailwindScannerConstructor | undefined {
-  if (typeof value !== 'object' || value === null || !('Scanner' in value)) return undefined;
-  const Scanner = (value as { readonly Scanner?: unknown }).Scanner;
-  return typeof Scanner === 'function' ? (Scanner as PreviewTailwindScannerConstructor) : undefined;
-}
-
-/** Reads only Tailwind's inert package version to choose v2 versus v3 content option syntax. */
-function readPackageMajorVersion(
-  packageEntryPath: string,
-  packageName: string,
-): number | undefined {
-  try {
-    const manifestPath = findOwningPackageManifest(packageEntryPath, packageName);
-    if (manifestPath === undefined) return undefined;
-    const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
-    const version =
-      typeof manifest === 'object' && manifest !== null && 'version' in manifest
-        ? (manifest as { readonly version?: unknown }).version
-        : undefined;
-    const match = typeof version === 'string' ? /^(\d+)\./u.exec(version) : undefined;
-    return match?.[1] === undefined ? undefined : Number.parseInt(match[1], 10);
-  } catch {
-    return undefined;
-  }
-}
-
-/** Finds the inert owning manifest even when package exports hide the package.json subpath. */
-function findOwningPackageManifest(
-  packageEntryPath: string,
-  expectedPackageName: string,
-): string | undefined {
-  let current = path.dirname(packageEntryPath);
-  for (;;) {
-    const manifestPath = path.join(current, 'package.json');
-    if (existsSync(manifestPath)) {
-      try {
-        const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
-        if (
-          typeof manifest === 'object' &&
-          manifest !== null &&
-          'name' in manifest &&
-          (manifest as { readonly name?: unknown }).name === expectedPackageName
-        ) {
-          return manifestPath;
-        }
-      } catch {
-        return undefined;
-      }
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return undefined;
-    current = parent;
-  }
-}
-
-/** Creates safe conventional legacy content roots plus bounded raw dirty-editor overlays. */
-function createLegacyContentInventory(
-  styleRoot: string,
-  snapshots: readonly PreviewTailwindSnapshotSource[],
-): readonly unknown[] {
-  const directories = ['app', 'components', 'pages', 'src']
-    .map((directory) => path.join(styleRoot, directory))
-    .filter((directory) => existsSync(directory));
-  return [
-    ...directories.map((directory) => path.join(directory, `**/*.{${PROJECT_SOURCE_EXTENSIONS}}`)),
-    ...snapshots.map((snapshot) => ({
-      extension: snapshot.extension,
-      raw: snapshot.sourceText,
-    })),
-  ];
-}
-
 /**
  * Recursively checks bounded CSS imports before Tailwind's adapter receives the root source.
  *
@@ -524,10 +495,12 @@ function preflightCssImports(
   styleRoot: string,
   workspaceRoot: string,
   workspacePackageResolver: PreviewWorkspacePackageResolver,
+  fallbackNodeModulesPaths: readonly string[] = [],
 ): PreviewCssImportPreflight {
   const projectRequire = createRequire(path.join(styleRoot, 'package.json'));
   const dependencyPaths = new Set<string>();
   const sourceDirectories = new Set<string>();
+  const unresolvedRootImports = new Set<string>();
   const pending = [{ source: rootSource, sourcePath: rootSourcePath }];
   const visited = new Set<string>();
   let totalBytes = 0;
@@ -543,6 +516,7 @@ function preflightCssImports(
       return {
         dependencyPaths: [...dependencyPaths],
         sourceDirectories: [...sourceDirectories],
+        unresolvedRootImports: [...unresolvedRootImports],
         unsafeReason: `Tailwind CSS import preflight exceeded ${MAX_PREFLIGHT_CSS_FILES.toString()} files or ${(MAX_PREFLIGHT_CSS_BYTES / (1024 * 1024)).toString()} MiB. Narrow the imported style graph to enable safe compilation.`,
       };
     }
@@ -553,6 +527,7 @@ function preflightCssImports(
       return {
         dependencyPaths: [...dependencyPaths],
         sourceDirectories: [...sourceDirectories],
+        unresolvedRootImports: [...unresolvedRootImports],
         unsafeReason: `Tailwind compilation skipped because imported CSS contains @plugin or @config: ${path.basename(current.sourcePath)}`,
       };
     }
@@ -565,6 +540,7 @@ function preflightCssImports(
       return {
         dependencyPaths: [...dependencyPaths],
         sourceDirectories: [...sourceDirectories],
+        unresolvedRootImports: [...unresolvedRootImports],
         unsafeReason: explicitSources.unsafeReason,
       };
     }
@@ -579,6 +555,7 @@ function preflightCssImports(
       return {
         dependencyPaths: [...dependencyPaths],
         sourceDirectories: [...sourceDirectories],
+        unresolvedRootImports: [...unresolvedRootImports],
         unsafeReason: `${parsedImports.unsafeReason} File: ${path.basename(current.sourcePath)}`,
       };
     }
@@ -587,6 +564,7 @@ function preflightCssImports(
       return {
         dependencyPaths: [...dependencyPaths],
         sourceDirectories: [...sourceDirectories],
+        unresolvedRootImports: [...unresolvedRootImports],
         unsafeReason: `${parsedReferences.unsafeReason} File: ${path.basename(current.sourcePath)}`,
       };
     }
@@ -605,6 +583,7 @@ function preflightCssImports(
         return {
           dependencyPaths: [...dependencyPaths],
           sourceDirectories: [...sourceDirectories],
+          unresolvedRootImports: [...unresolvedRootImports],
           unsafeReason: modifierValidation.unsafeReason,
         };
       }
@@ -621,11 +600,17 @@ function preflightCssImports(
         projectRequire,
         workspaceRoot,
         workspacePackageResolver,
+        fallbackNodeModulesPaths,
       );
       if (importedPath === undefined) {
+        if (current.sourcePath === rootSourcePath && isBareCssModuleSpecifier(specifier)) {
+          unresolvedRootImports.add(specifier);
+          continue;
+        }
         return {
           dependencyPaths: [...dependencyPaths],
           sourceDirectories: [...sourceDirectories],
+          unresolvedRootImports: [...unresolvedRootImports],
           unsafeReason: `Tailwind CSS import could not be safely inspected before compilation: ${specifier}`,
         };
       }
@@ -638,6 +623,7 @@ function preflightCssImports(
         return {
           dependencyPaths: [...dependencyPaths],
           sourceDirectories: [...sourceDirectories],
+          unresolvedRootImports: [...unresolvedRootImports],
           unsafeReason: `Tailwind CSS import could not be read before compilation: ${specifier}`,
         };
       }
@@ -646,6 +632,7 @@ function preflightCssImports(
   return {
     dependencyPaths: [...dependencyPaths].sort(),
     sourceDirectories: [...sourceDirectories].sort(),
+    unresolvedRootImports: [...unresolvedRootImports].sort(),
   };
 }
 
@@ -681,6 +668,7 @@ function resolveImportedCssPath(
   projectRequire: PreviewProjectRequire,
   workspaceRoot: string,
   workspacePackageResolver: PreviewWorkspacePackageResolver,
+  fallbackNodeModulesPaths: readonly string[] = [],
 ): string | undefined {
   const cleanSpecifier = specifier.split(/[?#]/u, 1)[0];
   if (cleanSpecifier === undefined || cleanSpecifier.length === 0) return undefined;
@@ -696,6 +684,7 @@ function resolveImportedCssPath(
     path.dirname(importerPath),
     styleRoot,
     workspaceRoot,
+    ...fallbackNodeModulesPaths,
   ]);
   if (packageStylePath !== undefined) return packageStylePath;
   try {
@@ -736,6 +725,8 @@ function rewriteWorkspaceCssImportFallbacks(
   styleRoot: string,
   workspaceRoot: string,
   workspacePackageResolver: PreviewWorkspacePackageResolver,
+  fallbackNodeModulesPaths: readonly string[] = [],
+  admittedUnresolvedImports: ReadonlySet<string> = new Set(),
 ): string {
   const parsedImports = parsePreviewCssImports(source);
   if (parsedImports.unsafeReason !== undefined) return source;
@@ -755,12 +746,22 @@ function rewriteWorkspaceCssImportFallbacks(
       projectRequire.resolve(cleanSpecifier);
       continue;
     } catch {
-      const fallbackPath = resolveWorkspaceCssFallback(
-        cleanSpecifier,
-        workspaceRoot,
-        workspacePackageResolver,
-      );
-      if (fallbackPath === undefined) continue;
+      const fallbackPath =
+        resolvePreviewInstalledCssPackageStylePath(cleanSpecifier, [
+          path.dirname(sourcePath),
+          styleRoot,
+          workspaceRoot,
+          ...fallbackNodeModulesPaths,
+        ]) ?? resolveWorkspaceCssFallback(cleanSpecifier, workspaceRoot, workspacePackageResolver);
+      if (fallbackPath === undefined) {
+        if (!admittedUnresolvedImports.has(cssImport.specifier)) continue;
+        const authoredStatement = output.slice(cssImport.statementStart, cssImport.statementEnd);
+        output =
+          output.slice(0, cssImport.statementStart) +
+          authoredStatement.replaceAll(/[^\r\n]/gu, ' ') +
+          output.slice(cssImport.statementEnd);
+        continue;
+      }
       const relativePath = normalizeCssRelativePath(
         path.relative(path.dirname(sourcePath), fallbackPath),
       );

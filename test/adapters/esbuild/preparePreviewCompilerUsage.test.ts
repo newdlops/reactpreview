@@ -272,6 +272,59 @@ describe('preparePreviewCompilerUsage inventory policy', () => {
     expect(getSourcePaths).not.toHaveBeenCalled();
   });
 
+  /** Full enrichment keeps a selected App route authoritative over colocated test consumers. */
+  it('uses the direct Next route during full preparation instead of a test helper owner', async () => {
+    const projectRoot = '/workspace/apps/web';
+    const pagePath = `${projectRoot}/app/(builder)/edit/page.tsx`;
+    const layoutPath = `${projectRoot}/app/layout.tsx`;
+    const testPath = `${projectRoot}/app/(builder)/edit/page.test.tsx`;
+    const pageSource =
+      'export default async function EditPage() { return <main>authored editor</main>; }';
+    const layoutSource =
+      'export default function RootLayout({ children }) { return <body>{children}</body>; }';
+    const testSource = [
+      "import EditPage from './page';",
+      'export async function renderForTest() { return EditPage(); }',
+    ].join('\n');
+    const request: PreviewBuildRequest = {
+      ...createRequest(pagePath, pageSource, 'full'),
+      dependencySnapshots: [
+        { documentPath: layoutPath, language: 'tsx', sourceText: layoutSource },
+        { documentPath: testPath, language: 'tsx', sourceText: testSource },
+      ],
+    };
+    const getSourcePaths = vi.fn(() => Promise.resolve([pagePath, layoutPath, testPath]));
+    const cache = {
+      discover: vi.fn(() => Promise.reject(new Error('direct route must remain authoritative'))),
+      getSourcePaths,
+      readSourceText: vi.fn(() => Promise.resolve(undefined)),
+    } as unknown as PreviewProjectUsageCache;
+    const resolver = {
+      ...createResolverStub(),
+      resolve: (specifier: string, consumerPath: string) =>
+        specifier === './page' && path.normalize(consumerPath) === path.normalize(testPath)
+          ? pagePath
+          : undefined,
+    } as ReturnType<typeof createPreviewStaticModuleResolver>;
+
+    const prepared = await preparePreviewCompilerUsage({
+      cache,
+      projectRoot,
+      projectUsesNextRuntime: true,
+      request,
+      resolver,
+      setupKind: 'none',
+      targetSelection: preparePreviewCompilerTarget(request),
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+
+    expect(prepared.packageTargetUsageProps.inspectorPlan?.pageCandidates[0]?.id).toBe(
+      `next-app-direct:${pagePath}`,
+    );
+    expect(prepared.packageTargetUsageProps.dependencyPaths).not.toContain(testPath);
+    expect(getSourcePaths).not.toHaveBeenCalled();
+  });
+
   /**
    * Pages Router supplies `_app` through framework props, so fast preparation must add that shell
    * and its dynamic route evidence without waiting for the later package inventory pass.

@@ -15,6 +15,7 @@ const PAGE_DIRECTORY_PATTERN =
   /^(?:app|layouts?|pages?|routes?|routers?|screens?|shells?|templates?|views?)$/iu;
 const TOOLING_DIRECTORY_PATTERN =
   /^(?:__tests__|tests?|stories?|storybook|examples?|demos?|fixtures?|mocks?)$/iu;
+const TOOLING_SOURCE_FILE_PATTERN = /\.(?:test|spec|stories?|story)\.[cm]?[jt]sx?$/iu;
 const MAXIMUM_AFFINITY_PREFIX_PATHS = 192;
 const MAXIMUM_REVERSE_AFFINITY_PREFIX_PATHS = 1_536;
 const MAXIMUM_REVERSE_PROBE_PATHS = 2_048;
@@ -119,9 +120,7 @@ export function schedulePreviewInspectorFastReverseCandidatePaths(
   pageConsumerPaths: readonly string[],
 ): readonly string[] {
   const pages = [...new Set(pageConsumerPaths.map((sourcePath) => path.normalize(sourcePath)))];
-  const probes = [
-    ...new Set(reverseProbePaths.map((sourcePath) => path.normalize(sourcePath))),
-  ];
+  const probes = [...new Set(reverseProbePaths.map((sourcePath) => path.normalize(sourcePath)))];
   const emitted = new Set<string>();
   const scheduled: string[] = [];
   const emit = (sourcePath: string | undefined): void => {
@@ -198,9 +197,7 @@ function reverseProbeFeatureKey(projectRoot: string, sourcePath: string): string
   let featureDepth = Math.min(3, directorySegments.length);
   if (pageDirectoryIndex >= 0) {
     featureDepth = Math.min(directorySegments.length, pageDirectoryIndex + 2);
-    if (
-      /^(?:component|components)$/iu.test(directorySegments[featureDepth] ?? '')
-    ) {
+    if (/^(?:component|components)$/iu.test(directorySegments[featureDepth] ?? '')) {
       featureDepth += 1;
     }
   }
@@ -212,7 +209,13 @@ function reverseProbeFeatureKey(projectRoot: string, sourcePath: string): string
 
 /** Includes authored TS/JS consumers regardless of whether their own file contains JSX. */
 function isProbeEligibleSource(sourcePath: string, projectRoot: string): boolean {
-  if (!SOURCE_FILE_PATTERN.test(sourcePath) || !isPathInside(projectRoot, sourcePath)) return false;
+  if (
+    !SOURCE_FILE_PATTERN.test(sourcePath) ||
+    TOOLING_SOURCE_FILE_PATTERN.test(path.basename(sourcePath)) ||
+    !isPathInside(projectRoot, sourcePath)
+  ) {
+    return false;
+  }
   return !relativeSegments(projectRoot, sourcePath).some((segment) =>
     TOOLING_DIRECTORY_PATTERN.test(segment),
   );
@@ -307,7 +310,13 @@ function pageConsumerFeatureKey(projectRoot: string, sourcePath: string): string
 
 /** Uses path conventions only to avoid eagerly reading ordinary helpers and tooling fixtures. */
 function isLikelyPageConsumer(sourcePath: string, projectRoot: string): boolean {
-  if (!SOURCE_FILE_PATTERN.test(sourcePath) || !isPathInside(projectRoot, sourcePath)) return false;
+  if (
+    !SOURCE_FILE_PATTERN.test(sourcePath) ||
+    TOOLING_SOURCE_FILE_PATTERN.test(path.basename(sourcePath)) ||
+    !isPathInside(projectRoot, sourcePath)
+  ) {
+    return false;
+  }
   const segments = relativeSegments(projectRoot, sourcePath);
   if (segments.some((segment) => TOOLING_DIRECTORY_PATTERN.test(segment))) return false;
   return (

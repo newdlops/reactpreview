@@ -36,6 +36,9 @@ const MAX_CONCURRENT_SOURCE_READS = 64;
 const MAX_INDIVIDUAL_SOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_SOURCE_BYTES = 128 * 1024 * 1024;
 const SOURCE_EXTENSION_PATTERN = /\.(?:[cm]?[jt]sx?)$/iu;
+const TOOLING_SOURCE_FILE_PATTERN = /\.(?:test|spec|stories?|story)\.[cm]?[jt]sx?$/iu;
+const TOOLING_SOURCE_DIRECTORY_PATTERN =
+  /^(?:__tests__|tests?|stories?|storybook|examples?|demos?|fixtures?|mocks?)$/iu;
 const IGNORED_DIRECTORY_NAMES = new Set([
   '.git',
   '.next',
@@ -217,16 +220,18 @@ export async function discoverPreviewTargetUsageProps(
   const requiredUsageExportNames = new Set(
     shouldDiscoverInspector ? [options.inspectorExportName] : explicitExportNames,
   );
-  const usageScanSourcePaths = [
-    ...new Set([
-      ...(options.inspectorExportName === undefined
-        ? []
-        : (renderChainsByExport?.[options.inspectorExportName]?.paths.flatMap((candidate) =>
-            candidate.steps.map((step) => step.sourcePath),
-          ) ?? [])),
-      ...sourcePaths,
-    ]),
-  ].filter((sourcePath) => path.normalize(sourcePath) !== boundary.documentPath);
+  const usageScanSourcePaths = prioritizePreviewUsageSourcePaths(
+    [
+      ...new Set([
+        ...(options.inspectorExportName === undefined
+          ? []
+          : (renderChainsByExport?.[options.inspectorExportName]?.paths.flatMap((candidate) =>
+              candidate.steps.map((step) => step.sourcePath),
+            ) ?? [])),
+        ...sourcePaths,
+      ]),
+    ].filter((sourcePath) => path.normalize(sourcePath) !== boundary.documentPath),
+  );
 
   scanBatches: for (
     let batchStart = 0;
@@ -393,6 +398,30 @@ export async function discoverPreviewTargetUsageProps(
   }
 }
 
+/**
+ * Lets authored consumers establish props and parent slices before fixtures while retaining tests
+ * as a bounded fallback when no production example exists.
+ */
+function prioritizePreviewUsageSourcePaths(sourcePaths: readonly string[]): readonly string[] {
+  const applicationPaths: string[] = [];
+  const toolingPaths: string[] = [];
+  for (const sourcePath of sourcePaths) {
+    (isPreviewUsageToolingPath(sourcePath) ? toolingPaths : applicationPaths).push(sourcePath);
+  }
+  return [...applicationPaths, ...toolingPaths];
+}
+
+/** Classifies both adjacent test filenames and conventional fixture directories. */
+function isPreviewUsageToolingPath(sourcePath: string): boolean {
+  return (
+    TOOLING_SOURCE_FILE_PATTERN.test(path.basename(sourcePath)) ||
+    path
+      .normalize(sourcePath)
+      .split(path.sep)
+      .some((segment) => TOOLING_SOURCE_DIRECTORY_PATTERN.test(segment))
+  );
+}
+
 /** Maps a selected target suffix to the snapshot loader identity used by disk/editor readers. */
 function readUsageSourceLanguage(sourcePath: string): PreviewSourceSnapshot['language'] {
   const extension = path.extname(sourcePath).toLowerCase();
@@ -473,7 +502,7 @@ async function collectProjectSourcePaths(
 ): Promise<readonly string[]> {
   const pendingDirectories = createPreviewInspectorStableMinPriorityQueue(
     [packageRoot],
-    (left, right) => left < right ? -1 : left > right ? 1 : 0,
+    (left, right) => (left < right ? -1 : left > right ? 1 : 0),
   );
   const sourcePaths: string[] = [];
 

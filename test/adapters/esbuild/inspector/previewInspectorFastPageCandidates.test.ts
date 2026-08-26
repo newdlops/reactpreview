@@ -26,11 +26,15 @@ describe('previewInspectorFastPageCandidates', () => {
     projectRoot,
     'src/legal/employment-status/__tests__/employment-page.test.tsx',
   );
+  const adjacentPageTestPath = path.join(
+    projectRoot,
+    'src/app/(builder)/careers-site/edit/page.test.tsx',
+  );
 
   it('retains exact target-affinity ordering after scoring each page candidate once', () => {
     expect(
       selectPreviewInspectorFastPageConsumerPaths(
-        [remotePagePath, targetPath, legalPagePath, statusPagePath, testPath],
+        [remotePagePath, targetPath, legalPagePath, statusPagePath, testPath, adjacentPageTestPath],
         projectRoot,
         targetPath,
       ),
@@ -39,7 +43,14 @@ describe('previewInspectorFastPageCandidates', () => {
 
   it('keeps non-JSX value consumers while excluding the target and tooling paths', () => {
     const selected = selectPreviewInspectorFastReverseProbePaths(
-      [remotePagePath, testPath, targetPath, valueConsumerPath, statusPagePath],
+      [
+        remotePagePath,
+        testPath,
+        adjacentPageTestPath,
+        targetPath,
+        valueConsumerPath,
+        statusPagePath,
+      ],
       projectRoot,
       targetPath,
     );
@@ -47,6 +58,7 @@ describe('previewInspectorFastPageCandidates', () => {
     expect(selected.slice(0, 2)).toEqual([valueConsumerPath, statusPagePath]);
     expect(selected).not.toContain(targetPath);
     expect(selected).not.toContain(testPath);
+    expect(selected).not.toContain(adjacentPageTestPath);
   });
 
   it('precomputes page and reverse scores before their ordering comparators', () => {
@@ -64,6 +76,8 @@ describe('previewInspectorFastPageCandidates', () => {
     expect(source).toMatch(
       /\.map\(\(sourcePath\) => \(\{\s*score: scoreReverseProbe\([\s\S]*?\}\)\)\s*\.sort\(/u,
     );
-    expect(source).not.toMatch(/\.sort\(\s*\(left, right\) =>[^)]*score(?:PageConsumer|ReverseProbe)/u);
+    expect(source).not.toMatch(
+      /\.sort\(\s*\(left, right\) =>[^)]*score(?:PageConsumer|ReverseProbe)/u,
+    );
   });
 });

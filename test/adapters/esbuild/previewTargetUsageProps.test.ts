@@ -97,6 +97,44 @@ describe('discoverPreviewTargetUsageProps', () => {
     }
   });
 
+  /** Uses colocated tests only as fallback supervision, never ahead of an authored consumer. */
+  it('prefers production JSX props over an adjacent test example', async () => {
+    const projectRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-usage-test-order-'));
+    const targetPath = path.join(projectRoot, 'src/app/edit/Card.tsx');
+    const testPath = path.join(projectRoot, 'src/app/edit/Card.test.tsx');
+    const pagePath = path.join(projectRoot, 'src/app/edit/page.tsx');
+    try {
+      await mkdir(path.dirname(targetPath), { recursive: true });
+      await Promise.all([
+        writeFile(targetPath, 'export const Card = () => null;', 'utf8'),
+        writeFile(
+          testPath,
+          'import { Card } from \'./Card\'; export const Fixture = () => <Card label="test" />;',
+          'utf8',
+        ),
+        writeFile(
+          pagePath,
+          'import { Card } from \'./Card\'; export default function Page() { return <Card label="authored" />; }',
+          'utf8',
+        ),
+      ]);
+
+      const result = await discoverPreviewTargetUsageProps({
+        documentPath: targetPath,
+        exports: [{ displayName: 'Card', exportName: 'Card', kind: 'explicit' }],
+        projectRoot,
+        snapshots: [],
+        sourcePaths: [testPath, pagePath, targetPath],
+        workspaceRoot: projectRoot,
+      });
+
+      expect(result.propsByExport).toEqual({ Card: { label: 'authored' } });
+      expect(result.dependencyPaths).toEqual([pagePath]);
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Selects a same-file JSX branch and retains wrappers proven before a dynamic Form barrier. */
   it('discovers a pinpoint parent render slice without retaining sibling components', async () => {
     const projectRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-parent-slice-'));

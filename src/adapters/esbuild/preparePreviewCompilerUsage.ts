@@ -19,6 +19,7 @@ import {
 import { createPreviewInspectorDetachedOverlayPagePlan } from './inspector/previewInspectorDetachedOverlayPagePlan';
 import {
   createPreviewInspectorAncestorPlan,
+  type PreviewInspectorAncestorPlan,
   type PreviewInspectorAncestorCandidateTemplates,
   type PreviewInspectorAncestorPrelude,
   type PreviewInspectorAncestorUsageContext,
@@ -277,7 +278,6 @@ export async function preparePreviewCompilerUsage(
     !NEXT_APP_DIRECT_ROUTE_MODULE_PATTERN.test(path.basename(request.documentPath));
   const shouldTryModulePageContext = shouldTryNextModuleContext || shouldTryGenericConsumerContext;
   const shouldTryDirectRouteContext =
-    selectedCorridor &&
     options.projectUsesNextRuntime &&
     request.renderMode === 'page-inspector' &&
     !targetSelection.isImperativeEntry &&
@@ -459,7 +459,9 @@ export async function preparePreviewCompilerUsage(
       ) {
         inspectorPlan = await createPreviewInspectorNamedExportScenarioPlan({
           createPlan: async (exportName) => {
-            const createPlanForSources = (sourcePaths: readonly string[]) =>
+            const createPlanForSources = (
+              sourcePaths: readonly string[],
+            ): Promise<PreviewInspectorAncestorPlan> =>
               createPreviewInspectorAncestorPlan({
                 acceptedImportSpecifiers: (target) =>
                   options.resolver.getMatchedSpecifiers(target.sourcePath),

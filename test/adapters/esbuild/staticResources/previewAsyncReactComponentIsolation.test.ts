@@ -70,8 +70,8 @@ describe('isolatePreviewAsyncReactComponents', () => {
     expect(isolatePreviewAsyncReactComponents('/workspace/src/helpers.tsx', source)).toBe(source);
   });
 
-  /** Stabilizes a selected async Next App page before React retries it in the client preview. */
-  it('adapts a default async Next App page root through one stable Suspense record', () => {
+  /** Stabilizes selected async Next App pages and layouts before client React retries them. */
+  it('adapts default async Next App page and layout roots through stable Suspense records', () => {
     const source = [
       'export default async function BlockPage({ params }) {',
       '  const values = await params;',
@@ -87,9 +87,19 @@ describe('isolatePreviewAsyncReactComponents', () => {
     expect(transformed).toContain(`${PREVIEW_ASYNC_COMPONENT_ATTRIBUTE}="BlockPage"`);
     expect(transformed).toContain('Promise.resolve().then(load)');
     expect(transformed).toContain("if(record.status==='pending')throw record.promise");
-    expect(
-      isolatePreviewAsyncReactComponents(sourcePath.replace('page.tsx', 'layout.tsx'), source),
-    ).toBe(source);
+    const layoutSource = [
+      'export default async function BlockLayout({ children }) {',
+      '  await Promise.resolve();',
+      '  return children;',
+      '}',
+    ].join('\n');
+    const transformedLayout = isolatePreviewAsyncReactComponents(
+      sourcePath.replace('page.tsx', 'layout.tsx'),
+      layoutSource,
+    );
+    expect(transformedLayout).not.toContain('default async function BlockLayout');
+    expect(transformedLayout).toContain(`${PREVIEW_ASYNC_COMPONENT_ATTRIBUTE}="BlockLayout"`);
+    expect(transformedLayout).toContain("if(record.status==='pending')throw record.promise");
   });
 
   /** Protects explicit client modules and non-route default-export identity forms. */

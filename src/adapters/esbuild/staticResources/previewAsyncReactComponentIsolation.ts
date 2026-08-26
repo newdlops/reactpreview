@@ -7,9 +7,9 @@
  * throws the same bounded thenable until the loader resolves. Resolved JSX is returned unchanged;
  * rejection or timeout produces only a compact inline marker at that component boundary.
  *
- * Admission is intentionally narrow: a top-level PascalCase async declaration must own a JSX
- * return and either be a default Next App `page` root or be rendered by another declaration in the
- * same module through its exact local JSX tag. Other route roots, exported-only components,
+ * Admission is intentionally narrow: a top-level PascalCase async declaration must either be a
+ * default Next App `page`/`layout` root or own a JSX return and be rendered by another declaration
+ * in the same module through its exact local JSX tag. Other route roots, exported-only components,
  * aliases, HOCs, helpers, generators, and `use client` modules therefore fail closed. The adapter
  * runs after all source-position-based instrumentation.
  */
@@ -56,10 +56,11 @@ interface PreviewAsyncComponentCandidate {
  * @returns Original source when evidence is insufficient, otherwise an adapted browser copy.
  */
 export function isolatePreviewAsyncReactComponents(sourcePath: string, sourceText: string): string {
+  const nextAppServerSurface = isNextAppServerSurfaceSource(sourcePath);
   if (
     !isJavaScriptLikeSource(sourcePath) ||
     !sourceText.includes('async') ||
-    !sourceText.includes('<')
+    (!sourceText.includes('<') && !nextAppServerSurface)
   ) {
     return sourceText;
   }
@@ -73,12 +74,16 @@ export function isolatePreviewAsyncReactComponents(sourcePath: string, sourceTex
   if (hasParseDiagnostics(sourceFile) || hasUseClientDirective(sourceFile)) return sourceText;
 
   const defaultExportedNames = collectDefaultExportedNames(sourceFile);
-  const candidates = collectAsyncComponentCandidates(sourceFile)
+  const candidates = collectAsyncComponentCandidates(
+    sourceFile,
+    defaultExportedNames,
+    nextAppServerSurface,
+  )
     .filter(
       (candidate) =>
         !containsSelfReference(candidate) &&
         (defaultExportedNames.has(candidate.componentName)
-          ? isNextAppPageSource(sourcePath)
+          ? nextAppServerSurface
           : hasDistinctLocalJsxUsage(sourceFile, candidate)),
     )
     .slice(0, MAX_ASYNC_COMPONENT_ISOLATIONS_PER_MODULE);
@@ -99,17 +104,29 @@ export function isolatePreviewAsyncReactComponents(sourcePath: string, sourceTex
 /** Collects direct declarations only; nested callbacks and HOC arguments are never candidates. */
 function collectAsyncComponentCandidates(
   sourceFile: ts.SourceFile,
+  defaultExportedNames: ReadonlySet<string>,
+  nextAppServerSurface: boolean,
 ): readonly PreviewAsyncComponentCandidate[] {
   const candidates: PreviewAsyncComponentCandidate[] = [];
   for (const statement of sourceFile.statements) {
     if (ts.isFunctionDeclaration(statement)) {
-      const candidate = createFunctionCandidate(statement);
+      const candidate = createFunctionCandidate(
+        statement,
+        nextAppServerSurface &&
+          statement.name !== undefined &&
+          defaultExportedNames.has(statement.name.text),
+      );
       if (candidate !== undefined) candidates.push(candidate);
       continue;
     }
     if (!ts.isVariableStatement(statement)) continue;
     for (const declaration of statement.declarationList.declarations) {
-      const candidate = createVariableCandidate(declaration);
+      const candidate = createVariableCandidate(
+        declaration,
+        nextAppServerSurface &&
+          ts.isIdentifier(declaration.name) &&
+          defaultExportedNames.has(declaration.name.text),
+      );
       if (candidate !== undefined) candidates.push(candidate);
     }
   }
@@ -119,6 +136,7 @@ function collectAsyncComponentCandidates(
 /** Proves a named async function declaration owns JSX on one of its direct return paths. */
 function createFunctionCandidate(
   declaration: ts.FunctionDeclaration,
+  allowFrameworkTransparentOutput: boolean,
 ): PreviewAsyncComponentCandidate | undefined {
   const componentName = declaration.name?.text;
   const asyncModifier = readAsyncModifier(declaration);
@@ -128,7 +146,8 @@ function createFunctionCandidate(
     declaration.body === undefined ||
     declaration.asteriskToken !== undefined ||
     asyncModifier === undefined ||
-    !functionOwnReturnContainsJsx(declaration, declaration.body)
+    (!allowFrameworkTransparentOutput &&
+      !functionOwnReturnContainsJsx(declaration, declaration.body))
   ) {
     return undefined;
   }
@@ -144,6 +163,7 @@ function createFunctionCandidate(
 /** Proves a PascalCase variable directly contains an async arrow or function expression. */
 function createVariableCandidate(
   declaration: ts.VariableDeclaration,
+  allowFrameworkTransparentOutput: boolean,
 ): PreviewAsyncComponentCandidate | undefined {
   if (!ts.isIdentifier(declaration.name) || declaration.initializer === undefined) return undefined;
   const componentName = declaration.name.text;
@@ -156,7 +176,11 @@ function createVariableCandidate(
     return undefined;
   }
   const asyncModifier = readAsyncModifier(initializer);
-  if (asyncModifier === undefined || !functionOwnReturnContainsJsx(initializer, initializer.body)) {
+  if (
+    asyncModifier === undefined ||
+    (!allowFrameworkTransparentOutput &&
+      !functionOwnReturnContainsJsx(initializer, initializer.body))
+  ) {
     return undefined;
   }
   return {
@@ -228,11 +252,13 @@ function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
   );
 }
 
-/** Admits only Next App page roots, whose async server contract cannot run directly in a client. */
-function isNextAppPageSource(sourcePath: string): boolean {
+/** Admits Next App page/layout roots, whose async server contract cannot run directly in a client. */
+function isNextAppServerSurfaceSource(sourcePath: string): boolean {
   const segments = sourcePath.replaceAll('\\', '/').split('/').filter(Boolean);
   const fileName = segments.at(-1) ?? '';
-  return /^page\.[cm]?[jt]sx?$/iu.test(fileName) && segments.slice(0, -1).includes('app');
+  return (
+    /^(?:layout|page)\.[cm]?[jt]sx?$/iu.test(fileName) && segments.slice(0, -1).includes('app')
+  );
 }
 
 /** Excludes recursive async render contracts whose rewritten self-call could change semantics. */

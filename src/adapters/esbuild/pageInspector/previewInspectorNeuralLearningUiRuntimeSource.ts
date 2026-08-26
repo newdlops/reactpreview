@@ -734,6 +734,7 @@ function PreviewInspectorNeuralRequestButton() {
   return React.createElement(
     PreviewInspectorDevtoolsButton,
     {
+      ariaControls: availability.mode === 'review' ? 'rpi-page-context-section' : undefined,
       busy: availability.pending,
       disabled: !availability.actionable,
       onClick: activatePreviewInspectorNeuralAssistance,
@@ -757,6 +758,8 @@ function PreviewInspectorNeuralRequestButton() {
           : Number(availability.choiceGroupCount ?? 0) > 1
             ? 'Review ' + String(availability.choiceGroupCount) + ' choices'
             : 'Review choice'
+        : availability.mode === 'review'
+          ? 'Review inference'
         : availability.rendered === true ? 'Page resolved' : 'Resolve blockers',
   );
 }

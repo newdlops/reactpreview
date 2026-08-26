@@ -128,6 +128,11 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain("['textarea.rpi-json', 'component-json-editor']");
     expect(html).toContain('previewInspectorCompanionScrollState.regionByKey');
     expect(html).toContain('rememberCompanionScrollBeforeInteraction(control);');
+    expect(html).toContain('function activateCompanionInferenceReview(control)');
+    expect(html).toContain('applyPreviewInspectorCompanionShellRegionCollapsed(');
+    expect(html).toContain('if (activateCompanionInferenceReview(control)) return;');
+    expect(html).toContain("revealCompanionInferenceEvidence('neural-inference');");
+    expect(html).toContain("control.matches('button') && (event.key === 'Enter'");
     expect(html).toContain('function isCompanionScrollInteractionComplete(key)');
     expect(html).toContain('if (control.matches(\'[data-react-preview-source-open="true"]\'))');
     expect(html).toContain('control.matches(\'[data-react-preview-source-highlight="true"]\')');
@@ -136,6 +141,8 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('PREVIEW_INSPECTOR_COMPANION_SCROLL_SETTLE_MS');
     expect(html).toContain('controlScrollLeft');
     expect(html).toContain('() => revealCompanionTreeRow(message.treeReveal)');
+    expect(html).toContain('() => revealCompanionInferenceEvidence(message.contextReveal)');
+    expect(html).toContain("const evidence = mirror.querySelector('.rpi-page-paths')");
     expect(html).toContain('.rpi-console-list,.rpi-json{overflow-anchor:none!important}');
     expect(html).toContain("row?.closest?.('.rpi-tree-scroll')");
     expect(html).not.toContain('hasTreeViewport');

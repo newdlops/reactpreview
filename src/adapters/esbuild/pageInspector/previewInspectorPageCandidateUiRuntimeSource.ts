@@ -396,6 +396,7 @@ function PreviewInspectorPagePathSurface({ descriptor, reachability }) {
       'aria-label': 'Page context path recommendation and source-proven alternatives',
       className: 'rpi-page-paths',
       'data-state': viewPath?.state,
+      tabIndex: -1,
     },
     React.createElement(
       'div',

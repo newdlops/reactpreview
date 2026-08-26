@@ -67,7 +67,9 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'data-choice-path': record.path");
     expect(source).toContain("'Testing one path…'");
     expect(source).toContain("'Review choice'");
+    expect(source).toContain("'Review inference'");
     expect(source).toContain("'Resolve blockers'");
+    expect(source).toContain("'aria-controls': ariaControls");
     expect(source).toContain("'aria-busy': busy === true ? true : undefined");
     expect(source).toContain("'aria-live': 'polite'");
     expect(source).not.toContain("'Auto values'");
@@ -190,9 +192,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("regionName: 'context'");
     expect(source).toContain("label: 'Inspector controls'");
     expect(source).toContain('label: pageContextLabel');
-    expect(source).toContain(
-      "'Page context · ' + String(count) + ' path'",
-    );
+    expect(source).toContain("'Page context · ' + String(count) + ' path'");
     expect(source).toContain("id: 'rpi-selection-details-section'");
     expect(toolbarSource.indexOf("label: 'Inspector controls'")).toBeLessThan(
       toolbarSource.indexOf("className: 'rpi-toolbar'"),

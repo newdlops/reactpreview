@@ -60,6 +60,30 @@ describe('Preview Inspector companion protocol', () => {
     }
   });
 
+  /** Accepts only the fixed extension-owned inference evidence focus target. */
+  it('accepts only the neural inference context reveal intent', () => {
+    expect(
+      readPreviewInspectorCompanionSnapshot({
+        contextReveal: 'neural-inference',
+        css: '',
+        html: '<aside></aside>',
+        sequence: 7,
+        type: 'react-preview-inspector-companion-snapshot',
+      }),
+    ).toMatchObject({ contextReveal: 'neural-inference', sequence: 7 });
+    for (const contextReveal of [true, 'page-context', '']) {
+      expect(
+        readPreviewInspectorCompanionSnapshot({
+          contextReveal,
+          css: '',
+          html: '<aside></aside>',
+          sequence: 8,
+          type: 'react-preview-inspector-companion-snapshot',
+        }),
+      ).toBeUndefined();
+    }
+  });
+
   /** Rejects malformed identities, unbounded values, and keyboard fields on non-key events. */
   it('bounds companion interactions before they reach the project runtime', () => {
     expect(

@@ -39,6 +39,8 @@ const COMPANION_KEY_VALUES = new Set([
 
 /** Serializable Inspector document emitted by the authoritative preview webview. */
 export interface PreviewInspectorCompanionSnapshot {
+  /** One-shot focus target for an Inspector region explicitly requested by the user. */
+  readonly contextReveal?: 'neural-inference';
   /** Static extension-generated CSS used by the mirrored Inspector controls. */
   readonly css: string;
   /** Sanitized by the receiver before insertion into the companion webview. */
@@ -104,7 +106,7 @@ export function readPreviewInspectorCompanionSnapshot(
   if (!isMessageRecord(value) || value.type !== 'react-preview-inspector-companion-snapshot') {
     return undefined;
   }
-  const { css, html, sequence, treeReveal } = value;
+  const { contextReveal, css, html, sequence, treeReveal } = value;
   if (
     typeof html !== 'string' ||
     html.length > MAX_COMPANION_HTML_LENGTH ||
@@ -112,6 +114,7 @@ export function readPreviewInspectorCompanionSnapshot(
     css.length > MAX_COMPANION_CSS_LENGTH ||
     !Number.isSafeInteger(sequence) ||
     (sequence as number) < 1 ||
+    (contextReveal !== undefined && contextReveal !== 'neural-inference') ||
     (treeReveal !== undefined &&
       treeReveal !== true &&
       (typeof treeReveal !== 'string' ||
@@ -121,6 +124,7 @@ export function readPreviewInspectorCompanionSnapshot(
     return undefined;
   }
   return Object.freeze({
+    ...(contextReveal === undefined ? {} : { contextReveal }),
     css,
     html,
     sequence: sequence as number,

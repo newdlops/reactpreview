@@ -99,7 +99,7 @@ const previewInspectorDevtoolsCss = [
   '.rpi-button{cursor:pointer;max-width:100%;overflow-wrap:anywhere;padding:2px 7px}',
   '.rpi-toolbar>.rpi-button,.rpi-toolbar>.rpi-select,.rpi-toolbar>.rpi-title{flex:0 1 auto}',
   '.rpi-button:hover{background:var(--vscode-list-hoverBackground,#2a2d2e)}',
-  '.rpi-button:focus-visible,.rpi-select:focus-visible,.rpi-search:focus-visible,.rpi-tree-row:focus-visible,.rpi-tab:focus-visible,.rpi-route-summary:focus-visible,.rpi-route-crumb:focus-visible,.rpi-route-folder:focus-visible,.rpi-route-item:focus-visible,.rpi-neural-choice-scroll:focus-visible,.rpi-neural-choice-path-alternatives>summary:focus-visible,.rpi-page-path-list:focus-visible,',
+  '.rpi-button:focus-visible,.rpi-select:focus-visible,.rpi-search:focus-visible,.rpi-tree-row:focus-visible,.rpi-tab:focus-visible,.rpi-route-summary:focus-visible,.rpi-route-crumb:focus-visible,.rpi-route-folder:focus-visible,.rpi-route-item:focus-visible,.rpi-neural-choice-scroll:focus-visible,.rpi-neural-choice-path-alternatives>summary:focus-visible,.rpi-page-paths:focus-visible,.rpi-page-path-list:focus-visible,',
   '.rpi-resize-handle:focus-visible,.rpi-move-handle:focus-visible,.rpi-card-height-handle:focus-visible,',
   '.rpi-section-height-handle:focus-visible,.rpi-shell-section-height-handle:focus-visible,.rpi-section-accordion-toggle:focus-visible{outline:1px solid var(--vscode-focusBorder,#007fd4);outline-offset:-1px}',
   '.rpi-button[aria-pressed="true"]{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}',

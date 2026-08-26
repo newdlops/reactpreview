@@ -399,11 +399,12 @@ function usePreviewInspectorTreeRefresh(enabled) {
 }
 
 /** Creates one reusable toolbar button with native disabled, expanded, and pressed semantics. */
-function PreviewInspectorDevtoolsButton({ ariaLabel, busy, children, companionSource, disabled, expanded, onClick, pressed, sourceHighlight, sourceOpen, title }) {
+function PreviewInspectorDevtoolsButton({ ariaControls, ariaLabel, busy, children, companionSource, disabled, expanded, onClick, pressed, sourceHighlight, sourceOpen, title }) {
   const companionSourcePath = companionSource?.path ?? companionSource?.sourcePath;
   return React.createElement(
     'button',
     {
+      'aria-controls': ariaControls,
       'aria-label': ariaLabel,
       'aria-expanded': expanded,
       'aria-busy': busy === true ? true : undefined,

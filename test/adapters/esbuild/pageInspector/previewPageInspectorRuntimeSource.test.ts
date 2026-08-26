@@ -570,6 +570,8 @@ describe('Page Inspector runtime source', () => {
       'schedulePreviewInspectorTreeScrollRestoration(scrollGuard.treeViewport)',
     );
     expect(source).toContain('pendingTreeReveal');
+    expect(source).toContain('pendingContextReveal');
+    expect(source).toContain('requestPreviewInspectorCompanionContextReveal');
     expect(source).toContain("type: 'react-preview-inspector-open-source'");
     expect(source).toContain('function setPreviewInspectorCompanionShell(shell)');
     expect(source).toContain('function handlePreviewInspectorCompanionAction(event)');

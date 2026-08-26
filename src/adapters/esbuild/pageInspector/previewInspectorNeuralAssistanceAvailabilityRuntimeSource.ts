@@ -67,13 +67,17 @@ function readPreviewInspectorNeuralAssistanceAvailability() {
     hasPreviewInspectorNeuralPageGenerationWork();
   const resolutionAvailable = !temporalLocked && (pageGenerationAvailable || !renderedCorridor &&
     (actionableBlockers.length > 0 || unresolvedCorridor));
+  const reviewAvailable = !temporalLocked && renderedCorridor && modelUpdates > 0 &&
+    selectedExportName.length > 0;
   const mode = temporalLocked
     ? 'none'
     : !renderedCorridor && automaticWorkAvailable || pageGenerationAvailable
       ? 'resolve'
       : userChoice !== undefined
         ? 'choice'
-        : resolutionAvailable ? 'resolve' : 'none';
+        : resolutionAvailable
+          ? 'resolve'
+          : reviewAvailable ? 'review' : 'none';
   const actionable = !pending && !learning && mode !== 'none';
   return Object.freeze({
     actionable,
@@ -89,6 +93,7 @@ function readPreviewInspectorNeuralAssistanceAvailability() {
     pending,
     rendered: renderedCorridor,
     refining: renderedCorridor && pageGenerationAvailable,
+    reviewAvailable,
     restoring,
     successCount: Number(learningStatus?.successCount ?? 0),
     temporalPinned,
@@ -117,6 +122,8 @@ function readPreviewInspectorNeuralAssistanceAvailability() {
             : userChoices.length > 1
               ? String(userChoices.length) + ' independent choices need review.'
               : userChoice.title
+        : mode === 'review'
+          ? 'Review the model-ranked page path and verified evidence without remounting this page.'
         : actionable
           ? modelUpdates > 0
             ? renderedCorridor && pageGenerationAvailable

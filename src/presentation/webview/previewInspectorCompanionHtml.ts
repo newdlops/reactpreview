@@ -226,9 +226,33 @@ export function createPreviewInspectorCompanionHtml(
         }
       }
 
+      /** Focuses ranked inference evidence while moving only the bounded Inspector viewports. */
+      function revealCompanionInferenceEvidence(contextReveal) {
+        if (contextReveal !== 'neural-inference') return;
+        const evidence = mirror.querySelector('.rpi-page-paths');
+        const contextViewport = evidence?.closest?.('.rpi-page-context');
+        const shellViewport = evidence?.closest?.('.rpi-shell');
+        const revealWithin = (viewport, element) => {
+          const viewportBounds = viewport?.getBoundingClientRect?.();
+          const elementBounds = element?.getBoundingClientRect?.();
+          if (viewportBounds === undefined || elementBounds === undefined) return;
+          if (elementBounds.top < viewportBounds.top) {
+            viewport.scrollTop = Math.max(
+              0,
+              viewport.scrollTop + elementBounds.top - viewportBounds.top
+            );
+          } else if (elementBounds.bottom > viewportBounds.bottom) {
+            viewport.scrollTop += elementBounds.bottom - viewportBounds.bottom;
+          }
+        };
+        evidence?.focus?.({ preventScroll: true });
+        revealWithin(contextViewport, evidence);
+        revealWithin(shellViewport, contextViewport);
+      }
+
       /**
        * Commits one newer inert snapshot while retaining focus and ordinary scroll. Only a
-       * preview-issued tree-reveal intent may move the Components viewport after replacement.
+       * preview-issued reveal intent may move a bounded viewport after replacement.
        */
       function renderSnapshot(message) {
         if (message.sequence === 1) latestSequence = 0;
@@ -258,9 +282,11 @@ export function createPreviewInspectorCompanionHtml(
         );
         scheduleCompanionScrollRestoration(
           scrollSnapshot,
-          message.treeReveal === undefined
-            ? undefined
-            : () => revealCompanionTreeRow(message.treeReveal)
+          message.treeReveal !== undefined
+            ? () => revealCompanionTreeRow(message.treeReveal)
+            : message.contextReveal === 'neural-inference'
+              ? () => revealCompanionInferenceEvidence(message.contextReveal)
+              : undefined
         );
       }
 
@@ -312,6 +338,27 @@ export function createPreviewInspectorCompanionHtml(
         vscode.postMessage(message);
       }
 
+      /** Opens review evidence through the same local disclosure state used by the companion. */
+      function activateCompanionInferenceReview(control) {
+        if (!control?.matches?.('.rpi-button[aria-controls="rpi-page-context-section"]')) {
+          return false;
+        }
+        const shell = control.closest?.('.rpi-shell');
+        const contextToggle = mirror.querySelector(
+          '[data-rpi-accordion-toggle="shell-page-context"]'
+        );
+        applyPreviewInspectorCompanionShellRegionCollapsed(
+          shell,
+          'context',
+          'shell-page-context',
+          contextToggle,
+          false
+        );
+        persistPreviewInspectorCompanionInnerState();
+        revealCompanionInferenceEvidence('neural-inference');
+        return true;
+      }
+
       mirror.addEventListener('click', (event) => {
         const control = findRemoteControl(event);
         if (control === null || control instanceof HTMLSelectElement ||
@@ -330,6 +377,7 @@ export function createPreviewInspectorCompanionHtml(
           }
           if (opened) return;
         }
+        if (activateCompanionInferenceReview(control)) return;
         postControlEvent(control, 'click');
       });
       mirror.addEventListener('dblclick', (event) => {
@@ -353,6 +401,11 @@ export function createPreviewInspectorCompanionHtml(
         const control = findRemoteControl(event);
         if (control === null || control.matches('input,textarea,select')) return;
         event.preventDefault();
+        if (control.matches('button') && (event.key === 'Enter' || event.key === ' ')) {
+          if (activateCompanionInferenceReview(control)) return;
+          postControlEvent(control, 'click');
+          return;
+        }
         postControlEvent(control, 'keydown', event.key);
       });
       window.addEventListener('message', (event) => {

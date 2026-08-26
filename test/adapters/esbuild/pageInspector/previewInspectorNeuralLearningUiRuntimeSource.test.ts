@@ -281,14 +281,19 @@ describe('Preview Inspector neural learning UI runtime source', () => {
     expect(finiteChoicePending.element.children).toEqual(['Testing choice 2 of 3…']);
 
     const resolved = renderNeuralRequestButton({
-      actionable: false,
-      mode: 'none',
+      actionable: true,
+      mode: 'review',
       pending: false,
       rendered: true,
-      title: 'This preview is already rendered.',
+      title: 'Review the model-ranked page path.',
     });
-    expect(resolved.element.children).toEqual(['Page resolved']);
-    expect(resolved.element.props).toMatchObject({ disabled: true });
+    expect(resolved.element.children).toEqual(['Review inference']);
+    expect(resolved.element.props).toMatchObject({
+      ariaControls: 'rpi-page-context-section',
+      disabled: false,
+    });
+    (resolved.element.props.onClick as () => void)();
+    expect(resolved.requests()).toBe(1);
   });
 
   it('uses calm success and explicit choice symbols instead of a generic exclamation mark', () => {

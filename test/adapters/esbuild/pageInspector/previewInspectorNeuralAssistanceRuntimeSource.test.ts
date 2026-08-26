@@ -10,7 +10,7 @@ interface AssistanceFixture {
     readonly choiceAvailable: boolean;
     readonly choiceCount?: number;
     readonly learning: boolean;
-    readonly mode: 'choice' | 'none' | 'resolve';
+    readonly mode: 'choice' | 'none' | 'resolve' | 'review';
     readonly modelUpdates: number;
     readonly pending: boolean;
     readonly refining: boolean;
@@ -35,6 +35,7 @@ interface AssistanceFixture {
     readonly health: unknown[];
     readonly paths: unknown[];
     readonly remounts: unknown[];
+    readonly reviews: string[];
     readonly reveals: string[];
     readonly runtime: string[];
     readonly selections: unknown[];
@@ -99,10 +100,15 @@ function createAssistanceFixture(): AssistanceFixture {
       let blockers = [{ blocker: { key: 'page:Panel' }, blockerKind: 'target-reachability' }];
       let conditions = [];
       let rendererVisible = true;
-      const document = { get visibilityState() { return rendererVisible ? 'visible' : 'hidden'; } };
       const previewEntryRevision = 7;
       const calls = { choiceAttempts: [], choices: [], conditions: [], data: [], failures: [],
-        health: [], paths: [], remounts: [], reveals: [], runtime: [], selections: [] };
+        health: [], paths: [], remounts: [], reviews: [], reveals: [], runtime: [], selections: [] };
+      let pageContextExpanded = false;
+      const pageContextEvidence = { focus: () => calls.reviews.push('focus'), scrollIntoView: () => calls.reviews.push('scroll') };
+      const pageContextToggle = { click: () => { pageContextExpanded = true; calls.reviews.push('expand'); }, getAttribute: (name) => name === 'aria-expanded' ? String(pageContextExpanded) : null };
+      const pageContextShell = { querySelector: (selector) => selector === '.rpi-page-paths' ? pageContextEvidence : selector === '[data-rpi-accordion-toggle="shell-page-context"]' ? pageContextToggle : undefined };
+      const previewInspectorCompanionState = { shell: pageContextShell }; const requestPreviewInspectorCompanionContextReveal = (value) => calls.reviews.push('companion:' + value);
+      const document = { get visibilityState() { return rendererVisible ? 'visible' : 'hidden'; }, querySelector: () => undefined };
       const previewInspectorSession = {
         activeTargetReachabilityKey: 'page:Panel',
         neuralResidualModel: { heads: {}, updates: 12, version: 3 },
@@ -212,7 +218,6 @@ function createAssistanceFixture(): AssistanceFixture {
 describe('Preview Inspector neural assistance runtime source', () => {
   it('re-evaluates persisted learning and delegates exactly one admitted blocker', () => {
     const fixture = createAssistanceFixture();
-
     expect(fixture.availability()).toMatchObject({
       actionable: true,
       blockerCount: 1,
@@ -224,7 +229,6 @@ describe('Preview Inspector neural assistance runtime source', () => {
       phase: 'applying',
       updates: 12,
     });
-
     fixture.flushFrame();
     expect(fixture.calls.remounts).toEqual([]);
     expect(fixture.session.runtimeFallbackDataFlowRecommendations.size).toBe(1);
@@ -236,7 +240,6 @@ describe('Preview Inspector neural assistance runtime source', () => {
       status: 'custom',
     });
     expect(fixture.session.runtimeFallbackSharedNeuralRecommendations.has('verified')).toBe(true);
-
     fixture.flushFrame();
     expect(fixture.calls.paths).toEqual([
       [
@@ -252,7 +255,6 @@ describe('Preview Inspector neural assistance runtime source', () => {
     expect(fixture.calls.data).toEqual([]);
     expect(fixture.calls.health).toHaveLength(1);
     expect(fixture.request()).toBe(false);
-
     fixture.flushTimer();
     expect(fixture.session.neuralAssistancePending).toBe(false);
     expect(fixture.session.neuralLearningStatus).toMatchObject({
@@ -266,14 +268,22 @@ describe('Preview Inspector neural assistance runtime source', () => {
     fixture.setBlockers([]);
     fixture.setReachabilityStatus('probing');
     fixture.setReachabilityOutput(true);
-
     expect(fixture.availability()).toMatchObject({
-      actionable: false,
+      actionable: true,
       blockerCount: 0,
+      mode: 'review',
       rendered: true,
-      title: 'This preview is already rendered; neural assistance will preserve it.',
+      title:
+        'Review the model-ranked page path and verified evidence without remounting this page.',
     });
     expect(fixture.request()).toBe(false);
+    expect(fixture.activate()).toBe(true);
+    expect(fixture.calls.reviews).toEqual([
+      'expand',
+      'companion:neural-inference',
+      'focus',
+      'scroll',
+    ]);
     expect(fixture.calls.remounts).toEqual([]);
     expect(fixture.calls.paths).toEqual([]);
     expect(fixture.session.runtimeFallbackDataFlowRecommendations.size).toBe(1);
@@ -284,11 +294,10 @@ describe('Preview Inspector neural assistance runtime source', () => {
   it('retires stale actionable blockers after exact target output is verified', () => {
     const fixture = createAssistanceFixture();
     fixture.setReachabilityOutput(true);
-
     expect(fixture.availability()).toMatchObject({
-      actionable: false,
+      actionable: true,
       blockerCount: 0,
-      mode: 'none',
+      mode: 'review',
       rendered: true,
     });
   });
@@ -308,7 +317,6 @@ describe('Preview Inspector neural assistance runtime source', () => {
       },
     ]);
     fixture.setReachabilityStatus('reached');
-
     expect(fixture.availability()).toMatchObject({
       actionable: true,
       choiceAvailable: true,

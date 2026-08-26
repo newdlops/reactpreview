@@ -218,6 +218,44 @@ function schedulePreviewInspectorNeuralAssistanceFrame(callback) {
   schedule(callback);
 }
 
+/** Reveals ranked path evidence without reopening a settled render for blocker exploration. */
+function revealPreviewInspectorNeuralInferenceEvidence() {
+  const inspectorDocument = typeof document === 'object'
+    ? document
+    : typeof globalThis.document === 'object' ? globalThis.document : undefined;
+  const companionShell = typeof previewInspectorCompanionState === 'object'
+    ? previewInspectorCompanionState?.shell
+    : undefined;
+  const shell = companionShell ?? inspectorDocument?.querySelector?.('.rpi-shell');
+  if (shell === null || shell === undefined) return false;
+  const contextToggle = shell.querySelector?.(
+    '[data-rpi-accordion-toggle="shell-page-context"]',
+  );
+  try {
+    if (contextToggle?.getAttribute?.('aria-expanded') === 'false') contextToggle.click?.();
+  } catch {
+    return false;
+  }
+  if (typeof requestPreviewInspectorCompanionContextReveal === 'function') {
+    requestPreviewInspectorCompanionContextReveal('neural-inference');
+  }
+  const reveal = () => {
+    const evidence = shell.querySelector?.('.rpi-page-paths') ??
+      shell.querySelector?.('#rpi-page-context-section') ?? contextToggle;
+    if (evidence === null || evidence === undefined) return;
+    try { evidence.focus?.({ preventScroll: true }); } catch { evidence.focus?.(); }
+    try { evidence.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }); } catch {
+      evidence.scrollIntoView?.();
+    }
+  };
+  if (typeof globalThis.requestAnimationFrame === 'function') {
+    globalThis.requestAnimationFrame(reveal);
+  } else {
+    reveal();
+  }
+  return true;
+}
+
 /** Delegates exactly one currently admitted blocker to its existing bounded resolver. */
 function applyPreviewInspectorNeuralAssistanceBlocker(
   node,
@@ -466,7 +504,14 @@ function beginPreviewInspectorNeuralAssistanceRequest(requestedBy = 'user', opti
   const successCount = readPreviewInspectorNeuralSuccessfulPathCount(collectionRecord);
   const collectingSuccesses = successCount > 0 &&
     collectionRecord?.successCollectionSettled !== true;
-  if (!availability.actionable && !collectingSuccesses) return false;
+  const explicitExploration = options?.exploration !== undefined;
+  if ((availability.pending || availability.learning) && !collectingSuccesses) return false;
+  if (
+    !collectingSuccesses && (
+      availability.mode === 'none' || availability.mode === 'review' ||
+      availability.mode !== 'resolve' && !explicitExploration
+    )
+  ) return false;
   const sequence = (Number.isSafeInteger(previewInspectorSession.neuralAssistanceSequence)
     ? previewInspectorSession.neuralAssistanceSequence
     : 0) + 1;
@@ -629,6 +674,9 @@ function activatePreviewInspectorNeuralAssistance() {
   if (!availability.actionable) return false;
   if (availability.mode === 'choice') {
     return revealPreviewInspectorNeuralUserChoice();
+  }
+  if (availability.mode === 'review') {
+    return revealPreviewInspectorNeuralInferenceEvidence();
   }
   const started = requestPreviewInspectorNeuralAssistance();
   if (started) return true;

@@ -29,6 +29,7 @@ const previewInspectorCompanionState = {
     ? previousPreviewInspectorCompanionState.nextId
     : 1,
   observer: undefined,
+  pendingContextReveal: previousPreviewInspectorCompanionState?.pendingContextReveal,
   pendingTreeReveal: previousPreviewInspectorCompanionState?.pendingTreeReveal,
   sequence: Number.isSafeInteger(previousPreviewInspectorCompanionState?.sequence)
     ? previousPreviewInspectorCompanionState.sequence
@@ -102,6 +103,14 @@ function readPreviewInspectorCompanionTreeReveal(clone) {
   ) ? request : undefined;
 }
 
+/** Resolves an explicit region reveal only after that region exists in the inert clone. */
+function readPreviewInspectorCompanionContextReveal(clone) {
+  const request = previewInspectorCompanionState.pendingContextReveal;
+  if (request !== 'neural-inference') return undefined;
+  const evidence = clone.querySelector?.('.rpi-page-paths');
+  return evidence === null || evidence === undefined ? undefined : request;
+}
+
 /** Publishes one changed inert shell and static stylesheet through the extension-host relay. */
 function publishPreviewInspectorCompanionSnapshot() {
   previewInspectorCompanionState.frame = undefined;
@@ -111,6 +120,7 @@ function publishPreviewInspectorCompanionSnapshot() {
   indexPreviewInspectorCompanionControls(shell);
   const clone = shell.cloneNode(true);
   synchronizePreviewInspectorCompanionControls(shell, clone);
+  let contextReveal = readPreviewInspectorCompanionContextReveal(clone);
   let treeReveal = readPreviewInspectorCompanionTreeReveal(clone);
   let html = clone.outerHTML;
   const css = typeof previewInspectorDevtoolsCss === 'string' ? previewInspectorDevtoolsCss : '';
@@ -119,10 +129,12 @@ function publishPreviewInspectorCompanionSnapshot() {
       '<div class="rpi-empty">Inspector tree exceeded the bounded companion UI size. ' +
       'Filter or reduce the active page graph and refresh.</div></aside>';
     treeReveal = undefined;
+    contextReveal = undefined;
   }
   if (
     html === previewInspectorCompanionState.lastHtml &&
     css === previewInspectorCompanionState.lastCss &&
+    contextReveal === undefined &&
     treeReveal === undefined
   ) {
     return;
@@ -135,9 +147,16 @@ function publishPreviewInspectorCompanionSnapshot() {
       css,
       html,
       sequence: previewInspectorCompanionState.sequence,
+      ...(contextReveal === undefined ? {} : { contextReveal }),
       ...(treeReveal === undefined ? {} : { treeReveal }),
       type: 'react-preview-inspector-companion-snapshot',
     });
+    if (
+      contextReveal !== undefined &&
+      previewInspectorCompanionState.pendingContextReveal === contextReveal
+    ) {
+      previewInspectorCompanionState.pendingContextReveal = undefined;
+    }
     if (
       treeReveal !== undefined &&
       previewInspectorCompanionState.pendingTreeReveal === treeReveal
@@ -158,6 +177,14 @@ function schedulePreviewInspectorCompanionSnapshot() {
   previewInspectorCompanionState.frame = requestAnimationFrame(
     publishPreviewInspectorCompanionSnapshot,
   );
+}
+
+/** Publishes one explicit focus request without coupling it to a project-runtime rerender. */
+function requestPreviewInspectorCompanionContextReveal(contextReveal) {
+  if (contextReveal !== 'neural-inference') return false;
+  previewInspectorCompanionState.pendingContextReveal = contextReveal;
+  schedulePreviewInspectorCompanionSnapshot();
+  return true;
 }
 
 /** Registers the currently mounted Inspector shell while hiding only that shell from the renderer. */

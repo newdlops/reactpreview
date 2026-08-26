@@ -21,6 +21,7 @@ describe('EsbuildPreviewCompiler neural dependency hints', () => {
     temporaryRoots.push(fixtureRoot);
     const projectRoot = path.join(fixtureRoot, 'project');
     const targetPath = path.join(projectRoot, 'Target.tsx');
+    const testPath = path.join(projectRoot, 'Target.test.tsx');
     const serverPath = path.join(projectRoot, 'server.ts');
     await mkdir(projectRoot, { recursive: true });
     await Promise.all([
@@ -45,7 +46,12 @@ describe('EsbuildPreviewCompiler neural dependency hints', () => {
       ),
       writeFile(
         targetPath,
-        'import { loadLabel } from "./server"; export default function Target() { return <main>{String(loadLabel())}</main>; }',
+        'import { loadLabel } from "./server"; export default async function Target() { return <main>{String(await loadLabel())}</main>; }',
+        'utf8',
+      ),
+      writeFile(
+        testPath,
+        'import { loadLabel } from "./server"; import { vi } from "vitest"; vi.mocked(loadLabel).mockResolvedValue("Learned server label");',
         'utf8',
       ),
     ]);
@@ -69,6 +75,8 @@ describe('EsbuildPreviewCompiler neural dependency hints', () => {
         'neural dependency hint',
       );
       expect(bundle.dependencies).toContain(serverPath);
+      expect(bundle.dependencies).toContain(testPath);
+      expect(new TextDecoder().decode(bundle.javascript)).toContain('Learned server label');
       await expect(readFile(path.join(projectRoot, 'node_modules'))).rejects.toThrow();
     } finally {
       await compiler.shutdown();

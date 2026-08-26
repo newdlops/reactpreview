@@ -21,6 +21,10 @@ import type {
 } from '../node/previewManagedDependencyStore';
 import { hasExplicitPreviewServerBoundary } from './previewDependencyResolutionHintPlugin';
 import {
+  collectPreviewAdjacentTestContractEvidence,
+  type PreviewLearnedServerContractExample,
+} from './previewAdjacentTestContractEvidence';
+import {
   PreviewDependencyResolutionNeuralModel,
   type PreviewDependencyResolutionNeuralFeatures,
   type PreviewDependencyResolutionNeuralScore,
@@ -57,6 +61,7 @@ export interface PreviewMissingDependencyAcquisitionContext {
   readonly projectRoot: string;
   readonly readSource?: (sourcePath: string) => Promise<string | undefined> | string | undefined;
   readonly reportAcquisition?: () => void;
+  readonly resolveModule?: (moduleSpecifier: string, importerPath: string) => string | undefined;
   readonly targetPath: string;
   readonly workspaceRoot: string;
 }
@@ -70,6 +75,8 @@ export interface PreviewDependencyPackageHint {
 
 /** One exact explicit server source selected as a render-only execution-contract boundary. */
 export interface PreviewDependencyServerFacadeHint {
+  readonly contractExamples?: readonly PreviewLearnedServerContractExample[];
+  readonly evidenceSourcePaths?: readonly string[];
   readonly sourcePath: string;
   readonly score: PreviewDependencyResolutionNeuralScore;
 }
@@ -98,7 +105,7 @@ export interface PreviewDependencyResolutionHintPlan {
   readonly packageContractCandidates: readonly PreviewDependencyPackageContractHint[];
   readonly packageNames: readonly string[];
   readonly styleCandidates: readonly PreviewDependencyStyleContractHint[];
-  readonly version: 3;
+  readonly version: 4;
 }
 
 /** Keeps only non-acquiring contracts for a speculative first-build preflight. */
@@ -147,7 +154,7 @@ export function mergePreviewDependencyResolutionHintPlans(
       [...left.styleCandidates, ...right.styleCandidates],
       (candidate) => `${path.normalize(candidate.sourcePath)}\0${candidate.moduleSpecifier}`,
     ),
-    version: 3,
+    version: 4,
   });
 }
 
@@ -401,6 +408,7 @@ export async function createPreviewDependencyResolutionHintPlan(
       right.score.selectionScore - left.score.selectionScore ||
       left.sourcePath.localeCompare(right.sourcePath),
   );
+  const learnedFacadeCandidates = await attachAdjacentTestContracts(facadeCandidates, context);
 
   const packageMessages = errors.filter((message) => !facadedMessages.has(message));
   const packageNames = collectPreviewMissingDependencyRequirements(
@@ -581,16 +589,53 @@ export async function createPreviewDependencyResolutionHintPlan(
       left.packageName.localeCompare(right.packageName),
   );
   return Object.freeze({
-    facadeCandidates: Object.freeze(facadeCandidates),
+    facadeCandidates: learnedFacadeCandidates,
     facadeSourcePaths: Object.freeze(
-      facadeCandidates.map((candidate) => candidate.sourcePath).sort(),
+      learnedFacadeCandidates.map((candidate) => candidate.sourcePath).sort(),
     ),
     packageCandidates: Object.freeze(packageCandidates),
     packageContractCandidates: Object.freeze(packageContractCandidates),
     packageNames: Object.freeze(packageCandidates.map((candidate) => candidate.packageName)),
     styleCandidates: Object.freeze(styleCandidates),
-    version: 3 as const,
+    version: 4 as const,
   });
+}
+
+/** Adds test supervision only after deterministic and neural evidence selected a server facade. */
+async function attachAdjacentTestContracts(
+  candidates: readonly PreviewDependencyServerFacadeHint[],
+  context: PreviewMissingDependencyAcquisitionContext,
+): Promise<readonly PreviewDependencyServerFacadeHint[]> {
+  if (candidates.length === 0 || context.resolveModule === undefined) {
+    return Object.freeze([...candidates]);
+  }
+  const adjacentContractExamples = await collectPreviewAdjacentTestContractEvidence({
+    projectRoot: context.projectRoot,
+    ...(context.readSource === undefined ? {} : { readSource: context.readSource }),
+    resolveModule: context.resolveModule,
+    targetPath: context.targetPath,
+  });
+  const contractExamplesBySource = new Map<string, PreviewLearnedServerContractExample[]>();
+  for (const example of adjacentContractExamples) {
+    const sourcePath = canonicalizeExistingPath(example.sourcePath);
+    const examples = contractExamplesBySource.get(sourcePath) ?? [];
+    examples.push(example);
+    contractExamplesBySource.set(sourcePath, examples);
+  }
+  return Object.freeze(
+    candidates.map((candidate) => {
+      const contractExamples = Object.freeze(
+        [
+          ...(contractExamplesBySource.get(canonicalizeExistingPath(candidate.sourcePath)) ?? []),
+        ].sort((left, right) => left.exportName.localeCompare(right.exportName)),
+      );
+      if (contractExamples.length === 0) return candidate;
+      const evidenceSourcePaths = Object.freeze(
+        [...new Set(contractExamples.map((example) => example.evidenceSourcePath))].sort(),
+      );
+      return Object.freeze({ ...candidate, contractExamples, evidenceSourcePaths });
+    }),
+  );
 }
 
 /** Acquires neural-prioritized package clusters without turning one failure into a retry storm. */

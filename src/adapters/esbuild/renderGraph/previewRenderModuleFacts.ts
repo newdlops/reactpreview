@@ -238,12 +238,12 @@ function collectValues(sourcePath: string, sourceFile: ts.SourceFile): MutableVa
     }
     if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name)) {
+        for (const identifier of collectBindingIdentifiers(declaration.name)) {
           values.push(
             createMutableValue(
               sourcePath,
-              declaration.name.text,
-              declaration,
+              identifier.text,
+              identifier,
               declaration.initializer ?? declaration,
             ),
           );
@@ -350,11 +350,11 @@ function collectExports(
     }
     if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name)) {
+        for (const identifier of collectBindingIdentifiers(declaration.name)) {
           exports.push({
-            exportName: declaration.name.text,
-            localName: declaration.name.text,
-            occurrenceStart: declaration.getStart(),
+            exportName: identifier.text,
+            localName: identifier.text,
+            occurrenceStart: identifier.getStart(),
             wildcard: false,
           });
         }
@@ -362,6 +362,14 @@ function collectExports(
     }
   }
   return deduplicateExports(exports);
+}
+
+/** Flattens runtime identifiers introduced by one top-level variable binding pattern. */
+function collectBindingIdentifiers(bindingName: ts.BindingName): readonly ts.Identifier[] {
+  if (ts.isIdentifier(bindingName)) return [bindingName];
+  return bindingName.elements.flatMap((element) =>
+    ts.isOmittedExpression(element) ? [] : collectBindingIdentifiers(element.name),
+  );
 }
 
 /** Recognizes the CommonJS default assignment already admitted by the target export selector. */

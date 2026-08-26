@@ -7,6 +7,7 @@ import { collectPreviewRenderModuleFacts } from './renderGraph/previewRenderModu
 import { PREVIEW_COMPILER_PRIVATE_NAMESPACES } from './previewOwnedNamespaceRegistry';
 import { PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
 import type { PreviewDependencyResolutionNeuralScore } from './previewDependencyResolutionNeuralModel';
+import type { PreviewLearnedServerContractExample } from './previewAdjacentTestContractEvidence';
 
 const SOURCE_FILTER = /\.[cm]?[jt]sx?$/;
 const STYLE_MODULE_PATTERN = /\.(?:css|less|sass|scss|styl)$/i;
@@ -16,6 +17,8 @@ const USE_SERVER_DIRECTIVE_PATTERN = /(?:^|\n)\s*["']use server["']\s*;?/u;
 /** Exact, retry-scoped source and package identities selected by the dependency recovery advisor. */
 export interface PreviewDependencyResolutionHintPluginOptions {
   readonly facadeHints?: readonly {
+    readonly contractExamples?: readonly PreviewLearnedServerContractExample[];
+    readonly evidenceSourcePaths?: readonly string[];
     readonly score: PreviewDependencyResolutionNeuralScore;
     readonly sourcePath: string;
   }[];
@@ -49,10 +52,10 @@ export function createPreviewDependencyResolutionHintPlugin(
       .map((sourcePath) => canonicalizeHintPath(sourcePath, workspaceRoot))
       .filter((sourcePath): sourcePath is string => sourcePath !== undefined),
   );
-  const facadeScoreByPath = new Map(
+  const facadeHintByPath = new Map(
     (options.facadeHints ?? []).flatMap((hint) => {
       const sourcePath = canonicalizeHintPath(hint.sourcePath, workspaceRoot);
-      return sourcePath === undefined ? [] : [[sourcePath, hint.score] as const];
+      return sourcePath === undefined ? [] : [[sourcePath, hint] as const];
     }),
   );
   const packageContractHints = new Map(
@@ -184,7 +187,21 @@ export function createPreviewDependencyResolutionHintPlugin(
         if (sourceText === undefined || !hasExplicitServerBoundary(sourceText)) {
           return undefined;
         }
-        recordAppliedHint(`facade:${sourcePath}`, facadeScoreByPath.get(sourcePath));
+        const facadeHint = facadeHintByPath.get(sourcePath);
+        const contractExamples = (facadeHint?.contractExamples ?? []).filter(
+          (example) => canonicalizeHintPath(example.sourcePath, workspaceRoot) === sourcePath,
+        );
+        const evidenceWatchFiles = [
+          ...new Set(
+            (
+              facadeHint?.evidenceSourcePaths ??
+              contractExamples.map((item) => item.evidenceSourcePath)
+            )
+              .map((evidencePath) => canonicalizeHintPath(evidencePath, workspaceRoot))
+              .filter((evidencePath): evidencePath is string => evidencePath !== undefined),
+          ),
+        ].sort();
+        recordAppliedHint(`facade:${sourcePath}`, facadeHint?.score);
         return {
           contents: createPreviewServerContractFacadeSource(
             sourcePath,
@@ -192,6 +209,7 @@ export function createPreviewDependencyResolutionHintPlugin(
             collectPreviewRenderModuleFacts(sourcePath, sourceText).exports.flatMap((item) =>
               item.wildcard ? [] : [item.exportName],
             ),
+            contractExamples,
           ),
           loader: 'js',
           resolveDir: path.dirname(sourcePath),
@@ -202,7 +220,7 @@ export function createPreviewDependencyResolutionHintPlugin(
                 `"${formatWorkspacePath(sourcePath, workspaceRoot)}" as a render-only execution contract.`,
             },
           ],
-          watchFiles: [sourcePath],
+          watchFiles: [sourcePath, ...evidenceWatchFiles],
         };
       }
 
@@ -244,6 +262,7 @@ export function createPreviewServerContractFacadeSource(
   sourcePath: string,
   workspaceRoot: string,
   exportNames: readonly string[] = [],
+  contractExamples: readonly PreviewLearnedServerContractExample[] = [],
 ): string {
   const label = formatWorkspacePath(sourcePath, workspaceRoot);
   return createPreviewNeutralExecutionContractSource(
@@ -251,6 +270,7 @@ export function createPreviewServerContractFacadeSource(
     label,
     `[React Preview] Server execution contract ${label} is using a neural dependency hint.`,
     exportNames,
+    contractExamples,
   );
 }
 
@@ -269,6 +289,7 @@ function createPreviewNeutralExecutionContractSource(
   label: string,
   warning: string,
   exportNames?: readonly string[],
+  contractExamples: readonly PreviewLearnedServerContractExample[] = [],
 ): string {
   const namedExports = [
     ...new Set(
@@ -278,6 +299,11 @@ function createPreviewNeutralExecutionContractSource(
     ),
   ].sort();
   const hasDefaultExport = exportNames?.includes('default') === true;
+  const learnedExampleByExport = new Map(
+    contractExamples
+      .filter((example) => exportNames?.includes(example.exportName) === true)
+      .map((example) => [example.exportName, example] as const),
+  );
   return [
     `/** Render-only execution contract for ${contractKind}: ${label.replaceAll('*/', '* /')} */`,
     'const maximumDepth = 10;',
@@ -294,6 +320,8 @@ function createPreviewNeutralExecutionContractSource(
     "      if (property === 'then') return undefined;",
     "      if (property === 'toJSON') return () => ({});",
     '      if (property === Symbol.iterator) return () => [][Symbol.iterator]();',
+    "      if (property === 'map' || property === 'flatMap') return () => [];",
+    "      if (property === 'filter' || property === 'slice') return () => [];",
     "      if (property === Symbol.toPrimitive) return (hint) => hint === 'number' ? 0 : 'Preview value';",
     '      if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);',
     '      return next();',
@@ -309,10 +337,33 @@ function createPreviewNeutralExecutionContractSource(
     ...(exportNames === undefined || exportNames.length === 0
       ? ['module.exports = contract;']
       : [
-          ...(hasDefaultExport ? ['export default contract;'] : []),
-          ...namedExports.map((exportName) => `export const ${exportName} = contract;`),
+          ...(hasDefaultExport
+            ? [
+                `export default ${createLearnedContractFunctionSource(
+                  learnedExampleByExport.get('default'),
+                )};`,
+              ]
+            : []),
+          ...namedExports.map(
+            (exportName) =>
+              `export const ${exportName} = ${createLearnedContractFunctionSource(
+                learnedExampleByExport.get(exportName),
+              )};`,
+          ),
         ]),
   ].join('\n');
+}
+
+/** Emits a callable learned mock contract, falling back to the property-chain-safe neutral proxy. */
+function createLearnedContractFunctionSource(
+  example: PreviewLearnedServerContractExample | undefined,
+): string {
+  if (example === undefined) return 'contract';
+  if (example.mode === 'returned-undefined') return '() => undefined';
+  const serializedValue = JSON.stringify(example.value);
+  return example.mode === 'resolved'
+    ? `() => Promise.resolve(${serializedValue})`
+    : `() => (${serializedValue})`;
 }
 
 /** Checks only a bounded source prefix for an authored server execution boundary. */

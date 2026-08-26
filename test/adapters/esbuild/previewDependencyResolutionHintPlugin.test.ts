@@ -24,7 +24,13 @@ describe('createPreviewDependencyResolutionHintPlugin', () => {
     await Promise.all([
       writeFile(
         entryPath,
-        'import { loadSecret } from "./server"; export const value = String(loadSecret());',
+        [
+          'import { loadSecret } from "./server";',
+          'const result = loadSecret();',
+          'export const value = String(result);',
+          'export const mapped = result.items.map((item) => item);',
+          'export const filtered = result.items.filter((item) => item);',
+        ].join('\n'),
         'utf8',
       ),
       writeFile(
@@ -60,8 +66,162 @@ describe('createPreviewDependencyResolutionHintPlugin', () => {
     if (outputText === undefined) throw new Error('The facade fixture did not emit JavaScript.');
     const executed = (await import(
       `data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`
-    )) as { readonly value?: unknown };
+    )) as {
+      readonly filtered?: unknown;
+      readonly mapped?: unknown;
+      readonly value?: unknown;
+    };
     expect(executed.value).toBe('Preview value');
+    expect(executed.mapped).toEqual([]);
+    expect(executed.filtered).toEqual([]);
+  });
+
+  /** Retains every runtime export introduced by a server factory destructuring declaration. */
+  it('exposes destructured named exports from an explicit server module', async () => {
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), 'react-preview-neural-destructure-'));
+    temporaryRoots.push(rootPath);
+    const entryPath = path.join(rootPath, 'entry.ts');
+    const serverPath = path.join(rootPath, 'server.ts');
+    await Promise.all([
+      writeFile(
+        entryPath,
+        'import { auth } from "./server"; export const value = String(auth());',
+        'utf8',
+      ),
+      writeFile(
+        serverPath,
+        'import "server-only"; const createServer = () => ({ auth() {}, handlers: {} }); export const { auth, handlers } = createServer();',
+        'utf8',
+      ),
+    ]);
+
+    const result = await build({
+      absWorkingDir: rootPath,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'esm',
+      logLevel: 'silent',
+      platform: 'browser',
+      plugins: [
+        createPreviewDependencyResolutionHintPlugin({
+          facadeSourcePaths: [serverPath],
+          workspaceRoot: rootPath,
+        }),
+      ],
+      write: false,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.outputFiles[0]?.text).toContain('var auth = contract;');
+    expect(result.outputFiles[0]?.text).not.toContain('createServer');
+  });
+
+  /** Replays complete adjacent-test defaults while leaving unproven exports on the neutral proxy. */
+  it('embeds learned return values in an explicit server execution contract', async () => {
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), 'react-preview-learned-contract-'));
+    temporaryRoots.push(rootPath);
+    const entryPath = path.join(rootPath, 'entry.ts');
+    const serverPath = path.join(rootPath, 'server.ts');
+    const evidencePath = path.join(rootPath, 'entry.test.ts');
+    await Promise.all([
+      writeFile(
+        entryPath,
+        [
+          'import { getTheme, isPublished, loadRows, unknownValue } from "./server";',
+          'export async function readContract() {',
+          '  return {',
+          '    rows: await loadRows(),',
+          '    theme: await getTheme(),',
+          '    published: isPublished(),',
+          '    unknown: String(unknownValue()),',
+          '  };',
+          '}',
+        ].join('\n'),
+        'utf8',
+      ),
+      writeFile(
+        serverPath,
+        'import "server-only"; import db from "missing-db"; export const loadRows = () => db.rows(); export const getTheme = () => db.theme(); export const isPublished = () => db.published(); export const unknownValue = () => db.unknown();',
+        'utf8',
+      ),
+      writeFile(evidencePath, '// adjacent test evidence', 'utf8'),
+    ]);
+    const score = new PreviewDependencyResolutionNeuralModel().score(
+      'facade-server-contract',
+      {
+        declaredPackageRatio: 1,
+        errorDensity: 0.1,
+        explicitServerBoundary: 1,
+        frameworkRuntime: 0,
+        jsxConsumer: 0,
+        packageCoreRuntime: 0,
+        packageServerAffinity: 1,
+        packageUiAffinity: 0,
+        styleConsumer: 0,
+        targetModule: 0,
+        useServerDirective: 0,
+      },
+      0.99,
+    );
+
+    const result = await build({
+      absWorkingDir: rootPath,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'esm',
+      logLevel: 'silent',
+      platform: 'browser',
+      plugins: [
+        createPreviewDependencyResolutionHintPlugin({
+          facadeHints: [
+            {
+              contractExamples: [
+                {
+                  evidenceSourcePath: evidencePath,
+                  exportName: 'loadRows',
+                  mode: 'resolved',
+                  sourcePath: serverPath,
+                  value: [],
+                },
+                {
+                  evidenceSourcePath: evidencePath,
+                  exportName: 'getTheme',
+                  mode: 'resolved',
+                  sourcePath: serverPath,
+                  value: { preset: 'minimal' },
+                },
+                {
+                  evidenceSourcePath: evidencePath,
+                  exportName: 'isPublished',
+                  mode: 'returned',
+                  sourcePath: serverPath,
+                  value: false,
+                },
+              ],
+              evidenceSourcePaths: [evidencePath],
+              score,
+              sourcePath: serverPath,
+            },
+          ],
+          facadeSourcePaths: [serverPath],
+          workspaceRoot: rootPath,
+        }),
+      ],
+      write: false,
+    });
+
+    const outputText = result.outputFiles[0]?.text;
+    if (outputText === undefined) throw new Error('The learned contract did not emit JavaScript.');
+    const executed = (await import(
+      `data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`
+    )) as { readonly readContract: () => Promise<unknown> };
+    await expect(executed.readContract()).resolves.toEqual({
+      published: false,
+      rows: [],
+      theme: { preset: 'minimal' },
+      unknown: 'Preview value',
+    });
+    expect(result.outputFiles[0]?.text).not.toContain('missing-db');
   });
 
   /** Revalidates the authored marker so a stale model cannot facade an edited browser module. */

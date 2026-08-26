@@ -1,4 +1,7 @@
 /** Verifies that automatic acquisition accepts only declared unresolved npm package roots. */
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import type { Message } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import {
@@ -11,6 +14,7 @@ import {
 } from '../../../src/adapters/esbuild/previewMissingDependencyRequirements';
 import { PreviewDependencyResolutionNeuralModel } from '../../../src/adapters/esbuild/previewDependencyResolutionNeuralModel';
 import type { PreviewDependencyProfile } from '../../../src/adapters/node/previewDependencyProfile';
+import { canonicalizeExistingPath } from '../../../src/shared/pathIdentity';
 
 const PROFILE: PreviewDependencyProfile = {
   dependencyPaths: ['/workspace/package.json', '/workspace/package-lock.json'],
@@ -191,6 +195,74 @@ describe('collectPreviewMissingDependencyRequirements', () => {
     expect(plan.packageNames).toEqual(['react', 'lucide-react']);
     expect(plan.packageNames).not.toContain('@prisma/client');
     expect(plan.facadeCandidates[0]?.score.action).toBe('facade-server-contract');
+  });
+
+  /** Attaches safe adjacent-test defaults to the exact server facade selected by build evidence. */
+  it('learns stable server return contracts without treating the adjacent test as a page', async () => {
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-hint-learning-'));
+    const routeDirectory = path.join(projectRoot, 'src/app/(builder)/edit');
+    const targetPath = path.join(routeDirectory, 'page.tsx');
+    const testPath = path.join(routeDirectory, 'page.test.tsx');
+    const serverPath = path.join(projectRoot, 'src/service.ts');
+    const profile: PreviewDependencyProfile = {
+      ...PROFILE,
+      requirementsByField: {
+        ...PROFILE.requirementsByField,
+        dependencies: {
+          ...PROFILE.requirementsByField.dependencies,
+          '@prisma/client': '7.4.1',
+        },
+      },
+    };
+    try {
+      await mkdir(routeDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(targetPath, 'export default async function Page() { return null; }', 'utf8'),
+        writeFile(
+          serverPath,
+          'import "server-only"; import { Prisma } from "@prisma/client"; export const loadRows = async () => Prisma;',
+          'utf8',
+        ),
+        writeFile(
+          testPath,
+          [
+            "import { loadRows } from '../../service';",
+            "import { vi } from 'vitest';",
+            "vi.mocked(loadRows).mockResolvedValue({ rows: [], status: 'draft' } as Result);",
+          ].join('\n'),
+          'utf8',
+        ),
+      ]);
+
+      const plan = await createPreviewDependencyResolutionHintPlan(
+        [messageAt('Could not resolve "@prisma/client"', serverPath)],
+        {
+          environment: { identity: 'cold', nodeModulesPaths: [], profile },
+          projectRoot,
+          resolveModule: (moduleSpecifier) =>
+            moduleSpecifier === '../../service' ? serverPath : undefined,
+          targetPath,
+          workspaceRoot: projectRoot,
+        },
+      );
+
+      expect(plan.facadeCandidates).toHaveLength(1);
+      expect(plan.facadeCandidates[0]).toMatchObject({
+        contractExamples: [
+          {
+            evidenceSourcePath: testPath,
+            exportName: 'loadRows',
+            mode: 'resolved',
+            sourcePath: serverPath,
+            value: { rows: [], status: 'draft' },
+          },
+        ],
+        evidenceSourcePaths: [testPath],
+        sourcePath: canonicalizeExistingPath(serverPath),
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
   });
 
   /** Preserves exact CSS edges so the bundler can fail softly after a package connection miss. */

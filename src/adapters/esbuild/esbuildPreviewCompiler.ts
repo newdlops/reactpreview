@@ -581,6 +581,27 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         EMPTY_MANAGED_ENVIRONMENT;
       const dependencyProfile = managedDependencyEnvironment.profile;
       const nextEvidence = await findNext(dependencyProfile, projectRoot, request);
+      const baseStaticModuleResolver = createPreviewStaticModuleResolver({
+        ...(request.tsconfigPath === undefined
+          ? {}
+          : { configuredTsconfigPath: request.tsconfigPath }),
+        fallbackNodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
+        workspaceRoot: canonicalWorkspaceRoot,
+      });
+      const staticModuleResolver =
+        resolutionConfinement === undefined
+          ? baseStaticModuleResolver
+          : {
+              ...baseStaticModuleResolver,
+              resolve(moduleSpecifier: string, consumerPath: string) {
+                assertPreviewResolutionPath(resolutionConfinement, consumerPath);
+                const resolved = baseStaticModuleResolver.resolve(moduleSpecifier, consumerPath);
+                if (resolved !== undefined) {
+                  assertPreviewResolutionPath(resolutionConfinement, resolved);
+                }
+                return resolved;
+              },
+            };
       acquisitionContext = {
         environment: managedDependencyEnvironment,
         projectRoot,
@@ -603,30 +624,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           );
         },
         reportAcquisition: () => context?.reportProgress?.('acquiring-dependencies'),
+        resolveModule: staticModuleResolver.resolve,
         targetPath: request.documentPath,
         workspaceRoot: canonicalWorkspaceRoot,
       };
-      const baseStaticModuleResolver = createPreviewStaticModuleResolver({
-        ...(request.tsconfigPath === undefined
-          ? {}
-          : { configuredTsconfigPath: request.tsconfigPath }),
-        fallbackNodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
-        workspaceRoot: canonicalWorkspaceRoot,
-      });
-      const staticModuleResolver =
-        resolutionConfinement === undefined
-          ? baseStaticModuleResolver
-          : {
-              ...baseStaticModuleResolver,
-              resolve(moduleSpecifier: string, consumerPath: string) {
-                assertPreviewResolutionPath(resolutionConfinement, consumerPath);
-                const resolved = baseStaticModuleResolver.resolve(moduleSpecifier, consumerPath);
-                if (resolved !== undefined) {
-                  assertPreviewResolutionPath(resolutionConfinement, resolved);
-                }
-                return resolved;
-              },
-            };
       const analysisResolutionMemo =
         request.renderMode === 'page-inspector'
           ? createPreviewStaticModuleResolutionMemo()
@@ -662,6 +663,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const collectTailwindCandidates =
         findPreviewDependencySpecifier(dependencyProfile, 'tailwindcss') !== undefined ||
         analysisStaticModuleResolver.resolve('tailwindcss', request.documentPath) !== undefined;
+      const requiredTailwindCompilerPackage =
+        dependencyProfile?.hasReusableLockEvidence === true &&
+        findPreviewDependencySpecifier(dependencyProfile, '@tailwindcss/postcss') !== undefined
+          ? '@tailwindcss/postcss'
+          : undefined;
       assertPreviewReactTarget(request, dependencyProfile, analysisStaticModuleResolver);
       const targetSelection = preparePreviewCompilerTarget(request);
       const routerNeed = collectPreviewRouterRequirement(request.documentPath, request.sourceText);
@@ -1546,9 +1552,16 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               }),
               createPreviewTailwindPlugin({
                 boundedSourceDiscovery: policy.boundedTailwindSourceDiscovery,
+                fallbackNodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
+                ...(activeDependencyResolutionHints === undefined
+                  ? {}
+                  : { hintedStyleFallbacks: activeDependencyResolutionHints.styleCandidates }),
                 projectRoot,
                 readSourceSnapshots: () =>
                   incrementalState?.snapshots ?? sourceCompilation.snapshots,
+                ...(requiredTailwindCompilerPackage === undefined
+                  ? {}
+                  : { requiredCompilerPackage: requiredTailwindCompilerPackage }),
                 workspaceRoot: canonicalWorkspaceRoot,
               }),
               sassBoundary.plugin,
@@ -1609,6 +1622,17 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               ? undefined
               : {
                   facadeSourcePaths: activeDependencyResolutionHints.facadeSourcePaths,
+                  facadeContracts: activeDependencyResolutionHints.facadeCandidates.map(
+                    (candidate) => ({
+                      contractExamples: candidate.contractExamples?.map((example) => ({
+                        exportName: example.exportName,
+                        mode: example.mode,
+                        value: example.value,
+                      })),
+                      evidenceSourcePaths: candidate.evidenceSourcePaths,
+                      sourcePath: candidate.sourcePath,
+                    }),
+                  ),
                   packageContracts: activeDependencyResolutionHints.packageContractCandidates.map(
                     (candidate) => ({
                       moduleSpecifier: candidate.moduleSpecifier,
@@ -1702,6 +1726,17 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               ? undefined
               : {
                   facadeSourcePaths: activeDependencyResolutionHints.facadeSourcePaths,
+                  facadeContracts: activeDependencyResolutionHints.facadeCandidates.map(
+                    (candidate) => ({
+                      contractExamples: candidate.contractExamples?.map((example) => ({
+                        exportName: example.exportName,
+                        mode: example.mode,
+                        value: example.value,
+                      })),
+                      evidenceSourcePaths: candidate.evidenceSourcePaths,
+                      sourcePath: candidate.sourcePath,
+                    }),
+                  ),
                   packageContracts: activeDependencyResolutionHints.packageContractCandidates.map(
                     (candidate) => ({
                       moduleSpecifier: candidate.moduleSpecifier,
@@ -1845,6 +1880,17 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             ? undefined
             : {
                 facadeSourcePaths: activeDependencyResolutionHints.facadeSourcePaths,
+                facadeContracts: activeDependencyResolutionHints.facadeCandidates.map(
+                  (candidate) => ({
+                    contractExamples: candidate.contractExamples?.map((example) => ({
+                      exportName: example.exportName,
+                      mode: example.mode,
+                      value: example.value,
+                    })),
+                    evidenceSourcePaths: candidate.evidenceSourcePaths,
+                    sourcePath: candidate.sourcePath,
+                  }),
+                ),
                 packageContracts: activeDependencyResolutionHints.packageContractCandidates.map(
                   (candidate) => ({
                     moduleSpecifier: candidate.moduleSpecifier,
@@ -2013,7 +2059,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         request,
         runtimeDependencyPaths: runtimeWatchInputs.dependencyPaths,
         styledComponentsDependencyPaths: styleContext.styledComponentsPlan.dependencyPaths,
-        targetDependencyPaths: targetUsageProps.dependencyPaths,
+        targetDependencyPaths: [
+          ...targetUsageProps.dependencyPaths,
+          ...(activeDependencyResolutionHints?.facadeCandidates.flatMap(
+            (candidate) => candidate.evidenceSourcePaths ?? [],
+          ) ?? []),
+        ],
       });
       const preparedVendorModules = await this.vendorModuleBuilder.prepareWithEvidence({
         bundle: previewBundle,

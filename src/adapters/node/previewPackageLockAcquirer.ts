@@ -519,6 +519,12 @@ function buildLockedPackageClosure(
     if (entriesByLockKey.has(lockKey)) continue;
     const record = readObject(packages[lockKey]);
     if (record === undefined) return undefined;
+    const platformCompatible = isLockedPackageCompatibleWithCurrentPlatform(record);
+    if (platformCompatible === undefined) return undefined;
+    if (!platformCompatible) {
+      if (request.optional) continue;
+      return undefined;
+    }
     const entry = readLockedPackageEntry(lockKey, record);
     if (entry === undefined) return undefined;
     const collisionKey = entry.targetRelativePath.normalize('NFC').toLowerCase();
@@ -537,6 +543,48 @@ function buildLockedPackageClosure(
     return depth || compareStrings(left.targetRelativePath, right.targetRelativePath);
   });
   return Object.freeze(entries);
+}
+
+/**
+ * Applies npm's inert `os`/`cpu` admission before traversing an optional native package. Lockfiles
+ * commonly retain binaries for every supported platform, including bundled fallback graphs that
+ * have no standalone archive evidence. Only the current host variant can participate in the
+ * extension's managed environment; malformed constraint evidence still fails closed.
+ */
+function isLockedPackageCompatibleWithCurrentPlatform(
+  record: Readonly<Record<string, unknown>>,
+): boolean | undefined {
+  const operatingSystemCompatible = matchesCurrentPlatformConstraint(record.os, process.platform);
+  const architectureCompatible = matchesCurrentPlatformConstraint(record.cpu, process.arch);
+  return operatingSystemCompatible === undefined || architectureCompatible === undefined
+    ? undefined
+    : operatingSystemCompatible && architectureCompatible;
+}
+
+/** Evaluates positive and `!`-negative npm platform tokens without invoking package-manager code. */
+function matchesCurrentPlatformConstraint(
+  value: unknown,
+  currentValue: string,
+): boolean | undefined {
+  if (value === undefined) return true;
+  const entries = typeof value === 'string' ? [value] : Array.isArray(value) ? value : undefined;
+  if (
+    entries === undefined ||
+    entries.length === 0 ||
+    entries.some(
+      (entry) =>
+        typeof entry !== 'string' ||
+        !/^!?[a-z\d][a-z\d._-]*$/iu.test(entry) ||
+        entry !== entry.trim(),
+    )
+  ) {
+    return undefined;
+  }
+  const normalizedCurrentValue = currentValue.toLowerCase();
+  const normalizedEntries = (entries as readonly string[]).map((entry) => entry.toLowerCase());
+  if (normalizedEntries.includes(`!${normalizedCurrentValue}`)) return false;
+  const positiveEntries = normalizedEntries.filter((entry) => !entry.startsWith('!'));
+  return positiveEntries.length === 0 || positiveEntries.includes(normalizedCurrentValue);
 }
 
 /** Reads transitive runtime edges and optional-peer metadata. */
@@ -559,7 +607,7 @@ function readLockedDependencyMaps(
     : Object.freeze({ dependencies, optionalDependencies, optionalPeers, peerDependencies });
 }
 
-/** Narrows optional peer metadata without accepting unknown peer names. */
+/** Narrows optional peer metadata without turning orphan npm metadata into dependency edges. */
 function readOptionalPeers(
   value: unknown,
   peers: Readonly<Record<string, string>>,
@@ -570,10 +618,14 @@ function readOptionalPeers(
   const optionalPeers = new Set<string>();
   for (const [name, rawEntry] of Object.entries(metadata)) {
     const entry = readObject(rawEntry);
-    if (!(name in peers) || entry === undefined || typeof entry.optional !== 'boolean') {
+    if (entry === undefined || typeof entry.optional !== 'boolean') {
       return undefined;
     }
-    if (entry.optional) optionalPeers.add(name);
+    // npm v3 lockfiles can retain optional peer metadata after omitting the corresponding
+    // peerDependencies entry (for example debug@4.4.3 and supports-color). The orphan entry is
+    // inert: accepting its shape must not invent a package request, while rejecting the whole
+    // closure prevents otherwise verified declared packages from being restored.
+    if (name in peers && entry.optional) optionalPeers.add(name);
   }
   return Object.freeze(optionalPeers);
 }

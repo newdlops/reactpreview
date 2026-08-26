@@ -230,6 +230,122 @@ describe('npm package-lock managed dependency acquisition', () => {
   });
 
   /**
+   * npm v3 may preserve optional-peer metadata after omitting its peer declaration. The metadata
+   * is inert and must neither poison the verified closure nor create a dependency request.
+   */
+  it('ignores orphan optional peer metadata without inventing a package edge', async () => {
+    const alphaArchive = Buffer.from('alpha archive with debug dependency');
+    const debugArchive = Buffer.from('debug archive with orphan optional peer metadata');
+    const alphaUrl = publicArchiveUrl('alpha', '1.0.0');
+    const debugUrl = publicArchiveUrl('debug', '4.4.3');
+    const fixture = await createFixture({
+      dependencies: { alpha: '1.0.0' },
+      lockedPackages: {
+        'node_modules/alpha': lockedPackageRecord(alphaArchive, alphaUrl, '1.0.0', {
+          dependencies: { debug: '^4.4.3' },
+        }),
+        'node_modules/debug': {
+          ...lockedPackageRecord(debugArchive, debugUrl, '4.4.3'),
+          peerDependenciesMeta: { 'supports-color': { optional: true } },
+        },
+      },
+    });
+    const profile = await requireProfile(fixture);
+    const extracted: PreviewPackageLockExtractRequest[] = [];
+    const requestedUrls: string[] = [];
+
+    const result = await acquirePreviewPackageLockDependencies({
+      extractor: recordingExtractor(extracted),
+      profile,
+      projectRoot: fixture.projectRoot,
+      requiredPackageNames: ['alpha'],
+      targetNodeModulesPath: fixture.targetNodeModulesPath,
+      transport: archiveTransport(
+        new Map([
+          [alphaUrl, alphaArchive],
+          [debugUrl, debugArchive],
+        ]),
+        requestedUrls,
+      ),
+    });
+
+    expect(requestedUrls).toEqual([alphaUrl, debugUrl]);
+    expect(extracted.map(({ packageName }) => packageName)).toEqual(['alpha', 'debug']);
+    expect(result?.packages.map(({ name }) => name)).toEqual(['alpha', 'debug']);
+    await expectPathToBeMissing(path.join(fixture.targetNodeModulesPath, 'supports-color'));
+    await expectPathToBeMissing(path.join(fixture.projectRoot, 'node_modules'));
+  });
+
+  /**
+   * npm retains optional native packages for every host. An incompatible package may also own
+   * bundled lock records without separate archive URLs, so traversing it would reject an otherwise
+   * complete current-host compiler closure such as Tailwind Oxide or Lightning CSS.
+   */
+  it('skips incompatible optional platform packages before traversing bundled records', async () => {
+    const alphaArchive = Buffer.from('platform-aware alpha archive');
+    const compatibleArchive = Buffer.from('current platform native archive');
+    const incompatibleArchive = Buffer.from('foreign platform native archive');
+    const alphaUrl = publicArchiveUrl('alpha', '1.0.0');
+    const compatibleUrl = publicArchiveUrl('native-current', '1.0.0');
+    const incompatibleUrl = publicArchiveUrl('native-foreign', '1.0.0');
+    const fixture = await createFixture({
+      dependencies: { alpha: '1.0.0' },
+      lockedPackages: {
+        'node_modules/alpha': {
+          ...lockedPackageRecord(alphaArchive, alphaUrl, '1.0.0'),
+          optionalDependencies: {
+            'native-current': '1.0.0',
+            'native-foreign': '1.0.0',
+          },
+        },
+        'node_modules/native-current': {
+          ...lockedPackageRecord(compatibleArchive, compatibleUrl, '1.0.0'),
+          cpu: [process.arch],
+          optional: true,
+          os: [process.platform],
+        },
+        'node_modules/native-foreign': {
+          ...lockedPackageRecord(incompatibleArchive, incompatibleUrl, '1.0.0', {
+            dependencies: { 'bundled-leaf': '1.0.0' },
+          }),
+          cpu: [process.arch],
+          optional: true,
+          os: [`!${process.platform}`],
+        },
+        'node_modules/native-foreign/node_modules/bundled-leaf': {
+          inBundle: true,
+          optional: true,
+          version: '1.0.0',
+        },
+      },
+    });
+    const profile = await requireProfile(fixture);
+    const extracted: PreviewPackageLockExtractRequest[] = [];
+    const requestedUrls: string[] = [];
+
+    const result = await acquirePreviewPackageLockDependencies({
+      extractor: recordingExtractor(extracted),
+      profile,
+      projectRoot: fixture.projectRoot,
+      requiredPackageNames: ['alpha'],
+      targetNodeModulesPath: fixture.targetNodeModulesPath,
+      transport: archiveTransport(
+        new Map([
+          [alphaUrl, alphaArchive],
+          [compatibleUrl, compatibleArchive],
+        ]),
+        requestedUrls,
+      ),
+    });
+
+    expect(requestedUrls).toEqual([alphaUrl, compatibleUrl]);
+    expect(extracted.map(({ packageName }) => packageName)).toEqual(['alpha', 'native-current']);
+    expect(result?.packages.map(({ name }) => name)).toEqual(['alpha', 'native-current']);
+    await expectPathToBeMissing(path.join(fixture.targetNodeModulesPath, 'native-foreign'));
+    await expectPathToBeMissing(path.join(fixture.projectRoot, 'node_modules'));
+  });
+
+  /**
    * Detects lock bytes changed after profile discovery before transport or extraction can create a
    * staging tree, preserving the caller-owned workspace and returning a fail-closed result.
    */

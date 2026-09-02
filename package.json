@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Preview React files in their authored page context with an inspector, without running a development server.",
-  "version": "0.1.1494",
+  "version": "0.1.1495",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",

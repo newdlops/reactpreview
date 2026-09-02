@@ -295,10 +295,13 @@ function initializePreviewInspectorPageExecutionContextRecoveryRecords() {
   return previewInspectorSession.neuralPageExecutionContextRecoveryByKey;
 }
 
-/** Uses the reachability identity so another caller/HOC path cannot inherit this repair recipe. */
+/** Uses only compiler-stable identities so execution artifacts share one finite repair recipe. */
 function createPreviewInspectorPageExecutionContextRecoveryKey(state) {
-  return String(state?.key ?? '') + '\0' +
-    String(previewInspectorSession.selectedPageCandidateId ?? '') + '\0' +
+  const candidateId = state?.candidateId ?? previewInspectorSession.selectedPageCandidateId;
+  const targetSourcePath = typeof state?.targetSourcePath === 'string'
+    ? state.targetSourcePath.replaceAll('\\', '/')
+    : '';
+  return String(candidateId ?? '') + '\0' + targetSourcePath + '\0' +
     String(state?.targetExportName ?? previewInspectorSession.selectedExportName ?? '');
 }
 

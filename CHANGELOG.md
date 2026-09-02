@@ -4,6 +4,7 @@
 
 - Page Execution 후보가 호스트에 반영된 뒤 deferred activation이 revision 경쟁에서 빠져도 현재 descriptor를 승인 신호로 재조정해, Inspector가 `RESTORING FULL PAGE CONTEXT`와 자동 선택 상태에 영구히 머물지 않도록 수정
 - 동적 라우트 정규식을 포함한 compiler candidate ID를 WebView 재시도 프로토콜이 정상 수용하되 절대 경로·URL·제어 문자는 계속 거부하도록 검증 규칙을 실제 후보 형식과 일치시킴
+- artifact마다 달라지는 도달성·탭 키를 Page Execution 복구 기록에서 제외하고 페이지 후보·대상 소스·export의 안정된 신원을 사용해, `page-authentic`과 `page-sliced`가 새 후보로 초기화되며 교대하던 재빌드 루프를 유한 탐색으로 고정
 
 - Page Inspector automatic fast/corridor build가 app entry·route registry·loader/action을 실행하지 않고 선택 route/page의 검증된 Page Execution slice와 Frontier v2만 bundle하도록 변경. 중첩 route owner는 실제 첫 page leaf까지 폴더 계층으로 탐색하고 JSX·route factory의 layout wrapper만 leaf 실행 surface에 복원하며, selected-export/local-HOC slice, Next layout 및 Pages Router `_app → Component` 조합을 frozen execution plan에 연결. authored Router root에는 generated MemoryRouter를 중첩하지 않고 detached leaf에는 정확히 하나의 Router만 제공하며, 동적 `:param`의 제약·이름에서 URL 값을 생성해 leaf pattern과 query를 실제 MemoryRouter 경로에 적용. 고정 graph/module/source/native-bundling 시간 budget 없이 target-only보다 높은 page fidelity를 우선 선택하고, selected corridor에서 중복 workspace-wide large-package barrel optimizer를 실행하지 않으며, retained fast preview의 enrichment가 실패해도 route `Preparing…` 상태를 terminal ready로 정리
 - Frontier가 authored runtime static import 및 re-export closure를 모두 admission하여 esbuild가 평가하는 side-effect 모듈을 누락하지 않도록 수정

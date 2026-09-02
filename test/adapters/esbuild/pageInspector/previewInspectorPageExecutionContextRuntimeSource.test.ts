@@ -67,6 +67,7 @@ describe('Preview Inspector page execution context runtime source', () => {
     expect(evaluateCurrentPageExecutionSelection()).toEqual({
       attemptedExecutionCandidateIds: ['execution-page-authentic', 'execution-page-sliced'],
       postedExecutionCandidateId: 'execution-page-sliced',
+      recoveryRecordCount: 1,
       recoveryStatus: 'exhausted',
       repeatedExecutionCandidate: false,
       transitionPending: false,
@@ -406,6 +407,7 @@ globalThis.__result = {
 function evaluateCurrentPageExecutionSelection(): {
   readonly attemptedExecutionCandidateIds: readonly string[];
   readonly postedExecutionCandidateId: string;
+  readonly recoveryRecordCount: number;
   readonly recoveryStatus: string;
   readonly repeatedExecutionCandidate: boolean;
   readonly transitionPending: boolean;
@@ -493,6 +495,7 @@ requestPreviewInspectorNeuralPageExecutionContextRecovery(
 );
 const postedExecutionCandidateId = posted.executionCandidateId;
 descriptor.inspector.pageExecutionCandidateId = postedExecutionCandidateId;
+state.key = 'page-candidate:Target:artifact-specific-tab-key';
 posted = undefined;
 requestPreviewInspectorNeuralPageExecutionContextRecovery(
   descriptor,
@@ -504,6 +507,7 @@ const record = readPreviewInspectorPageExecutionContextRecoveryRecord(state);
 globalThis.__result = {
   attemptedExecutionCandidateIds: [...record.attemptedExecutionCandidateIds].sort(),
   postedExecutionCandidateId,
+  recoveryRecordCount: previewInspectorSession.neuralPageExecutionContextRecoveryByKey.size,
   recoveryStatus: record.status,
   repeatedExecutionCandidate: posted !== undefined,
   transitionPending: isPreviewInspectorNeuralPageExecutionContextTransitionPending(state),

@@ -440,13 +440,19 @@ function selectPreviewInspectorNeuralPageExecutionContextCandidate(
 }
 
 /** Teaches only whether an execution candidate restored the missing page-owner corridor. */
-function settlePreviewInspectorNeuralPageExecutionContextOutcome(state, success) {
+function settlePreviewInspectorNeuralPageExecutionContextOutcome(
+  state,
+  success,
+  observedExecutionCandidateId,
+) {
   const record = readPreviewInspectorPageExecutionContextRecoveryRecord(state);
   if (record === undefined) return false;
   const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
     ? findSelectedPreviewInspectorDescriptor()
     : undefined;
-  const executionId = descriptor?.inspector?.pageExecutionCandidateId;
+  const executionId = typeof observedExecutionCandidateId === 'string'
+    ? observedExecutionCandidateId
+    : descriptor?.inspector?.pageExecutionCandidateId;
   if (!(record.outcomeByExecutionCandidateId instanceof Map)) {
     record.outcomeByExecutionCandidateId = new Map();
   }
@@ -559,11 +565,12 @@ function requestPreviewInspectorNeuralPageExecutionContextRecovery(
     return true;
   }
   const currentExecutionId = descriptor?.inspector?.pageExecutionCandidateId;
+  // The current full-page artifact produced this incomplete observation. Mark it before ranking so
+  // a same-content host rebuild cannot remain pending without advancing the finite candidate set.
   if (
     typeof currentExecutionId === 'string' &&
-    previewInspectorFullPageExecutionFidelities.has(observation.fidelity) &&
-    record.attemptedExecutionCandidateIds.has(currentExecutionId)
-  ) settlePreviewInspectorNeuralPageExecutionContextOutcome(state, false);
+    previewInspectorFullPageExecutionFidelities.has(observation.fidelity)
+  ) settlePreviewInspectorNeuralPageExecutionContextOutcome(state, false, currentExecutionId);
   const selected = selectPreviewInspectorNeuralPageExecutionContextCandidate(
     descriptor,
     record,

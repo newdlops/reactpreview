@@ -18,6 +18,11 @@ import {
 } from './previewArtifactLayout';
 import { selectPreviewArtifactIoConcurrency } from './previewArtifactIoPolicy';
 
+const PREVIEW_ARTIFACT_CACHE_GENERATION = 'v2';
+const PREVIEW_ARTIFACT_SESSION_CLEANUP_CONCURRENCY = 4;
+const PREVIEW_ARTIFACT_SESSION_DIRECTORY_PATTERN =
+  /^session-([1-9]\d*)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
 /** One portable path identity retained as a live file record or session-long URL tombstone. */
 interface SharedArtifactFileRecord {
   /** Byte digest permanently associated with this browser URL for the complete session. */
@@ -75,8 +80,11 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
   public readonly resourceRoot: vscode.Uri;
 
   private readonly artifactByHash = new Map<string, PublishedArtifactRecord>();
+  private readonly cacheRoot: vscode.Uri;
   private disposed = false;
   private operationQueue: Promise<void> = Promise.resolve();
+  private readonly sessionDirectoryName: string;
+  private sessionPrepared = false;
   private readonly sharedFileByIdentity = new Map<string, SharedArtifactFileRecord>();
   private shutdownPromise: Promise<void> | undefined;
 
@@ -90,7 +98,13 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
     globalStorageUri: vscode.Uri,
     private readonly log: vscode.LogOutputChannel,
   ) {
-    this.resourceRoot = vscode.Uri.joinPath(globalStorageUri, 'preview-cache', randomUUID());
+    this.cacheRoot = vscode.Uri.joinPath(
+      globalStorageUri,
+      'preview-cache',
+      PREVIEW_ARTIFACT_CACHE_GENERATION,
+    );
+    this.sessionDirectoryName = `session-${process.pid.toString()}-${randomUUID()}`;
+    this.resourceRoot = vscode.Uri.joinPath(this.cacheRoot, this.sessionDirectoryName);
   }
 
   /**
@@ -120,6 +134,7 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
     }
 
     return this.enqueueOperation(async () => {
+      await this.prepareSession();
       const publishedArtifact = this.artifactByHash.get(layout.contentHash);
       if (publishedArtifact !== undefined) {
         assertEquivalentLayouts(publishedArtifact.layout, layout);
@@ -179,6 +194,54 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
   private requiresFileWrite(file: PlannedPreviewArtifactFile): boolean {
     const identity = createPreviewArtifactPathIdentity(file.relativePath);
     return (this.sharedFileByIdentity.get(identity)?.references ?? 0) === 0;
+  }
+
+  /** Creates the versioned cache root once and reclaims sessions whose extension host has exited. */
+  private async prepareSession(): Promise<void> {
+    if (this.sessionPrepared) return;
+    await vscode.workspace.fs.createDirectory(this.cacheRoot);
+    this.sessionPrepared = true;
+    await this.reclaimAbandonedSessions();
+  }
+
+  /**
+   * Removes only cache directories owned by a process that is known to be gone.
+   *
+   * PID-scoped names preserve concurrently active VS Code windows. Unknown entries are retained,
+   * and non-ESRCH liveness errors fail closed so a permissions failure cannot delete live files.
+   */
+  private async reclaimAbandonedSessions(): Promise<void> {
+    let entries: readonly [string, vscode.FileType][];
+    try {
+      entries = await vscode.workspace.fs.readDirectory(this.cacheRoot);
+    } catch (error) {
+      this.log.debug(
+        `Could not inspect React preview cache ${this.cacheRoot.toString(true)}.`,
+        error,
+      );
+      return;
+    }
+
+    const abandonedDirectories = entries.flatMap(([name, fileType]) => {
+      if (fileType !== vscode.FileType.Directory || name === this.sessionDirectoryName) return [];
+      const ownerPid = parsePreviewArtifactSessionOwnerPid(name);
+      if (ownerPid === undefined) return [];
+      if (ownerPid !== process.pid && isPreviewArtifactSessionOwnerAlive(ownerPid)) return [];
+      return [vscode.Uri.joinPath(this.cacheRoot, name)];
+    });
+    let reclaimedSessions = 0;
+    await runBoundedOperations(
+      abandonedDirectories,
+      PREVIEW_ARTIFACT_SESSION_CLEANUP_CONCURRENCY,
+      async (directoryUri) => {
+        if (await this.deleteDirectory(directoryUri)) reclaimedSessions += 1;
+      },
+    );
+    if (reclaimedSessions > 0) {
+      this.log.debug(
+        `Removed ${reclaimedSessions.toString()} abandoned React preview cache session(s).`,
+      );
+    }
   }
 
   /**
@@ -355,11 +418,13 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
   }
 
   /** Removes the private session directory without surfacing best-effort cleanup failures. */
-  private async deleteDirectory(directoryUri: vscode.Uri): Promise<void> {
+  private async deleteDirectory(directoryUri: vscode.Uri): Promise<boolean> {
     try {
       await vscode.workspace.fs.delete(directoryUri, { recursive: true, useTrash: false });
+      return true;
     } catch (error) {
       this.log.debug(`Could not remove preview cache ${directoryUri.toString(true)}.`, error);
+      return false;
     }
   }
 
@@ -374,6 +439,24 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
       () => undefined,
     );
     return result;
+  }
+}
+
+/** Parses the owner PID from a cache directory created by the current storage generation. */
+function parsePreviewArtifactSessionOwnerPid(directoryName: string): number | undefined {
+  const value = PREVIEW_ARTIFACT_SESSION_DIRECTORY_PATTERN.exec(directoryName)?.[1];
+  if (value === undefined) return undefined;
+  const ownerPid = Number(value);
+  return Number.isSafeInteger(ownerPid) ? ownerPid : undefined;
+}
+
+/** Treats only an explicit missing-process result as permission to reclaim another session. */
+function isPreviewArtifactSessionOwnerAlive(ownerPid: number): boolean {
+  try {
+    process.kill(ownerPid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
   }
 }
 

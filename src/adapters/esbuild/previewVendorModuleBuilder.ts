@@ -23,7 +23,7 @@ interface PreviewVendorDemand {
 }
 
 /** Invalidates persisted vendor outputs whenever the browser-module closure contract changes. */
-const PREVIEW_VENDOR_BUILD_SCHEMA = 5;
+const PREVIEW_VENDOR_BUILD_SCHEMA = 6;
 
 export interface PreviewVendorBuildOutput {
   readonly chunks: readonly PreviewBundleChunk[];
@@ -87,11 +87,17 @@ export class PreviewVendorModuleBuilder {
     if (demands.length === 0) {
       return { bundle: options.bundle, dependencyPaths: Object.freeze([]) };
     }
+    const vendorGlobalPackagePlan = selectPreviewVendorGlobalPackagePlan(
+      options.globalPackagePlan,
+      options.metafile,
+      demands,
+      options.workspaceRoot,
+    );
     const environmentIdentity = createVendorEnvironmentIdentity(
       options.projectRoot,
       options.workspaceRoot,
       options.nodePaths,
-      createGlobalPackageBridgeIdentity(options.globalPackagePlan),
+      createGlobalPackageBridgeIdentity(vendorGlobalPackagePlan),
     );
     const reusable = this.records.find(
       (record) =>
@@ -110,15 +116,17 @@ export class PreviewVendorModuleBuilder {
       options.workspaceRoot,
       options.nodePaths,
       demands,
-      createGlobalPackageBridgeIdentity(options.globalPackagePlan),
+      createGlobalPackageBridgeIdentity(vendorGlobalPackagePlan),
     );
     let pending = this.outputByIdentity.get(identity);
     if (pending === undefined) {
       let localBuild: Promise<PreviewVendorBuildOutput> | undefined;
       const build = (): Promise<PreviewVendorBuildOutput> =>
-        (localBuild ??= buildVendorOutput({ ...options, demands }).then((output) =>
-          validateVendorBuildOutput(output, demands),
-        ));
+        (localBuild ??= buildVendorOutput({
+          ...options,
+          demands,
+          globalPackagePlan: vendorGlobalPackagePlan,
+        }).then((output) => validateVendorBuildOutput(output, demands)));
       pending =
         this.sharedCache === undefined
           ? build()
@@ -549,6 +557,55 @@ function collectVendorDependencyPaths(
       ),
     ].sort(compareText),
   );
+}
+
+/**
+ * Excludes application wrappers that import the vendor modules currently being built.
+ *
+ * Re-injecting such a wrapper into its own vendor dependency graph evaluates its setup against a
+ * private package copy. Stateful plugin APIs such as Day.js then mark a plugin as installed before
+ * the application copy sees it, so the real wrapper's later `extend()` call becomes a no-op. Bare
+ * package globals and unrelated project bridges remain available to vendor dependencies.
+ */
+function selectPreviewVendorGlobalPackagePlan(
+  plan: PreviewGlobalPackageBridgePlan,
+  metafile: Metafile,
+  demands: readonly PreviewVendorDemand[],
+  workspaceRoot: string,
+): PreviewGlobalPackageBridgePlan {
+  const demandedSpecifiers = new Set(demands.map((demand) => demand.specifier));
+  const vendorConsumerPaths = new Set<string>();
+  for (const [inputPath, input] of Object.entries(metafile.inputs)) {
+    if (
+      !input.imports.some((imported) => imported.external && demandedSpecifiers.has(imported.path))
+    ) {
+      continue;
+    }
+    const sourcePath = resolvePreviewVendorMetafileInputPath(inputPath, workspaceRoot);
+    if (sourcePath !== undefined) vendorConsumerPaths.add(sourcePath);
+  }
+  if (vendorConsumerPaths.size === 0) return plan;
+
+  const bridges = plan.bridges.filter(
+    (bridge) =>
+      ![bridge.moduleSpecifier, bridge.watchPath].some(
+        (candidatePath) =>
+          path.isAbsolute(candidatePath) && vendorConsumerPaths.has(path.normalize(candidatePath)),
+      ),
+  );
+  return bridges.length === plan.bridges.length
+    ? plan
+    : Object.freeze({ ...plan, bridges: Object.freeze(bridges) });
+}
+
+/** Restores a real primary-build metafile input to the vendor planner's filesystem identity. */
+function resolvePreviewVendorMetafileInputPath(
+  inputPath: string,
+  workspaceRoot: string,
+): string | undefined {
+  if (path.isAbsolute(inputPath)) return path.normalize(inputPath);
+  if (inputPath.startsWith('<') || /^[A-Za-z][A-Za-z0-9_-]*:/u.test(inputPath)) return undefined;
+  return path.normalize(path.resolve(workspaceRoot, inputPath));
 }
 
 function createVendorIdentity(

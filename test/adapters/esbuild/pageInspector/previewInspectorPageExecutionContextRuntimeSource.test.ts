@@ -61,6 +61,16 @@ describe('Preview Inspector page execution context runtime source', () => {
       transitionPendingBeforeActivation: true,
     });
   });
+
+  /** Prevents a same-artifact rebuild from leaving recovery permanently pending. */
+  it('does not retry the currently rendered incomplete full-page candidate', () => {
+    expect(evaluateCurrentPageExecutionSelection()).toEqual({
+      attemptedExecutionCandidateIds: ['execution-page-authentic', 'execution-page-sliced'],
+      postedExecutionCandidateId: 'execution-page-sliced',
+      recoveryStatus: 'exhausted',
+      repeatedExecutionCandidate: false,
+    });
+  });
 });
 
 /** Executes the page-context observation and recovery selector against a synthetic Fiber chain. */
@@ -387,6 +397,119 @@ globalThis.__result = {
   );
   if (context.__result === undefined) {
     throw new Error('Page execution context recovery fixture did not expose its result.');
+  }
+  return context.__result;
+}
+
+/** Executes recovery when the initial compiler choice is already a full-page artifact. */
+function evaluateCurrentPageExecutionSelection(): {
+  readonly attemptedExecutionCandidateIds: readonly string[];
+  readonly postedExecutionCandidateId: string;
+  readonly recoveryStatus: string;
+  readonly repeatedExecutionCandidate: boolean;
+} {
+  const context: {
+    __result?: ReturnType<typeof evaluateCurrentPageExecutionSelection>;
+  } = {};
+  vm.runInNewContext(
+    `const React = { Component: class {} };
+${createPreviewInspectorPageExecutionContextRuntimeSource()}
+const previewEntryRevision = 3;
+function hashPreviewInspectorNeuralPageContextCandidateId(value) {
+  return String(value).length * 2654435761 >>> 0;
+}
+function readPreviewInspectorHostRuntimeRevision() { return 3; }
+function readSelectedPreviewInspectorPageExecutionCandidate(value) {
+  return value?.inspector?.pageExecutionCandidates?.find(
+    (item) => item.id === value.inspector.pageExecutionCandidateId,
+  );
+}
+const candidate = {
+  complete: true,
+  id: 'page-candidate',
+  renderPath: {},
+  root: { exportName: 'PageRoot', sourcePath: '/workspace/PageRoot.tsx' },
+  target: { exportName: 'Target', sourcePath: '/workspace/Target.tsx' },
+};
+const descriptor = {
+  displayName: 'Target.tsx',
+  inspector: {
+    executablePageCandidateId: candidate.id,
+    pageExecutionCandidateId: 'execution-page-authentic',
+    pageExecutionCandidates: [
+      {
+        authoredOwnerDepth: 2,
+        executionRootExportName: 'PageRoot',
+        fidelity: 'page-authentic',
+        id: 'execution-page-authentic',
+        nestedMountCount: 0,
+        pageRootExportName: 'PageRoot',
+      },
+      {
+        authoredOwnerDepth: 2,
+        executionRootExportName: 'PageRoot',
+        fidelity: 'page-sliced',
+        id: 'execution-page-sliced',
+        nestedMountCount: 0,
+        pageRootExportName: 'PageRoot',
+      },
+    ],
+    target: candidate.target,
+  },
+};
+const state = {
+  applicationPath: ['PageRoot', 'Target'],
+  key: 'page-candidate:Target',
+  pageRootCommitted: true,
+  status: 'reached',
+  targetDirectElementOutput: true,
+  targetExportName: 'Target',
+  targetHasOutput: true,
+  targetWasMounted: true,
+};
+const previewInspectorSession = {
+  interactionSequence: 0,
+  selectedExportName: 'Target',
+  selectedPageCandidateId: candidate.id,
+};
+let posted;
+function readPreviewInspectorTargetBoundaries() { return new Set([{}]); }
+function readPreviewInspectorBoundaryFiber() {
+  return { return: { kind: 'function', name: 'Target' } };
+}
+function readPreviewInspectorFiberLink(fiber, propertyName) { return fiber?.[propertyName]; }
+function classifyPreviewInspectorFiber(fiber) { return fiber.kind ?? 'other'; }
+function namePreviewInspectorFiber(fiber) { return fiber.name ?? 'Anonymous'; }
+function isPreviewInspectorOwnedFiber() { return false; }
+function findSelectedPreviewInspectorDescriptor() { return descriptor; }
+function previewInspectorPostHostMessage(message) { posted = message; }
+requestPreviewInspectorNeuralPageExecutionContextRecovery(
+  descriptor,
+  candidate,
+  state,
+  { fingerprint: 'current-page-recipe' },
+);
+const postedExecutionCandidateId = posted.executionCandidateId;
+descriptor.inspector.pageExecutionCandidateId = postedExecutionCandidateId;
+activatePreviewInspectorNeuralPageExecutionContextRecovery(descriptor);
+posted = undefined;
+requestPreviewInspectorNeuralPageExecutionContextRecovery(
+  descriptor,
+  candidate,
+  state,
+  { fingerprint: 'current-page-recipe' },
+);
+const record = readPreviewInspectorPageExecutionContextRecoveryRecord(state);
+globalThis.__result = {
+  attemptedExecutionCandidateIds: [...record.attemptedExecutionCandidateIds].sort(),
+  postedExecutionCandidateId,
+  recoveryStatus: record.status,
+  repeatedExecutionCandidate: posted !== undefined,
+};`,
+    context,
+  );
+  if (context.__result === undefined) {
+    throw new Error('Current Page Execution recovery fixture did not expose its result.');
   }
   return context.__result;
 }

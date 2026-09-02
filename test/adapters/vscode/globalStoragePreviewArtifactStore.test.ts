@@ -3,7 +3,7 @@
  * filesystem. The central invariant is that one revision cannot overwrite or remove bytes still
  * required by another open panel or in-flight hot reload.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { GlobalStoragePreviewArtifactStore } from '../../../src/adapters/vscode/globalStoragePreviewArtifactStore';
 import { MAX_PREVIEW_CHUNKS } from '../../../src/adapters/vscode/previewArtifactLayout';
@@ -12,6 +12,9 @@ import type { PreviewBundle } from '../../../src/domain/preview';
 const vscodeFileSystem = vi.hoisted(() => ({
   createDirectory: vi.fn<(uri: unknown) => Promise<void>>().mockResolvedValue(undefined),
   delete: vi.fn<(uri: unknown, options: unknown) => Promise<void>>().mockResolvedValue(undefined),
+  readDirectory: vi
+    .fn<(uri: unknown) => Promise<readonly [string, number][]>>()
+    .mockResolvedValue([]),
   writeFile: vi
     .fn<(uri: unknown, contents: Uint8Array) => Promise<void>>()
     .mockResolvedValue(undefined),
@@ -39,7 +42,11 @@ vi.mock('vscode', () => {
     }
   }
 
-  return { Uri: FakeUri, workspace: { fs: vscodeFileSystem } };
+  return {
+    FileType: { Directory: 2, File: 1 },
+    Uri: FakeUri,
+    workspace: { fs: vscodeFileSystem },
+  };
 });
 
 const FIRST_BUNDLE: PreviewBundle = {
@@ -68,14 +75,71 @@ const SHARED_CHUNKS = [
 
 const CHUNKED_BUNDLE: PreviewBundle = { ...FIRST_BUNDLE, chunks: SHARED_CHUNKS };
 
-afterEach(() => {
+beforeEach(() => {
   vi.clearAllMocks();
   vscodeFileSystem.createDirectory.mockResolvedValue(undefined);
   vscodeFileSystem.delete.mockResolvedValue(undefined);
+  vscodeFileSystem.readDirectory.mockResolvedValue([]);
   vscodeFileSystem.writeFile.mockResolvedValue(undefined);
 });
 
 describe('GlobalStoragePreviewArtifactStore', () => {
+  /** Reclaims crashed sessions without touching another live window or an unknown legacy entry. */
+  it('removes only cache sessions whose owning extension host has exited', async () => {
+    const deadOwnerPid = 900_001;
+    const liveOwnerPid = 900_002;
+    const restrictedOwnerPid = 900_003;
+    const staleSameProcessSession = `session-${process.pid.toString()}-11111111-1111-4111-8111-111111111111`;
+    const deadSession = `session-${deadOwnerPid.toString()}-22222222-2222-4222-8222-222222222222`;
+    const liveSession = `session-${liveOwnerPid.toString()}-33333333-3333-4333-8333-333333333333`;
+    const restrictedSession = `session-${restrictedOwnerPid.toString()}-44444444-4444-4444-8444-444444444444`;
+    vscodeFileSystem.readDirectory.mockResolvedValue([
+      [staleSameProcessSession, vscode.FileType.Directory],
+      [deadSession, vscode.FileType.Directory],
+      [liveSession, vscode.FileType.Directory],
+      [restrictedSession, vscode.FileType.Directory],
+      ['legacy-session-without-an-owner', vscode.FileType.Directory],
+      ['README.txt', vscode.FileType.File],
+    ]);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((ownerPid) => {
+      if (ownerPid === deadOwnerPid) {
+        throw Object.assign(new Error('missing process'), { code: 'ESRCH' });
+      }
+      if (ownerPid === restrictedOwnerPid) {
+        throw Object.assign(new Error('process visibility denied'), { code: 'EPERM' });
+      }
+      return true;
+    });
+    const store = createStore();
+
+    try {
+      await store.publish(FIRST_BUNDLE);
+      await store.publish(SECOND_BUNDLE);
+
+      const deletedDirectories = vscodeFileSystem.delete.mock.calls
+        .filter(([, options]) => (options as { readonly recursive?: boolean }).recursive === true)
+        .map(([uri]) => String(uri))
+        .sort();
+      expect(deletedDirectories).toEqual(
+        [deadSession, staleSameProcessSession]
+          .map((name) => `file:///global-storage/preview-cache/v2/${name}`)
+          .sort(),
+      );
+      expect(deletedDirectories).not.toContain(
+        `file:///global-storage/preview-cache/v2/${liveSession}`,
+      );
+      expect(deletedDirectories).not.toContain(
+        `file:///global-storage/preview-cache/v2/${restrictedSession}`,
+      );
+      expect(vscodeFileSystem.readDirectory).toHaveBeenCalledTimes(1);
+      expect(killSpy).toHaveBeenCalledWith(deadOwnerPid, 0);
+      expect(killSpy).toHaveBeenCalledWith(liveOwnerPid, 0);
+      expect(killSpy).toHaveBeenCalledWith(restrictedOwnerPid, 0);
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
   /** Places the root entry beside the shared chunk tree so generated relative imports still work. */
   it('publishes chunks at stable session-root paths', async () => {
     const store = createStore();
@@ -391,7 +455,7 @@ describe('GlobalStoragePreviewArtifactStore', () => {
     expect(vscodeFileSystem.writeFile).toHaveBeenCalledTimes(2);
     expect(vscodeFileSystem.delete).toHaveBeenCalledTimes(1);
     expect(String(vscodeFileSystem.delete.mock.calls[0]?.[0])).toMatch(
-      /preview-cache\/[^/]+\/entry-[a-f0-9]{64}\.js$/u,
+      /preview-cache\/v2\/session-\d+-[^/]+\/entry-[a-f0-9]{64}\.js$/u,
     );
   });
 

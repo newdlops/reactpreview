@@ -67,11 +67,12 @@ describe('extension manifest', () => {
     expect(manifest.engines?.vscode).toBe('^1.100.0');
     expect(manifest.main).toBe('./dist/extension.mjs');
     expect(manifest.dependencies).toMatchObject({
-      '@yarnpkg/parsers': '3.0.3',
+      '@yarnpkg/parsers': '3.1.0',
       esbuild: '0.28.1',
       react: '19.2.7',
       'react-dom': '19.2.7',
-      tar: '7.5.20',
+      tar: '7.5.22',
+      yaml: '2.9.0',
     });
     expect(manifest.devDependencies).toMatchObject({
       'react-preview-react-18': 'npm:react@18.3.1',

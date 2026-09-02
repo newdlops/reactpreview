@@ -5,14 +5,18 @@ describe('readPreviewInspectorPageExecutionRetryRequest', () => {
   it('accepts one bounded opaque retry request', () => {
     expect(
       readPreviewInspectorPageExecutionRetryRequest({
-        candidateId: 'page-a',
+        candidateId:
+          'f6e52c46e96e0950:root:8:route-choice:VcmCompanyIrContactRequestPage:' +
+          '/company/ir/contact-request/:contactRequestId(\\d+):0',
         executionCandidateId: 'execution-inner',
         interactionId: 'execution:7:1',
         runtimeRevision: 7,
         type: 'react-preview-inspector-page-execution-retry',
       }),
     ).toEqual({
-      candidateId: 'page-a',
+      candidateId:
+        'f6e52c46e96e0950:root:8:route-choice:VcmCompanyIrContactRequestPage:' +
+        '/company/ir/contact-request/:contactRequestId(\\d+):0',
       executionCandidateId: 'execution-inner',
       interactionId: 'execution:7:1',
       runtimeRevision: 7,
@@ -25,7 +29,7 @@ describe('readPreviewInspectorPageExecutionRetryRequest', () => {
       readPreviewInspectorPageExecutionRetryRequest({
         candidateId: '/workspace/Page.tsx',
         executionCandidateId: 'execution-inner',
-        interactionId: 'page:7:1',
+        interactionId: 'execution:7:2',
         runtimeRevision: 7,
         type: 'react-preview-inspector-page-execution-retry',
       }),

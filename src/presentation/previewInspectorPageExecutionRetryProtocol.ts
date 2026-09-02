@@ -1,4 +1,6 @@
 /** Validates the one browser-to-host retry request for a compiler-owned Page Execution candidate. */
+import { isPreviewInspectorPageCandidateId } from './previewInspectorPageCandidateSelectionProtocol';
+
 const ID_PATTERN = /^[A-Za-z0-9._:/@\-]+$/u;
 
 export interface PreviewInspectorPageExecutionRetryRequest {
@@ -21,10 +23,7 @@ export function readPreviewInspectorPageExecutionRetryRequest(
   const runtimeRevision = message.runtimeRevision;
   if (
     message.type !== 'react-preview-inspector-page-execution-retry' ||
-    typeof candidateId !== 'string' ||
-    candidateId.length === 0 ||
-    candidateId.length > 512 ||
-    !ID_PATTERN.test(candidateId) ||
+    !isPreviewInspectorPageCandidateId(candidateId) ||
     typeof executionCandidateId !== 'string' ||
     executionCandidateId.length === 0 ||
     executionCandidateId.length > 512 ||

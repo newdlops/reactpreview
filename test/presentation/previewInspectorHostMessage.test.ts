@@ -153,11 +153,14 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
   /** Rebuilds one active candidate while keeping all alternate candidates descriptor-only. */
   it('routes a current page candidate selection', () => {
     const { context, selectPageCandidate } = createContext();
+    const candidateId =
+      'f6e52c46e96e0950:root:8:route-choice:VcmCompanyIrContactRequestPage:' +
+      '/company/ir/contact-request/:contactRequestId(\\d+):0';
 
     expect(
       handlePreviewInspectorHostMessage(
         {
-          candidateId: 'page:settings-1',
+          candidateId,
           interactionId: 'page:12:1',
           runtimeRevision: 12,
           type: 'react-preview-inspector-page-candidate-selected',
@@ -166,7 +169,7 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
       ),
     ).toBe(true);
     expect(selectPageCandidate).toHaveBeenCalledWith({
-      candidateId: 'page:settings-1',
+      candidateId,
       interactionId: 'page:12:1',
       runtimeRevision: 12,
       type: 'react-preview-inspector-page-candidate-selected',

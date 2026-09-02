@@ -2,8 +2,24 @@
 
 const MAXIMUM_CANDIDATE_ID_LENGTH = 512;
 const MAXIMUM_INTERACTION_ID_LENGTH = 128;
-const CANDIDATE_ID_PATTERN = /^[A-Za-z0-9._:/@\-]+$/u;
+const CANDIDATE_ID_FORBIDDEN_PATTERN = /[\p{Cc}\p{Cf}\p{Z}<>"'`]/u;
 const INTERACTION_ID_PATTERN = /^page:[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$/u;
+
+/** Accepts opaque compiler identities, including embedded route-regexp syntax, but not paths. */
+export function isPreviewInspectorPageCandidateId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAXIMUM_CANDIDATE_ID_LENGTH &&
+    !CANDIDATE_ID_FORBIDDEN_PATTERN.test(value) &&
+    !value.startsWith('/') &&
+    !value.startsWith('\\') &&
+    !value.startsWith('./') &&
+    !value.startsWith('../') &&
+    !/^[A-Za-z]:[\\/]/u.test(value) &&
+    !/^[A-Za-z][A-Za-z0-9+.-]*:\/\//u.test(value)
+  );
+}
 
 /** One bounded Page Inspector candidate selection request from the current webview revision. */
 export interface PreviewInspectorPageCandidateSelectionRequest {
@@ -37,10 +53,7 @@ export function readPreviewInspectorPageCandidateSelectionRequest(
   const interactionId = message.interactionId;
   const runtimeRevision = message.runtimeRevision;
   if (
-    typeof candidateId !== 'string' ||
-    candidateId.length === 0 ||
-    candidateId.length > MAXIMUM_CANDIDATE_ID_LENGTH ||
-    !CANDIDATE_ID_PATTERN.test(candidateId) ||
+    !isPreviewInspectorPageCandidateId(candidateId) ||
     typeof interactionId !== 'string' ||
     interactionId.length === 0 ||
     interactionId.length > MAXIMUM_INTERACTION_ID_LENGTH ||

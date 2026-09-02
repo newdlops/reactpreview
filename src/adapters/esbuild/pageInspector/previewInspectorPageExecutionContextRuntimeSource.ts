@@ -559,12 +559,20 @@ function requestPreviewInspectorNeuralPageExecutionContextRecovery(
     record.recipeSnapshotFingerprint = snapshot.fingerprint;
     record.status = 'searching';
   }
-  if (typeof record.pendingExecutionCandidateId === 'string') {
-    state.pageExecutionContextRecoveryRequested = true;
-    state.status = 'recovering-page-context';
-    return true;
-  }
   const currentExecutionId = descriptor?.inspector?.pageExecutionCandidateId;
+  if (typeof record.pendingExecutionCandidateId === 'string') {
+    if (record.pendingExecutionCandidateId !== currentExecutionId) {
+      state.pageExecutionContextRecoveryRequested = true;
+      state.status = 'recovering-page-context';
+      return true;
+    }
+    // Descriptor reconciliation can commit the requested artifact before its deferred activation
+    // callback runs. Treat the matching live descriptor as the acknowledgement so recovery cannot
+    // remain permanently in applying state when that callback loses the revision race.
+    record.activeExecutionCandidateId = currentExecutionId;
+    record.pendingExecutionCandidateId = undefined;
+    record.status = 'verifying';
+  }
   // The current full-page artifact produced this incomplete observation. Mark it before ranking so
   // a same-content host rebuild cannot remain pending without advancing the finite candidate set.
   if (

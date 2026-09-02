@@ -62,13 +62,14 @@ describe('Preview Inspector page execution context runtime source', () => {
     });
   });
 
-  /** Prevents a same-artifact rebuild from leaving recovery permanently pending. */
-  it('does not retry the currently rendered incomplete full-page candidate', () => {
+  /** Prevents a missed deferred activation from leaving the committed artifact pending forever. */
+  it('reconciles a committed incomplete candidate when deferred activation loses its race', () => {
     expect(evaluateCurrentPageExecutionSelection()).toEqual({
       attemptedExecutionCandidateIds: ['execution-page-authentic', 'execution-page-sliced'],
       postedExecutionCandidateId: 'execution-page-sliced',
       recoveryStatus: 'exhausted',
       repeatedExecutionCandidate: false,
+      transitionPending: false,
     });
   });
 });
@@ -407,6 +408,7 @@ function evaluateCurrentPageExecutionSelection(): {
   readonly postedExecutionCandidateId: string;
   readonly recoveryStatus: string;
   readonly repeatedExecutionCandidate: boolean;
+  readonly transitionPending: boolean;
 } {
   const context: {
     __result?: ReturnType<typeof evaluateCurrentPageExecutionSelection>;
@@ -491,7 +493,6 @@ requestPreviewInspectorNeuralPageExecutionContextRecovery(
 );
 const postedExecutionCandidateId = posted.executionCandidateId;
 descriptor.inspector.pageExecutionCandidateId = postedExecutionCandidateId;
-activatePreviewInspectorNeuralPageExecutionContextRecovery(descriptor);
 posted = undefined;
 requestPreviewInspectorNeuralPageExecutionContextRecovery(
   descriptor,
@@ -505,6 +506,7 @@ globalThis.__result = {
   postedExecutionCandidateId,
   recoveryStatus: record.status,
   repeatedExecutionCandidate: posted !== undefined,
+  transitionPending: isPreviewInspectorNeuralPageExecutionContextTransitionPending(state),
 };`,
     context,
   );

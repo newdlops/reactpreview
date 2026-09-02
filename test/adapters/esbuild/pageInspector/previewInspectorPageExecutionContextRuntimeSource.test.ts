@@ -491,7 +491,15 @@ requestPreviewInspectorNeuralPageExecutionContextRecovery(
   descriptor,
   candidate,
   state,
-  { fingerprint: 'current-page-recipe' },
+  {
+    fingerprint: JSON.stringify({
+      exportName: 'Target',
+      pageExecutionCandidateId: 'execution-page-authentic',
+      pageExecutionContextComplete: false,
+      pageExecutionFidelity: 'page-authentic',
+      resolverProps: '[absent]',
+    }),
+  },
 );
 const postedExecutionCandidateId = posted.executionCandidateId;
 descriptor.inspector.pageExecutionCandidateId = postedExecutionCandidateId;
@@ -501,7 +509,15 @@ requestPreviewInspectorNeuralPageExecutionContextRecovery(
   descriptor,
   candidate,
   state,
-  { fingerprint: 'current-page-recipe' },
+  {
+    fingerprint: JSON.stringify({
+      exportName: 'Target',
+      pageExecutionCandidateId: 'execution-page-sliced',
+      pageExecutionContextComplete: false,
+      pageExecutionFidelity: 'page-sliced',
+      resolverProps: '[absent]',
+    }),
+  },
 );
 const record = readPreviewInspectorPageExecutionContextRecoveryRecord(state);
 globalThis.__result = {

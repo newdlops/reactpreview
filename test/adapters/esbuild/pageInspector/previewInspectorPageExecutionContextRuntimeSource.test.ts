@@ -62,8 +62,8 @@ describe('Preview Inspector page execution context runtime source', () => {
     });
   });
 
-  /** Prevents a missed deferred activation from leaving the committed artifact pending forever. */
-  it('reconciles a committed incomplete candidate when deferred activation loses its race', () => {
+  /** Prevents artifact-local generated values from refilling an exhausted execution search. */
+  it('reconciles a committed incomplete candidate and keeps its finite budget exhausted', () => {
     expect(evaluateCurrentPageExecutionSelection()).toEqual({
       attemptedExecutionCandidateIds: ['execution-page-authentic', 'execution-page-sliced'],
       postedExecutionCandidateId: 'execution-page-sliced',
@@ -418,7 +418,7 @@ function evaluateCurrentPageExecutionSelection(): {
   vm.runInNewContext(
     `const React = { Component: class {} };
 ${createPreviewInspectorPageExecutionContextRuntimeSource()}
-const previewEntryRevision = 3;
+let previewEntryRevision = 3;
 function hashPreviewInspectorNeuralPageContextCandidateId(value) {
   return String(value).length * 2654435761 >>> 0;
 }
@@ -504,6 +504,7 @@ requestPreviewInspectorNeuralPageExecutionContextRecovery(
 const postedExecutionCandidateId = posted.executionCandidateId;
 descriptor.inspector.pageExecutionCandidateId = postedExecutionCandidateId;
 state.key = 'page-candidate:Target:artifact-specific-tab-key';
+previewEntryRevision = 4;
 posted = undefined;
 requestPreviewInspectorNeuralPageExecutionContextRecovery(
   descriptor,
@@ -516,6 +517,21 @@ requestPreviewInspectorNeuralPageExecutionContextRecovery(
       pageExecutionContextComplete: false,
       pageExecutionFidelity: 'page-sliced',
       resolverProps: '[absent]',
+    }),
+  },
+);
+requestPreviewInspectorNeuralPageExecutionContextRecovery(
+  descriptor,
+  candidate,
+  state,
+  {
+    fingerprint: JSON.stringify({
+      exportName: 'Target',
+      pageExecutionCandidateId: 'execution-page-sliced',
+      pageExecutionContextComplete: false,
+      pageExecutionFidelity: 'page-sliced',
+      resolverProps: '[absent]',
+      runtimeFallbackIds: ['artifact-local-generated-value'],
     }),
   },
 );

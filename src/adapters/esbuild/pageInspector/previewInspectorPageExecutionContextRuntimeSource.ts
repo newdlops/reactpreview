@@ -305,32 +305,6 @@ function createPreviewInspectorPageExecutionContextRecoveryKey(state) {
     String(state?.targetExportName ?? previewInspectorSession.selectedExportName ?? '');
 }
 
-/**
- * Removes the Page Execution artifact identity from a retained viewer recipe fingerprint.
- *
- * Success snapshots intentionally include the active execution candidate so two rendered
- * checkpoints remain distinguishable. Recovery has the opposite requirement: authentic and
- * sliced artifacts must spend one shared finite-search budget when every other generated value is
- * unchanged. Otherwise A -> B changes the fingerprint, resets exhaustion, and admits B -> A
- * forever.
- */
-function createPreviewInspectorPageExecutionRecoveryRecipeFingerprint(snapshot) {
-  const fingerprint = snapshot?.fingerprint;
-  if (typeof fingerprint !== 'string') return '';
-  try {
-    const parsed = JSON.parse(fingerprint);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return fingerprint;
-    }
-    delete parsed.pageExecutionCandidateId;
-    delete parsed.pageExecutionContextComplete;
-    delete parsed.pageExecutionFidelity;
-    return JSON.stringify(parsed);
-  } catch {
-    return fingerprint;
-  }
-}
-
 /** Returns an active recovery transaction without creating a false recovery UI state. */
 function readPreviewInspectorPageExecutionContextRecoveryRecord(state) {
   if (state === undefined) return undefined;
@@ -553,10 +527,8 @@ function requestPreviewInspectorNeuralPageExecutionContextRecovery(
   if (observation.contextComplete) return false;
   const records = initializePreviewInspectorPageExecutionContextRecoveryRecords();
   const key = createPreviewInspectorPageExecutionContextRecoveryKey(state);
-  const recipeSnapshotFingerprint =
-    createPreviewInspectorPageExecutionRecoveryRecipeFingerprint(snapshot);
   let record = records.get(key);
-  if (record === undefined || record.status === 'verified') {
+  if (record === undefined) {
     record = {
       attemptedExecutionCandidateIds: new Set(),
       decisionByExecutionCandidateId: new Map(),
@@ -565,7 +537,6 @@ function requestPreviewInspectorNeuralPageExecutionContextRecovery(
       pageCandidateId: candidate?.id,
       reachabilityKey: state.key,
       recipeSnapshot: snapshot,
-      recipeSnapshotFingerprint,
       status: 'searching',
     };
     records.set(key, record);
@@ -576,19 +547,15 @@ function requestPreviewInspectorNeuralPageExecutionContextRecovery(
     state.status = 'page-context-incomplete';
     return false;
   }
-  if (record.status === 'exhausted' &&
-      record.recipeSnapshotFingerprint === recipeSnapshotFingerprint) {
+  // The finite compiler-candidate budget is monotonic for this target and public page path.
+  // Automatic hook/data repairs legitimately change the success snapshot between artifacts; using
+  // that mutable fingerprint to refill the budget admits page-authentic -> page-sliced ->
+  // page-authentic forever. A different target, export, or public candidate receives a different
+  // recovery key, while a fresh webview session receives a fresh bounded search.
+  if (record.status === 'exhausted') {
     state.pageExecutionContextRecoveryRequested = true;
     state.status = 'page-context-incomplete';
     return false;
-  }
-  if (record.status === 'exhausted') {
-    record.attemptedExecutionCandidateIds = new Set();
-    record.decisionByExecutionCandidateId = new Map();
-    record.outcomeByExecutionCandidateId = new Map();
-    record.recipeSnapshot = snapshot;
-    record.recipeSnapshotFingerprint = recipeSnapshotFingerprint;
-    record.status = 'searching';
   }
   const currentExecutionId = descriptor?.inspector?.pageExecutionCandidateId;
   if (typeof record.pendingExecutionCandidateId === 'string') {

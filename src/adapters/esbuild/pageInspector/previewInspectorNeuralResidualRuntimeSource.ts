@@ -3,7 +3,8 @@
  *
  * The model is intentionally tiny: a deterministic hashed input projection feeds isolated logistic
  * heads for each blocker-hole family. This prevents an unrendered failure from poisoning exception
- * repair or table-data recommendations while keeping an untrained head exactly neutral.
+ * repair or table-data recommendations while keeping an untrained head exactly neutral. Exact
+ * outcome memory is scoped to the bounded problem features, while head weights generalize.
  */
 import { createPreviewInspectorNeuralModelRuntimeSource } from './previewInspectorNeuralModelRuntimeSource';
 
@@ -34,20 +35,37 @@ function hashPreviewInspectorNeuralResidualToken(value) {
   return hash >>> 0;
 }
 
-/** Creates a stable anonymous lookup key for a reusable strategy inside one isolated head. */
-function createPreviewInspectorNeuralResidualOutcomeKey(headKey, candidateId) {
+/** Fingerprints every bounded feature cell so different problems cannot share a failure streak. */
+function createPreviewInspectorNeuralResidualContextKey(specification, vector) {
+  let hash = hashPreviewInspectorNeuralResidualToken(
+    'problem:' + String(specification?.holeKind ?? 'unknown').slice(0, 80) + ':' +
+      String(specification?.blockerKind ?? 'unknown').slice(0, 80),
+  );
+  for (const feature of vector) {
+    const quantized = Math.round(feature * 1_000_000);
+    for (let shift = 0; shift < 32; shift += 8) {
+      hash ^= (quantized >>> shift) & 255;
+      hash = Math.imul(hash, 16777619);
+    }
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/** Creates an anonymous strategy/context key; legacy context-free counters never veto a new hole. */
+function createPreviewInspectorNeuralResidualOutcomeKey(headKey, candidateId, contextKey) {
   if (
     !PREVIEW_INSPECTOR_NEURAL_RESIDUAL_HEAD_KEYS.includes(headKey) ||
-    typeof candidateId !== 'string' || candidateId.length === 0
+    typeof candidateId !== 'string' || candidateId.length === 0 ||
+    typeof contextKey !== 'string' || !/^[a-f0-9]{8}$/u.test(contextKey)
   ) return undefined;
   return headKey + ':' + hashPreviewInspectorNeuralResidualToken(
-    'candidate-outcome:' + candidateId.slice(0, 120),
+    'candidate-context:' + contextKey + ':' + candidateId.slice(0, 120),
   ).toString(16).padStart(8, '0');
 }
 
 /** Reads prior verified outcomes for one candidate without allocating memory during inference. */
-function readPreviewInspectorNeuralResidualOutcome(model, headKey, candidateId) {
-  const key = createPreviewInspectorNeuralResidualOutcomeKey(headKey, candidateId);
+function readPreviewInspectorNeuralResidualOutcome(model, headKey, candidateId, contextKey) {
+  const key = createPreviewInspectorNeuralResidualOutcomeKey(headKey, candidateId, contextKey);
   return key === undefined ? undefined : model.candidateOutcomes[key];
 }
 
@@ -67,11 +85,12 @@ function scorePreviewInspectorNeuralResidualSelection(score, outcome) {
   ));
 }
 
-/** Retains one verifier label and evicts the least-recent anonymous candidate when bounded. */
+/** Retains one verifier label while reserving recent anonymous outcomes for other families. */
 function recordPreviewInspectorNeuralResidualOutcome(model, decision, label, confidence) {
   const key = createPreviewInspectorNeuralResidualOutcomeKey(
     decision.headKey,
     decision.candidateId,
+    decision.contextKey,
   );
   if (key === undefined) return undefined;
   const previous = normalizePreviewInspectorNeuralResidualOutcome(model.candidateOutcomes[key]);
@@ -97,11 +116,9 @@ function recordPreviewInspectorNeuralResidualOutcome(model, decision, label, con
   model.candidateOutcomes[key] = outcome;
   const entries = Object.entries(model.candidateOutcomes);
   if (entries.length > PREVIEW_INSPECTOR_NEURAL_RESIDUAL_OUTCOME_LIMIT) {
-    entries.sort((left, right) => left[1].sequence - right[1].sequence);
-    for (const [staleKey] of entries.slice(
-      0,
-      entries.length - PREVIEW_INSPECTOR_NEURAL_RESIDUAL_OUTCOME_LIMIT,
-    )) delete model.candidateOutcomes[staleKey];
+    model.candidateOutcomes = Object.fromEntries(
+      retainPreviewInspectorNeuralResidualOutcomes(entries),
+    );
   }
   return outcome;
 }
@@ -131,8 +148,10 @@ function encodePreviewInspectorNeuralResidualFeatures(specification = {}) {
   const texts = Array.isArray(specification?.texts) ? specification.texts.slice(0, 8) : [];
   let lexicalCount = 0;
   for (const text of texts) {
+    if (lexicalCount >= 24) break;
     if (typeof text !== 'string') continue;
-    for (const word of text.toLowerCase().match(/[a-z0-9_$-]+/gu) ?? []) {
+    const boundedText = text.slice(0, PREVIEW_INSPECTOR_NEURAL_RESIDUAL_TEXT_LIMIT);
+    for (const word of boundedText.toLowerCase().match(/[a-z0-9_$-]+/gu) ?? []) {
       if (lexicalCount >= 24) break;
       addPreviewInspectorNeuralResidualFeature(vector, 'lex:' + word.slice(0, 64), 0.65);
       lexicalCount += 1;
@@ -196,6 +215,7 @@ function runPreviewInspectorNeuralResidualModel(vector, holeKind) {
 function createPreviewInspectorNeuralResidualDecision(specification) {
   const holeKind = String(specification?.holeKind ?? 'unknown').slice(0, 80);
   const featureVector = encodePreviewInspectorNeuralResidualFeatures(specification);
+  const contextKey = createPreviewInspectorNeuralResidualContextKey(specification, featureVector);
   const inference = runPreviewInspectorNeuralResidualModel(featureVector, holeKind);
   const model = initializePreviewInspectorNeuralResidualModel();
   const candidateId = typeof specification?.candidateId === 'string' &&
@@ -206,11 +226,13 @@ function createPreviewInspectorNeuralResidualDecision(specification) {
     model,
     inference.headKey,
     candidateId,
+    contextKey,
   );
   return {
     blockerKind: String(specification?.blockerKind ?? 'unknown').slice(0, 80),
     ...(candidateId === undefined ? {} : { candidateId }),
     consecutiveFailures: outcome?.consecutiveFailures ?? 0,
+    contextKey,
     featureVector,
     headEvidence: inference.headEvidence,
     headKey: inference.headKey,
@@ -275,14 +297,17 @@ function initializePreviewInspectorNeuralResidualBranchLeases() {
 
 /** Creates an anonymous revision-local identity for one semantic decision point. */
 function createPreviewInspectorNeuralResidualBranchLeaseKey(specification) {
-  const featureFingerprint = encodePreviewInspectorNeuralResidualFeatures(specification).map((value) => Math.round(value * 10_000)).join(',');
+  const contextKey = createPreviewInspectorNeuralResidualContextKey(
+    specification,
+    encodePreviewInspectorNeuralResidualFeatures(specification),
+  );
   return [
     typeof previewEntryRevision === 'number' ? previewEntryRevision : 0,
     previewInspectorSession.activeTargetReachabilityKey ?? '',
     previewInspectorSession.selectedPageCandidateId ?? '',
     previewInspectorSession.selectedExportName ?? '',
     readPreviewInspectorNeuralResidualHeadKey(specification?.holeKind),
-    hashPreviewInspectorNeuralResidualToken(featureFingerprint).toString(16),
+    contextKey,
   ].join(':');
 }
 
@@ -388,6 +413,7 @@ function copyPreviewInspectorNeuralResidualDecision(value) {
     ...(typeof value?.candidateId === 'string' && value.candidateId.length > 0
       ? { candidateId: value.candidateId.slice(0, 120) }
       : {}),
+    contextKey: createPreviewInspectorNeuralResidualContextKey(value, value.featureVector),
     featureVector: [...value.featureVector],
     headEvidence: Number.isFinite(value?.headEvidence)
       ? Math.max(0, value.headEvidence)
@@ -423,6 +449,7 @@ function refreshPreviewInspectorNeuralResidualDecision(value) {
     model,
     inference.headKey,
     decision.candidateId,
+    decision.contextKey,
   );
   return {
     ...decision,

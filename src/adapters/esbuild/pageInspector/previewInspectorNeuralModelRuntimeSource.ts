@@ -12,7 +12,9 @@ const PREVIEW_INSPECTOR_NEURAL_RESIDUAL_HEAD_KEYS = Object.freeze([
   'blocker-exception',
   'condition',
   'data-collection',
+  'local-ui',
   'page-choice',
+  'page-execution',
   'rendered-empty',
   'render-state',
   'unrendered',
@@ -23,6 +25,8 @@ const PREVIEW_INSPECTOR_NEURAL_RESIDUAL_HEAD_KEYS = Object.freeze([
 function readPreviewInspectorNeuralResidualHeadKey(holeKind) {
   const value = String(holeKind ?? 'unknown').toLowerCase();
   if (value.includes('blocker-exception')) return 'blocker-exception';
+  if (value.includes('local-state-transition')) return 'local-ui';
+  if (value.includes('page-execution')) return 'page-execution';
   if (value.includes('page-choice')) return 'page-choice';
   if (value.includes('render-state')) return 'render-state';
   if (value.includes('unrendered')) return 'unrendered';
@@ -159,6 +163,35 @@ function isPreviewInspectorNeuralResidualOutcomeKey(value) {
   ) && /^[a-f0-9]{8}$/u.test(value.slice(separator + 1));
 }
 
+/** Reserves recent evidence per family before filling unused capacity from the newest outcomes. */
+function retainPreviewInspectorNeuralResidualOutcomes(entries) {
+  const compare = (left, right) => right[1].sequence - left[1].sequence ||
+    (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0);
+  const sorted = [...entries].sort(compare);
+  if (sorted.length <= PREVIEW_INSPECTOR_NEURAL_RESIDUAL_OUTCOME_LIMIT) return sorted;
+  const familyBudget = Math.floor(
+    PREVIEW_INSPECTOR_NEURAL_RESIDUAL_OUTCOME_LIMIT /
+      PREVIEW_INSPECTOR_NEURAL_RESIDUAL_HEAD_KEYS.length,
+  );
+  const counts = new Map();
+  const reserved = [];
+  const overflow = [];
+  for (const entry of sorted) {
+    const family = entry[0].slice(0, entry[0].lastIndexOf(':'));
+    const count = counts.get(family) ?? 0;
+    if (count < familyBudget) {
+      reserved.push(entry);
+      counts.set(family, count + 1);
+    } else {
+      overflow.push(entry);
+    }
+  }
+  return reserved.concat(overflow.slice(
+    0,
+    PREVIEW_INSPECTOR_NEURAL_RESIDUAL_OUTCOME_LIMIT - reserved.length,
+  )).sort(compare);
+}
+
 /** Accepts current heads while refining legacy version-three learning exactly once. */
 function normalizePreviewInspectorNeuralResidualModel(value) {
   if (
@@ -172,15 +205,13 @@ function normalizePreviewInspectorNeuralResidualModel(value) {
   const candidateOutcomes = {};
   const normalizedOutcomes = value.candidateOutcomes !== null &&
     typeof value.candidateOutcomes === 'object' && !Array.isArray(value.candidateOutcomes)
-    ? Object.entries(value.candidateOutcomes)
+    ? retainPreviewInspectorNeuralResidualOutcomes(Object.entries(value.candidateOutcomes)
         .filter(([key]) => isPreviewInspectorNeuralResidualOutcomeKey(key))
         .map(([key, outcome]) => [
           key,
           normalizePreviewInspectorNeuralResidualOutcome(outcome, legacy),
         ])
-        .filter((entry) => entry[1] !== undefined)
-        .sort((left, right) => right[1].sequence - left[1].sequence)
-        .slice(0, PREVIEW_INSPECTOR_NEURAL_RESIDUAL_OUTCOME_LIMIT)
+        .filter((entry) => entry[1] !== undefined))
     : [];
   let outcomeSequence = 0;
   for (const [key, outcome] of normalizedOutcomes) {
@@ -220,6 +251,7 @@ function initializePreviewInspectorNeuralResidualModel() {
     current?.heads === null || typeof current?.heads !== 'object' || Array.isArray(current.heads) ||
     current?.candidateOutcomes === null || typeof current?.candidateOutcomes !== 'object' ||
     Array.isArray(current.candidateOutcomes) ||
+    Object.keys(current.candidateOutcomes).length > PREVIEW_INSPECTOR_NEURAL_RESIDUAL_OUTCOME_LIMIT ||
     !Number.isSafeInteger(current?.outcomeSequence) || current.outcomeSequence < 0 ||
     !Number.isSafeInteger(current?.updates) || current.updates < 0 ||
     Object.entries(current.heads).some(([headKey, head]) =>
@@ -256,9 +288,9 @@ function serializePreviewInspectorNeuralResidualModel() {
     if (head !== undefined) heads[headKey] = head;
   }
   const candidateOutcomes = {};
-  for (const [key, value] of Object.entries(model.candidateOutcomes)
-    .sort((left, right) => right[1].sequence - left[1].sequence)
-    .slice(0, PREVIEW_INSPECTOR_NEURAL_RESIDUAL_OUTCOME_LIMIT)) {
+  for (const [key, value] of retainPreviewInspectorNeuralResidualOutcomes(
+    Object.entries(model.candidateOutcomes),
+  )) {
     const outcome = normalizePreviewInspectorNeuralResidualOutcome(value);
     if (isPreviewInspectorNeuralResidualOutcomeKey(key) && outcome !== undefined) {
       candidateOutcomes[key] = outcome;

@@ -16,7 +16,9 @@ const PREVIEW_INSPECTOR_NEURAL_HEAD_KEYS = [
   'blocker-exception',
   'condition',
   'data-collection',
+  'local-ui',
   'page-choice',
+  'page-execution',
   'rendered-empty',
   'render-state',
   'unrendered',
@@ -24,7 +26,7 @@ const PREVIEW_INSPECTOR_NEURAL_HEAD_KEYS = [
 ] as const;
 const PREVIEW_INSPECTOR_NEURAL_HEAD_KEY_SET = new Set<string>(PREVIEW_INSPECTOR_NEURAL_HEAD_KEYS);
 const PREVIEW_INSPECTOR_NEURAL_OUTCOME_KEY_PATTERN =
-  /^(?:blocker-exception|condition|data-collection|page-choice|rendered-empty|render-state|unrendered|general):[a-f0-9]{8}$/u;
+  /^(?:blocker-exception|condition|data-collection|local-ui|page-choice|page-execution|rendered-empty|render-state|unrendered|general):[a-f0-9]{8}$/u;
 
 /** One finite logistic output head learned for an isolated blocker-hole family. */
 export interface PreviewInspectorNeuralModelHead {
@@ -34,7 +36,7 @@ export interface PreviewInspectorNeuralModelHead {
   readonly updates: number;
 }
 
-/** Anonymous empirical result memory for one reusable candidate strategy. */
+/** Anonymous empirical result memory for one candidate strategy in a bounded problem context. */
 export interface PreviewInspectorNeuralCandidateOutcome {
   readonly attempts: number;
   readonly consecutiveFailures: number;
@@ -188,9 +190,7 @@ export function mergePreviewInspectorNeuralModels(
       candidateOutcomes[key] = incomingOutcome;
   }
   const retainedOutcomes = Object.fromEntries(
-    Object.entries(candidateOutcomes)
-      .sort((left, right) => right[1].sequence - left[1].sequence)
-      .slice(0, PREVIEW_INSPECTOR_NEURAL_OUTCOME_LIMIT),
+    retainOutcomeEntries(Object.entries(candidateOutcomes)),
   );
   return (
     readPreviewInspectorNeuralModel({
@@ -200,6 +200,38 @@ export function mergePreviewInspectorNeuralModels(
       version: PREVIEW_INSPECTOR_NEURAL_MODEL_VERSION,
     }) ?? createEmptyPreviewInspectorNeuralModel()
   );
+}
+
+/** Reserves recent evidence per family; spare capacity remains available to more active families. */
+function retainOutcomeEntries(
+  entries: readonly [string, PreviewInspectorNeuralCandidateOutcome][],
+): [string, PreviewInspectorNeuralCandidateOutcome][] {
+  const compare = (
+    left: [string, PreviewInspectorNeuralCandidateOutcome],
+    right: [string, PreviewInspectorNeuralCandidateOutcome],
+  ): number =>
+    right[1].sequence - left[1].sequence || (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0);
+  const sorted = [...entries].sort(compare);
+  if (sorted.length <= PREVIEW_INSPECTOR_NEURAL_OUTCOME_LIMIT) return sorted;
+  const familyBudget = Math.floor(
+    PREVIEW_INSPECTOR_NEURAL_OUTCOME_LIMIT / PREVIEW_INSPECTOR_NEURAL_HEAD_KEYS.length,
+  );
+  const counts = new Map<string, number>();
+  const reserved: [string, PreviewInspectorNeuralCandidateOutcome][] = [];
+  const overflow: [string, PreviewInspectorNeuralCandidateOutcome][] = [];
+  for (const entry of sorted) {
+    const family = entry[0].slice(0, entry[0].lastIndexOf(':'));
+    const count = counts.get(family) ?? 0;
+    if (count < familyBudget) {
+      reserved.push(entry);
+      counts.set(family, count + 1);
+    } else {
+      overflow.push(entry);
+    }
+  }
+  return reserved
+    .concat(overflow.slice(0, PREVIEW_INSPECTOR_NEURAL_OUTCOME_LIMIT - reserved.length))
+    .sort(compare);
 }
 
 /** Creates one extension-to-renderer snapshot for the session's currently displayed revision. */

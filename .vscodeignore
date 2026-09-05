@@ -1,5 +1,8 @@
 .codeidx/**
 .claude/**
+.codex/**
+.agents/**
+.mcp.json
 .git/**
 .github/**
 .lh/**

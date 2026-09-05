@@ -35,9 +35,9 @@ function mergePreviewInspectorNeuralResidualModels(currentValue, incomingValue) 
             incomingOutcome.sequence >= currentOutcome.sequence)
     ) candidateOutcomes[key] = incomingOutcome;
   }
-  const retainedOutcomes = Object.entries(candidateOutcomes)
-    .sort((left, right) => right[1].sequence - left[1].sequence)
-    .slice(0, PREVIEW_INSPECTOR_NEURAL_RESIDUAL_OUTCOME_LIMIT);
+  const retainedOutcomes = retainPreviewInspectorNeuralResidualOutcomes(
+    Object.entries(candidateOutcomes),
+  );
   return normalizePreviewInspectorNeuralResidualModel({
     candidateOutcomes: Object.fromEntries(retainedOutcomes),
     heads,

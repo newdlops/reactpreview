@@ -2,6 +2,33 @@
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
 
+## 0.1.1077 - 2026-07-19
+
+- 대형 background build의 artifact metadata와 실제 chunk가 운영체제 locale에 따라 서로 다르게 정렬되어
+  정상 결과를 폐기하던 문제를 수정해, 빠른 단일 컴포넌트 프리뷰 뒤에 준비된 전체 페이지·스타일 context가
+  안정적으로 교체되도록 개선
+- ReactDOM entry까지 연결된 완전한 application root를 부분 `*App` wrapper보다 우선하고, 정적으로 증명된
+  안전한 pathname을 app-owned BrowserRouter가 생성되기 전에 주입해 헤더·사이드 메뉴·페이지 layout·portal을
+  실제 route 흐름으로 복원
+- Page Inspector Auto mode에서 React의 effect/layout-effect가 websocket, analytics 같은 비시각 bootstrap
+  의존성 때문에 실패해도 완성된 DOM을 제거하지 않도록 격리하고, 원본 오류와 source 위치는 Inspector console에
+  render-only 경고로 유지
+- 프로젝트 스타일이 준비되기 전 ready canvas에는 낮은 CSS 우선순위의 흰색 fallback을 사용해 VS Code 다크
+  배경이 비치는 현상을 막되, 앱이 정의한 body/global style은 그대로 우선 적용되도록 변경
+
+## 0.1.1076 - 2026-07-19
+
+- Page Inspector의 lazy page root가 열리기 전에 전체 render corridor의 styled-components theme import를 canonical module identity로 합쳐 정확한 프로젝트 theme를 주입하고, 구조적 fallback token이 원본 theme를
+  덮거나 `spacing` 같은 함수형 token을 값으로 오인하던 스타일 손상을 방지
+- 프로덕션 `index.html`에서 정적으로 증명된 `html`/`body`/mount root의 class, lang, dir, id, style, data 속성을
+  webview 문서 셸에 복원해 `body.body` 같은 전역 reset과 앱의 root selector가 동일하게 동작하도록 개선
+- 안전한 page root보다 위에 있는 app wrapper의 component flow만 제한적으로 역추적해 exported
+  `createGlobalStyle`을 정확한 ThemeProvider 내부에 함께 렌더하고, 함께 import되는 Bootstrap/Sass 전역 스타일도
+  실제 앱 순서로 복원
+- esbuild의 aggregate entry CSS를 즉시 연결하지 않고 dynamic-import 경계별 static CSS ownership을 metadata로
+  복구해 unopened route, editor, modal의 전역 selector가 현재 페이지를 오염하지 않도록 변경하고, hot reload가
+  commit되면 이전 revision의 lazy stylesheet를 정리
+
 ## 0.1.1075 - 2026-07-19
 
 - Page Inspector가 파일의 PascalCase/기본 export 중 실제 React component·element만 gallery에 남기고 GraphQL

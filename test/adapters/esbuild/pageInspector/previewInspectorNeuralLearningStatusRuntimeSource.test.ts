@@ -20,19 +20,23 @@ interface LearningStatusFixture {
   begin(detail?: Record<string, unknown>): LearningStatus;
   finish(detail?: Record<string, unknown>): LearningStatus;
   flush(): void;
+  flushMicrotasks(): void;
   read(): LearningStatus | undefined;
   set(status: Record<string, unknown>): LearningStatus | undefined;
   setModelUpdates(updates: number): void;
   sync(event: string, detail?: Record<string, unknown>): void;
+  generalNotifications(): number;
+  subscribeUi(listener: () => void): () => void;
 }
 
 /** Evaluates renderer-owned progress metadata with a controllable minimum-visible timer. */
-function createLearningStatusFixture(): LearningStatusFixture {
+function createLearningStatusFixture(deferMicrotasks = false): LearningStatusFixture {
   const sandbox: {
     __fixture?: LearningStatusFixture;
     Date: { now(): number };
     clearTimeout(): void;
     now: number;
+    microtasks: (() => void)[];
     queueMicrotask(callback: () => void): void;
     scheduled: (() => void)[];
     setTimeout(callback: () => void): number;
@@ -40,8 +44,10 @@ function createLearningStatusFixture(): LearningStatusFixture {
     Date: { now: () => sandbox.now },
     clearTimeout: () => undefined,
     now: 1_000,
+    microtasks: [],
     queueMicrotask: (callback) => {
-      callback();
+      if (deferMicrotasks) sandbox.microtasks.push(callback);
+      else callback();
     },
     scheduled: [],
     setTimeout: (callback) => sandbox.scheduled.push(callback),
@@ -52,19 +58,23 @@ function createLearningStatusFixture(): LearningStatusFixture {
       const previewInspectorSession = {
         neuralResidualModel: { heads: {}, updates: 0, version: 3 },
       };
-      const notifyPreviewInspector = () => undefined;
+      let generalNotifications = 0;
+      const notifyPreviewInspector = () => { generalNotifications++; };
       ${createPreviewInspectorNeuralLearningStatusRuntimeSource()}
       globalThis.__fixture = {
         begin: beginPreviewInspectorNeuralLearningStatus,
+        generalNotifications: () => generalNotifications,
         finish: finishPreviewInspectorNeuralLearningStatus,
         flush: () => {
           now += 600;
           for (const callback of scheduled.splice(0)) callback();
         },
+        flushMicrotasks: () => { for (const callback of microtasks.splice(0)) callback(); },
         read: readPreviewInspectorNeuralLearningStatus,
         set: setPreviewInspectorNeuralLearningStatus,
         setModelUpdates: (updates) => { previewInspectorSession.neuralResidualModel.updates = updates; },
         sync: syncPreviewInspectorNeuralLearningStatusFromHealth,
+        subscribeUi: subscribePreviewInspectorNeuralLearningStatus,
       };
     `,
     sandbox,
@@ -76,6 +86,82 @@ function createLearningStatusFixture(): LearningStatusFixture {
 }
 
 describe('Preview Inspector neural learning status runtime source', () => {
+  it('reconciles a pre-effect update and removes the mounted React subscription', () => {
+    const sandbox: { result?: unknown } = {};
+    vm.runInNewContext(
+      `
+      const previewEntryRevision = 7;
+      const previewInspectorSession = {};
+      const updates = [];
+      let subscribe;
+      const React = {
+        useState: (initial) => [initial(), (value) => updates.push(value)],
+        useEffect: (effect) => { subscribe = effect; },
+      };
+      ${createPreviewInspectorNeuralLearningStatusRuntimeSource()}
+      usePreviewInspectorNeuralLearningStatusStore();
+      setPreviewInspectorNeuralLearningStatus({ phase: 'learning', updates: 1 });
+      const unsubscribe = subscribe();
+      setPreviewInspectorNeuralLearningStatus({ phase: 'learned', updates: 2 });
+      const mountedListeners = previewInspectorSession.neuralLearningStatusListeners.size;
+      unsubscribe();
+      setPreviewInspectorNeuralLearningStatus({ phase: 'learned', updates: 3 });
+      globalThis.result = {
+        mountedListeners,
+        retainedListeners: previewInspectorSession.neuralLearningStatusListeners.size,
+        updates: updates.map((status) => status.updates),
+      };
+    `,
+      sandbox,
+    );
+    expect(sandbox.result).toEqual({ mountedListeners: 1, retainedListeners: 0, updates: [1, 2] });
+  });
+
+  it('updates only learning chrome and releases its subscriber on unmount', () => {
+    const fixture = createLearningStatusFixture();
+    let updates = 0;
+    const unsubscribe = fixture.subscribeUi(() => {
+      updates += 1;
+    });
+    fixture.set({ phase: 'applying', updates: 1 });
+    expect(updates).toBe(1);
+    expect(fixture.generalNotifications()).toBe(0);
+    fixture.set({ phase: 'applying', updates: 1 });
+    expect(updates).toBe(1);
+    unsubscribe();
+    fixture.set({ phase: 'learned', updates: 2 });
+    expect(updates).toBe(1);
+    expect(fixture.generalNotifications()).toBe(0);
+  });
+
+  it('does not rerender the authored page for progress-only changes', () => {
+    const fixture = createLearningStatusFixture();
+    for (let updates = 1; updates <= 100; updates += 1) {
+      fixture.set({ phase: 'learning', updates });
+    }
+    expect(fixture.read()).toMatchObject({ phase: 'learning', updates: 100 });
+    expect(fixture.generalNotifications()).toBe(0);
+  });
+
+  it('coalesces a progress burst and delivers only its latest state outside render', () => {
+    const fixture = createLearningStatusFixture(true);
+    const updates: number[] = [];
+    const unsubscribe = fixture.subscribeUi(() => {
+      updates.push(fixture.read()?.updates ?? -1);
+    });
+    for (let count = 1; count <= 100; count += 1) {
+      fixture.set({ phase: 'learning', updates: count });
+    }
+    expect(updates).toEqual([]);
+    fixture.flushMicrotasks();
+    expect(updates).toEqual([100]);
+    fixture.set({ phase: 'learned', updates: 101 });
+    unsubscribe();
+    fixture.flushMicrotasks();
+    expect(updates).toEqual([100]);
+    expect(fixture.generalNotifications()).toBe(0);
+  });
+
   it('stays hidden for a neutral model and summarizes restored verified updates', () => {
     const fixture = createLearningStatusFixture();
 

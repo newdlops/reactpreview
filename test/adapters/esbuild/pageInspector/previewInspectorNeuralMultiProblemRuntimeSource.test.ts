@@ -76,6 +76,68 @@ const PROBLEMS = [
 ] as const;
 
 describe('Preview Inspector neural learning across problems', () => {
+  it('retains failure memory after a candidate changes deterministic position', () => {
+    const fixture = createFixture();
+    const problem = { holeKind: 'condition-activation-order', tokens: ['required:open'] };
+    const first = fixture.select(problem, [{ id: 'gate', deterministicRank: 0 }]);
+    fixture.train(first.decision, 0);
+    const reordered = fixture.select(problem, [{ id: 'gate', deterministicRank: 1 }]);
+
+    expect(reordered.decision.contextKey).toBe(first.decision.contextKey);
+    expect(reordered.decision.consecutiveFailures).toBe(1);
+    const restored = createFixture();
+    restored.setModel(readPreviewInspectorNeuralModel(fixture.serialize()));
+    const candidates = [
+      { id: 'gate', deterministicRank: 1 },
+      { id: 'alternate', deterministicRank: 2 },
+    ];
+    expect(createFixture().select(problem, candidates).candidateId).toBe('gate');
+    expect(restored.select(problem, candidates).candidateId).toBe('alternate');
+    expect(restored.serialize()).toEqual(fixture.serialize());
+  });
+
+  it('preserves candidate and strategy features when context consumes the token budget', () => {
+    const fixture = createFixture();
+    const problem = {
+      holeKind: 'condition-activation-order',
+      tokens: Array.from({ length: 80 }, (_, index) => 'context:' + String(index)),
+    };
+    const decide = (id: string, strategy: string): Decision =>
+      fixture.select(problem, [{ id, tokens: ['strategy:' + strategy] }]).decision;
+    const first = decide('first', 'open');
+    const otherCandidate = decide('second', 'open');
+    const otherStrategy = decide('first', 'close');
+
+    expect(otherCandidate.featureVector).not.toEqual(first.featureVector);
+    expect(otherStrategy.featureVector).not.toEqual(first.featureVector);
+    expect(otherCandidate.contextKey).not.toBe(first.contextKey);
+    expect(otherStrategy.contextKey).not.toBe(first.contextKey);
+  });
+
+  it.each([
+    [8, 24],
+    [24, 100],
+    [100, 10_000],
+  ])('distinguishes counts %s and %s without changing the bounded input size', (small, large) => {
+    const fixture = createFixture();
+    const create = (count: number): Decision =>
+      fixture.create({
+        holeKind: 'rendered-collection-consumer-data',
+        numbers: { requiredPathCount: count },
+      });
+    const first = create(small);
+    const second = create(large);
+    const distance = Math.hypot(
+      ...first.featureVector.map((value, index) => value - (second.featureVector[index] ?? 0)),
+    );
+    expect(distance).toBeGreaterThan(0.001);
+    expect(second.contextKey).not.toBe(first.contextKey);
+    expect(second.featureVector).toHaveLength(64);
+    expect(
+      second.featureVector.every((value) => Number.isFinite(value) && Math.abs(value) <= 1),
+    ).toBe(true);
+  });
+
   it.each(PROBLEMS)(
     'keeps opposite outcomes separate for %s / %s',
     (blockerKind, holeKind, headKey) => {

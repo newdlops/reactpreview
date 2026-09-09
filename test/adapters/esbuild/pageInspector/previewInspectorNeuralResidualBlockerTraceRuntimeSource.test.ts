@@ -84,6 +84,36 @@ function createNeuralTraceFixture(): NeuralTraceFixture {
 }
 
 describe('Preview Inspector neural residual blocker trace bridge', () => {
+  /** Trace settlement starts output verification but cannot replace its three spaced observations. */
+  it('learns a stable target render after trace settlement exactly once', () => {
+    const fixture = createNeuralTraceFixture();
+    const reachabilityKey = 'page:stable-target';
+    fixture.setReachability(reachabilityKey, { status: 'reached', targetHasOutput: true });
+    fixture.decide({
+      action: 'Advance stable target gate',
+      blockerId: 'stable-gate',
+      mode: 'target-guided-auto',
+      neuralResidualDecision: fixture.createDecision({
+        blockerKind: 'render-condition',
+        holeKind: 'condition-activation-order',
+        tokens: ['desired:true'],
+      }),
+      startsRenderAttempt: true,
+      targetReachabilityKey: reachabilityKey,
+    });
+
+    fixture.snapshot({ roots: [] });
+    fixture.snapshot({ roots: [] });
+    fixture.advance(320);
+    expect(fixture.modelUpdates()).toBe(0);
+    fixture.advance(160);
+    expect(fixture.modelUpdates()).toBe(0);
+    fixture.advance(160);
+    expect(fixture.modelUpdates()).toBe(1);
+    fixture.advance(960);
+    expect(fixture.modelUpdates()).toBe(1);
+  });
+
   /** Applies one negative label when a fatal error rolls back an attempt before settlement. */
   it('does not double-train an unsettled rollback', () => {
     const fixture = createNeuralTraceFixture();
@@ -110,8 +140,8 @@ describe('Preview Inspector neural residual blocker trace bridge', () => {
     expect(fixture.modelUpdates()).toBe(1);
   });
 
-  /** Learns a settled success and corrects it if the existing fatal grace window rolls it back. */
-  it('trains and corrects the opaque residual through verified trace outcomes', () => {
+  /** A fatal within the unchanged grace window prevents an unstable success from being learned. */
+  it('rejects an unsettled neural observation through the existing trace grace window', () => {
     const fixture = createNeuralTraceFixture();
     const reachabilityKey = 'page:learned-target';
     fixture.setReachability(reachabilityKey, { status: 'reached', targetHasOutput: true });
@@ -133,14 +163,18 @@ describe('Preview Inspector neural residual blocker trace bridge', () => {
     fixture.snapshot({ roots: [] });
     fixture.snapshot({ roots: [] });
     fixture.advance(320);
-    expect(fixture.modelUpdates()).toBe(1);
+    expect(fixture.modelUpdates()).toBe(0);
+    fixture.advance(160);
+    expect(fixture.modelUpdates()).toBe(0);
 
     fixture.error({
       level: 'error',
       message: 'late target gate failure',
       source: 'preview-runtime',
     });
-    expect(fixture.modelUpdates()).toBe(2);
+    expect(fixture.modelUpdates()).toBe(1);
+    fixture.advance(480);
+    expect(fixture.modelUpdates()).toBe(1);
   });
 
   /** Applies the same late-error correction to a settled minimum-requirement recommendation. */
@@ -166,14 +200,18 @@ describe('Preview Inspector neural residual blocker trace bridge', () => {
     fixture.snapshot({ roots: [] });
     fixture.snapshot({ roots: [] });
     fixture.advance(320);
-    expect(fixture.modelUpdates()).toBe(1);
+    expect(fixture.modelUpdates()).toBe(0);
+    fixture.advance(160);
+    expect(fixture.modelUpdates()).toBe(0);
 
     fixture.error({
       level: 'error',
       message: 'late requirement failure',
       source: 'preview-runtime',
     });
-    expect(fixture.modelUpdates()).toBe(2);
+    expect(fixture.modelUpdates()).toBe(1);
+    fixture.advance(480);
+    expect(fixture.modelUpdates()).toBe(1);
   });
 
   /** Uses the live generated-call signal instead of rewarding an unrelated rendered empty state. */

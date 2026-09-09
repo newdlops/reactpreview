@@ -117,6 +117,7 @@ function readPreviewInspectorNeuralPageGenerationChoices() {
 
 /** Reports unresolved model-owned choices without constructing a mutation. */
 function hasPreviewInspectorNeuralPageGenerationWork() {
+  if (typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused()) return false;
   if (
     previewInspectorSession.neuralPageGenerationPending === true &&
     previewInspectorSession.neuralAssistanceRevision === previewEntryRevision
@@ -133,7 +134,7 @@ function hasPreviewInspectorNeuralPageGenerationWork() {
     ? previewInspectorSession.automaticNeuralAssistanceByKey?.get?.(key)
     : undefined;
   if (record === undefined) return choices.length > 0;
-  return createPreviewInspectorNeuralPageGenerationPlan(record) !== undefined;
+  return readPreviewInspectorNeuralPageGenerationFrontier(record, choices).length > 0;
 }
 
 /** Gives availability, ranking, and retry accounting one current-state action identity. */
@@ -282,6 +283,8 @@ function collectPreviewInspectorNeuralPageGenerationPlans(record, choices, deriv
     });
   }
   for (const [rank, path] of (Array.isArray(derivation?.paths) ? derivation.paths : []).entries()) {
+    if (record.pageGenerationCombinationPlans.length >=
+        PREVIEW_INSPECTOR_NEURAL_PAGE_GENERATION_FRONTIER_LIMIT) break;
     if (path?.blocked === true || path?.cyclic === true || path?.verified === true) continue;
     const steps = (Array.isArray(path?.steps) ? path.steps : [])
       .filter((item) => item?.current === true);
@@ -317,12 +320,10 @@ function collectPreviewInspectorNeuralPageGenerationPlans(record, choices, deriv
       blockerKind: first.choice.node?.blockerKind,
       candidateId: path.id,
       choiceCombination: true,
-      decision: typeof createPreviewInspectorNeuralChoicePathDecision === 'function'
-        ? createPreviewInspectorNeuralChoicePathDecision(path, stateId, rank)
-        : undefined,
       mode: 'neural-page-choice-combination',
       ordinal: rank + 1,
       pageGenerationChoice: true,
+      path,
       pathId: path.id,
       revision: previewEntryRevision,
       selections: Object.freeze(selections.map((item) => Object.freeze({
@@ -339,29 +340,64 @@ function collectPreviewInspectorNeuralPageGenerationPlans(record, choices, deriv
       }))),
       stateId,
     }));
-    if (
-      record.pageGenerationCombinationPlans.length >=
-      PREVIEW_INSPECTOR_NEURAL_PAGE_GENERATION_FRONTIER_LIMIT
-    ) break;
   }
   record.pageGenerationCombinationStateIds.add(stateId);
 }
 
-/** Selects the highest-ranked unseen complete combination from the retained bounded frontier. */
-function createPreviewInspectorNeuralPageGenerationPlan(record) {
-  const choices = readPreviewInspectorNeuralPageGenerationChoices();
-  if (choices.length > 0 && typeof readPreviewInspectorNeuralDerivedChoicePaths === 'function') {
-    const derivation = readPreviewInspectorNeuralDerivedChoicePaths(choices, {
-      searchKind: 'automatic',
-      singleChoice: false,
-    });
-    collectPreviewInspectorNeuralPageGenerationPlans(record, choices, derivation);
-  }
+/** Collects each semantic state once; availability never needs model scores or duplicate choice reads. */
+function readPreviewInspectorNeuralPageGenerationFrontier(record, choices) {
   initializePreviewInspectorNeuralPageGenerationFrontier(record);
-  return record.pageGenerationCombinationPlans.find((plan) =>
+  if (choices.length > 0 && typeof readPreviewInspectorNeuralDerivedChoicePaths === 'function') {
+    // Pending verifier observations still run even when the finite domain was already collected.
+    const observation = observePreviewInspectorNeuralChoicePathState(choices, false, 'automatic');
+    const stateId = observation.currentState?.id;
+    if (typeof stateId === 'string' && !record.pageGenerationCombinationStateIds.has(stateId)) {
+      const derivation = readPreviewInspectorNeuralDerivedChoicePaths(choices, {
+        rankCandidates: false,
+        searchKind: 'automatic',
+        singleChoice: false,
+      });
+      collectPreviewInspectorNeuralPageGenerationPlans(record, choices, derivation);
+    }
+  }
+  return record.pageGenerationCombinationPlans.filter((plan) =>
     plan.revision === previewEntryRevision &&
     (record?.attemptsByBlocker?.get?.(plan.attemptIdentity) ?? 0) < plan.attemptLimit,
   );
+}
+
+/** Scores only eligible plans at execution time, with one current model shared by this batch. */
+function createPreviewInspectorNeuralPageGenerationPlan(record) {
+  if (typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused()) return undefined;
+  const plans = readPreviewInspectorNeuralPageGenerationFrontier(
+    record,
+    readPreviewInspectorNeuralPageGenerationChoices(),
+  );
+  if (plans.length === 0) return undefined;
+  const batch = typeof createPreviewInspectorNeuralResidualRankingBatch === 'function'
+    ? createPreviewInspectorNeuralResidualRankingBatch()
+    : undefined;
+  const ranked = plans.map((plan, index) => ({
+    decision: plan.path !== undefined
+      ? createPreviewInspectorNeuralChoicePathDecision(plan.path, plan.stateId, plan.ordinal - 1, batch)
+      : batch !== undefined
+        ? batch.refreshDecision(plan.decision)
+        : typeof refreshPreviewInspectorNeuralResidualDecision === 'function'
+          ? refreshPreviewInspectorNeuralResidualDecision(plan.decision)
+          : plan.decision,
+    index,
+    plan,
+  }));
+  const compareDecisions = batch?.compareDecisions ??
+    (typeof comparePreviewInspectorNeuralResidualDecisions === 'function'
+      ? comparePreviewInspectorNeuralResidualDecisions
+      : () => 0);
+  ranked.sort((left, right) =>
+    Number(left.decision?.consecutiveFailures ?? 0) - Number(right.decision?.consecutiveFailures ?? 0) ||
+    (left.decision !== undefined && right.decision !== undefined
+      ? compareDecisions(left.decision, right.decision) : 0) || left.index - right.index,
+  );
+  return Object.freeze({ ...ranked[0].plan, decision: ranked[0].decision });
 }
 
 /** Applies one admitted reversible viewer action from a retained combination. */
@@ -409,6 +445,9 @@ function applyPreviewInspectorNeuralPageGenerationSelection(selection, decision)
 
 /** Applies one complete Cartesian viewer state and leaves its result to the delayed verifier. */
 function applyPreviewInspectorNeuralPageGenerationPlan(plan) {
+  if (typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused()) {
+    return { action: 'user-paused', changed: false };
+  }
   if (
     plan?.pageGenerationChoice !== true || plan?.choiceCombination !== true ||
     plan.revision !== previewEntryRevision || !Array.isArray(plan.selections)

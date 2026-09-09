@@ -1,15 +1,43 @@
+import { createPreviewInspectorNeuralContextualChoiceUiRuntimeSource } from './previewInspectorNeuralContextualChoiceUiRuntimeSource';
+import { createPreviewInspectorNeuralChoiceGuidanceUiRuntimeSource } from './previewInspectorNeuralChoiceGuidanceUiRuntimeSource';
+import { createPreviewInspectorNeuralChoiceOriginUiRuntimeSource } from './previewInspectorNeuralChoiceOriginUiRuntimeSource';
+import { createPreviewInspectorNeuralChoiceRecommendationUiRuntimeSource } from './previewInspectorNeuralChoiceRecommendationUiRuntimeSource';
+
 /** Generates the compact local-model progress indicator rendered in Inspector chrome. */
 
 /** Creates presentation-only browser source for the toolbar learning status. */
 export function createPreviewInspectorNeuralLearningUiRuntimeSource(): string {
   return String.raw`
+${createPreviewInspectorNeuralContextualChoiceUiRuntimeSource()}
+${createPreviewInspectorNeuralChoiceGuidanceUiRuntimeSource()}
+${createPreviewInspectorNeuralChoiceOriginUiRuntimeSource()}
+${createPreviewInspectorNeuralChoiceRecommendationUiRuntimeSource()}
+/** Groups recovery state separately while keeping progress isolated from page/tree renders. */
+function PreviewInspectorNeuralToolbarControls() {
+  usePreviewInspectorNeuralLearningStatusStore();
+  React.useEffect(schedulePreviewInspectorCompanionSnapshot);
+  return React.createElement(
+    'section',
+    { 'aria-label': 'Automatic recovery', className: 'rpi-neural-controls' },
+    React.createElement(
+      'div',
+      { className: 'rpi-neural-controls-heading' },
+      React.createElement('strong', undefined, 'Automatic recovery'),
+      React.createElement(PreviewInspectorNeuralLearningStatus),
+      React.createElement(PreviewInspectorNeuralRequestButton),
+    ),
+    React.createElement(PreviewInspectorNeuralChoiceList),
+  );
+}
+
 /** Announces only real model activity retained by the renderer-owned learning status runtime. */
 function PreviewInspectorNeuralLearningStatus() {
   const status = typeof readPreviewInspectorNeuralLearningStatus === 'function'
     ? readPreviewInspectorNeuralLearningStatus()
     : undefined;
   if (status === undefined) return null;
-  const reportedPhase = [
+  const userPaused = typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused();
+  const reportedPhase = userPaused ? 'yielded' : [
     'applied',
     'applying',
     'learning',
@@ -23,14 +51,19 @@ function PreviewInspectorNeuralLearningStatus() {
   const reachability = typeof readPreviewInspectorNeuralAssistanceReachability === 'function'
     ? readPreviewInspectorNeuralAssistanceReachability()
     : undefined;
-  const targetRendered = reachability?.targetHasOutput === true;
+  const blockers = typeof readPreviewInspectorActiveBlockerSummary === 'function'
+    ? readPreviewInspectorActiveBlockerSummary() : { count: 0 };
+  const unresolvedCount = Math.max(blockers.count ?? 0, blockers.active?.length ?? 0);
+  const targetRendered = reachability?.targetHasOutput === true && unresolvedCount === 0;
   const refining = targetRendered &&
     typeof hasPreviewInspectorNeuralPageGenerationWork === 'function' &&
     hasPreviewInspectorNeuralPageGenerationWork();
   const verifying = reportedPhase === 'applying' && status.verifying === true;
   const collecting = reportedPhase === 'applying' && status.collecting === true && !verifying;
   const restoring = reportedPhase === 'applying' && status.restoring === true;
-  const phase = targetRendered && !refining && reportedPhase === 'needs-choice'
+  const incomplete = !userPaused && unresolvedCount > 0 &&
+    ['applied', 'learned', 'unchanged', 'needs-choice'].includes(reportedPhase);
+  const phase = incomplete ? 'incomplete' : targetRendered && !refining && reportedPhase === 'needs-choice'
     ? 'applied'
     : targetRendered && !refining && reportedPhase === 'applying' &&
         !collecting && !restoring && !verifying
@@ -46,7 +79,10 @@ function PreviewInspectorNeuralLearningStatus() {
   const successCount = Number.isSafeInteger(status.successCount) && status.successCount > 0
     ? status.successCount
     : 0;
-  const label = phase === 'learning' || phase === 'applying'
+  const label = incomplete
+    ? (reachability?.targetHasOutput === true ? 'Output visible · ' : '') +
+      String(unresolvedCount) + ' unresolved step' + (unresolvedCount === 1 ? '' : 's')
+    : phase === 'learning' || phase === 'applying'
     ? phase === 'learning'
       ? 'Neural learning…'
       : verifying
@@ -62,16 +98,18 @@ function PreviewInspectorNeuralLearningStatus() {
     : phase === 'paused'
       ? 'Neural could not continue'
       : phase === 'yielded'
-        ? 'Neural yielded · Continue'
+        ? userPaused ? 'Automatic paused' : 'Neural yielded · Continue'
       : phase === 'needs-choice'
-        ? 'Your choice is needed'
+        ? 'Review the next action below'
       : phase === 'unchanged'
         ? 'Neural checked · ' + String(updates)
       : phase === 'applied'
           ? 'Neural applied · ' + String(updates) +
             (successCount > 0 ? ' · ' + String(successCount) + ' paths' : '')
           : 'Neural learned · ' + String(updates);
-  const title = phase === 'learning' || phase === 'applying'
+  const title = incomplete
+    ? 'The preview is not fully resolved. Open the highlighted step or choose a value below; model updates do not mean the page is complete.'
+    : phase === 'learning' || phase === 'applying'
       ? phase === 'learning'
       ? 'The local neural model is learning from verified preview evidence.'
       : verifying
@@ -90,9 +128,11 @@ function PreviewInspectorNeuralLearningStatus() {
     : phase === 'paused'
       ? 'The local neural model stopped after a resolver error. Open the active blocker for details.'
       : phase === 'yielded'
-        ? 'The viewer paused after one bounded work slice to keep this window and the other preview tabs responsive. Run blocker resolution again to continue.'
+        ? userPaused
+          ? 'Automatic work is paused. Choose a value or open details; resume only when you are ready.'
+          : 'The viewer paused after one bounded work slice to keep this window and the other preview tabs responsive. Run blocker resolution again to continue.'
       : phase === 'needs-choice'
-        ? 'The safe automatic paths are exhausted. Review the highlighted source-proven choice.'
+        ? 'Automatic work needs your input. Review the specific value, page path, or blocked step below.'
       : phase === 'unchanged'
         ? 'The local neural model re-evaluated this preview without changing a value.'
       : 'The local neural model automatically uses ' + String(updates) + ' verified update' +
@@ -113,7 +153,7 @@ function PreviewInspectorNeuralLearningStatus() {
       { 'aria-hidden': 'true', className: 'rpi-neural-status-indicator' },
       phase === 'learned' || phase === 'applied' || phase === 'unchanged'
         ? '✓'
-        : phase === 'needs-choice' ? '?' : phase === 'paused' ? '×' : phase === 'yielded' ? 'Ⅱ' : '',
+        : phase === 'needs-choice' || incomplete ? '?' : phase === 'paused' ? '×' : phase === 'yielded' ? 'Ⅱ' : '',
     ),
     React.createElement('span', { className: 'rpi-neural-status-label' }, label),
   );
@@ -137,7 +177,7 @@ function createPreviewInspectorNeuralChoiceSelectionKey(choice, choiceIndex, rec
 /** Labels the apply action according to the concrete decision rather than the model mechanism. */
 function formatPreviewInspectorNeuralChoiceApplyLabel(choice, recordCount) {
   if (choice?.choiceKind === 'source-proven-prop') {
-    return recordCount > 1 ? 'Apply choices' : 'Apply choice';
+    return recordCount > 1 ? 'Apply choices' : 'Apply ' + (choice.choiceRecords?.[0]?.path ?? 'value');
   }
   if (choice?.choiceKind === 'render-condition') {
     return choice.choiceRecords?.[0]?.kind === 'page-control' ? 'Continue on page' : 'Apply branch';
@@ -149,12 +189,12 @@ function formatPreviewInspectorNeuralChoiceApplyLabel(choice, recordCount) {
 /** Explains where a choice came from without implying that the neural model invented it. */
 function describePreviewInspectorNeuralChoiceProvenance(choice) {
   if (choice?.choiceKind === 'source-proven-prop') {
-    return 'Candidates come from authored source branches.';
+    return 'Values come from source code. Inspector exposes them as preview overrides, not page buttons.';
   }
   if (choice?.choiceKind === 'render-condition') {
     return choice.choiceRecords?.[0]?.kind === 'page-control'
-      ? 'These controls were discovered in the rendered page, including options below the viewport.'
-      : 'Branches come from the authored JSX condition.';
+      ? 'These mounted controls change the blocked state in the same source component.'
+      : 'Branches come from JSX; pinning and reset controls belong to Inspector.';
   }
   if (choice?.choiceKind === 'target-reachability') {
     return 'Paths come from statically proven consuming pages.';
@@ -183,6 +223,9 @@ function readPreviewInspectorNeuralChoicePathSelections(path, choices) {
     if (
       choice === undefined || record === undefined ||
       step.candidateIndex >= record.candidates.length ||
+      (path.contextual === true &&
+        (typeof createPreviewInspectorNeuralChoicePathCandidateId !== 'function' ||
+          createPreviewInspectorNeuralChoicePathCandidateId(candidate, step.candidateIndex) !== step.candidateId)) ||
       (candidate !== null && typeof candidate === 'object' && candidate.disabled === true)
     ) continue;
     selections[createPreviewInspectorNeuralChoiceSelectionKey(choice, choiceIndex, record)] =
@@ -198,7 +241,9 @@ function readPreviewInspectorNeuralChoicePathApplyPlans(path, choices) {
   for (const [choiceIndex, choice] of choices.entries()) {
     const choiceRecords = choice.choiceRecords.filter((record) =>
       typeof record?.path === 'string' && record.path.length > 0 &&
-      Array.isArray(record.candidates) && record.candidates.length > 0,
+      Array.isArray(record.candidates) && record.candidates.length > 0 &&
+      (path?.contextual !== true || Object.prototype.hasOwnProperty.call(selections,
+        createPreviewInspectorNeuralChoiceSelectionKey(choice, choiceIndex, record))),
     );
     if (choiceRecords.length === 0) continue;
     const selectedForApply = {};
@@ -217,7 +262,7 @@ function readPreviewInspectorNeuralChoicePathApplyPlans(path, choices) {
     }
     if (complete) {
       plans.push({
-        choice,
+        choice: path?.contextual === true ? { ...choice, choiceRecords } : choice,
         selections,
         selectedForApply,
       });
@@ -235,9 +280,12 @@ function PreviewInspectorNeuralChoicePathSummary({
   onSelect,
   selectedPathId,
 }) {
+  if (derivation?.contextual === true) return PreviewInspectorNeuralContextualChoiceSummary({
+    applyError, canApply, derivation, onApply,
+  });
   const paths = Array.isArray(derivation?.paths) ? derivation.paths : [];
-  const recommendedPath = derivation?.recommendedPath;
-  if (paths.length === 0 || recommendedPath === undefined) return null;
+  const recommendedPath = readPreviewInspectorNeuralRecommendedChoicePath(derivation);
+  if (paths.length === 0 && derivation?.truncated !== true) return null;
   const selectedPath = paths.find((path) => path.id === selectedPathId);
   const activePath = selectedPath ?? recommendedPath;
   const stateCount = Number.isSafeInteger(derivation.stateCount) ? derivation.stateCount : 1;
@@ -257,21 +305,32 @@ function PreviewInspectorNeuralChoicePathSummary({
       React.createElement(
         'strong',
         undefined,
-        paths.length === 1 ? 'Derived path' : 'Derived paths · ' + String(paths.length),
+        paths.length === 0 ? 'Choose values directly' :
+          paths.length === 1 ? 'Derived path' : 'Derived paths · ' + String(paths.length),
       ),
-      React.createElement(
+      paths.length === 0 ? null : React.createElement(
         'span',
         undefined,
         'Finite graph · ' + String(stateCount) + ' state' + (stateCount === 1 ? '' : 's'),
       ),
     ),
-    React.createElement(
+    activePath === undefined ? React.createElement(
       'div',
-      { className: 'rpi-neural-choice-path-recommendation' },
+      { className: 'rpi-neural-choice-intro', role: 'status' },
+      derivation?.truncated === true
+        ? 'No path is recommended: this choice space exceeds the safe limit. Choose values directly below; no partial list was ranked.'
+        : 'No path is recommended yet. There is not enough verified evidence to prefer one. Choose a value below or open details.',
+    ) : React.createElement(
+      'div',
+      { className: 'rpi-neural-choice-path-recommendation',
+        'data-recommended': activePath.id === recommendedPath?.id ? 'true' : 'false' },
       React.createElement(
         'div',
         { className: 'rpi-neural-choice-path-copy' },
-        React.createElement('span', undefined, selectedPath === undefined ? 'Suggested path' : 'Selected path'),
+        activePath.id === recommendedPath?.id ? createPreviewInspectorNeuralChoiceBadge() : null,
+        React.createElement('span', undefined, selectedPath === undefined
+          ? activePath.verified === true ? 'Inspector path · output verified' : 'Inspector suggestion · evidence-backed'
+          : 'Inspector path · selected'),
         React.createElement('strong', { title: activePath.label }, activePath.label),
       ),
       React.createElement(
@@ -288,7 +347,7 @@ function PreviewInspectorNeuralChoicePathSummary({
           },
           selectedPath === undefined ? 'Apply suggestion' : 'Apply selected',
         ),
-        React.createElement(
+        recommendedPath === undefined ? null : React.createElement(
           PreviewInspectorDevtoolsButton,
           {
             onClick: () => onSelect(recommendedPath),
@@ -320,7 +379,7 @@ function PreviewInspectorNeuralChoicePathSummary({
           'Stable target paths · ' + String(completedCount),
         )
       : null,
-    React.createElement(
+    paths.length === 0 ? null : React.createElement(
       'details',
       { className: 'rpi-neural-choice-path-alternatives' },
       React.createElement(
@@ -331,9 +390,9 @@ function PreviewInspectorNeuralChoicePathSummary({
       React.createElement(
         'ol',
         undefined,
-        paths.map((path, index) => {
+        paths.map((path) => {
           const status = [
-            index === 0 ? 'Suggested' : '',
+            path.id === recommendedPath?.id ? 'Suggested' : '',
             path.verified === true ? 'Verified' : '',
             path.cyclic === true ? 'Cycle' : '',
             path.blocked === true ? 'Blocked' : '',
@@ -354,13 +413,14 @@ function PreviewInspectorNeuralChoicePathSummary({
                   : path.blocked === true
                     ? 'blocked'
                     : 'open',
-              'data-recommended': index === 0 ? 'true' : 'false',
+              'data-recommended': path.id === recommendedPath?.id ? 'true' : 'false',
               'data-selected': selected ? 'true' : 'false',
               key: path.id,
             },
             React.createElement(
               'div',
               { className: 'rpi-neural-choice-path-item-copy' },
+              path.id === recommendedPath?.id ? createPreviewInspectorNeuralChoiceBadge() : null,
               React.createElement('span', { title: path.label }, path.label),
               status.length > 0 ? React.createElement('strong', undefined, status) : null,
             ),
@@ -395,7 +455,7 @@ function PreviewInspectorNeuralChoicePathSummary({
         ? React.createElement(
             'div',
             { className: 'rpi-neural-choice-path-note' },
-            'Showing the first ' + String(paths.length) + ' bounded paths.',
+            'Choose one decision at a time to narrow this space. All concrete values remain available below.',
           )
         : null,
     ),
@@ -405,7 +465,7 @@ function PreviewInspectorNeuralChoicePathSummary({
 /** Shows every active semantic decision after safe automatic work has been exhausted. */
 function PreviewInspectorNeuralChoiceList() {
   const choices = typeof readPreviewInspectorNeuralUserChoices === 'function'
-    ? readPreviewInspectorNeuralUserChoices({ explicitOnly: true })
+    ? readPreviewInspectorNeuralUserChoices({ explicitOnly: true, includePending: true })
     : typeof readPreviewInspectorNeuralUserChoice === 'function'
       ? [readPreviewInspectorNeuralUserChoice({ explicitOnly: true })].filter(Boolean)
       : [];
@@ -414,11 +474,14 @@ function PreviewInspectorNeuralChoiceList() {
   const reachability = typeof readPreviewInspectorNeuralAssistanceReachability === 'function'
     ? readPreviewInspectorNeuralAssistanceReachability()
     : undefined;
-  const targetRendered = reachability?.targetHasOutput === true;
+  const unresolvedCount = typeof readPreviewInspectorActiveBlockerSummary === 'function'
+    ? readPreviewInspectorActiveBlockerSummary().count : 0;
+  const targetRendered = reachability?.targetHasOutput === true && !(unresolvedCount > 0);
   const choiceIdentity = JSON.stringify(normalizedChoices.map((choice, choiceIndex) => [
     choice.id ?? choice.choiceKind ?? choiceIndex,
     choice.choiceRecords.map((record) => [
       record.path,
+      formatPreviewInspectorNeuralChoiceValue(record.currentValue),
       record.candidates?.map((candidate) =>
         candidate !== null && typeof candidate === 'object'
           ? [candidate.id, candidate.label, candidate.selected]
@@ -429,20 +492,23 @@ function PreviewInspectorNeuralChoiceList() {
   const [pathApplyError, setPathApplyError] = React.useState('');
   const [selectedIndexes, setSelectedIndexes] = React.useState({});
   const [selectedPathId, setSelectedPathId] = React.useState(undefined);
-  const learningStatus = typeof readPreviewInspectorNeuralLearningStatus === 'function'
-    ? readPreviewInspectorNeuralLearningStatus()
-    : undefined;
   React.useEffect(() => {
     setApplyErrors({});
     setPathApplyError('');
     setSelectedIndexes({});
     setSelectedPathId(undefined);
   }, [choiceIdentity]);
-  if (learningStatus?.collecting === true || learningStatus?.restoring === true) return null;
-  if (normalizedChoices.length === 0) return null;
-  const pathDerivation = typeof readPreviewInspectorNeuralDerivedChoicePaths === 'function'
+  if (normalizedChoices.length === 0) return PreviewInspectorNeuralChoiceHandoff({ choices, targetRendered });
+  let pathDerivation = typeof readPreviewInspectorNeuralContextualChoicePaths === 'function'
+    ? readPreviewInspectorNeuralContextualChoicePaths(normalizedChoices)
+    : typeof readPreviewInspectorNeuralDerivedChoicePaths === 'function'
     ? readPreviewInspectorNeuralDerivedChoicePaths(normalizedChoices)
     : undefined;
+  const recommendedSelections = readPreviewInspectorNeuralRecommendedChoiceSelections(pathDerivation, normalizedChoices);
+  if (pathDerivation?.contextual === true && pathDerivation.recommendedPath !== undefined &&
+      Object.keys(recommendedSelections).length === 0) {
+    pathDerivation = { ...pathDerivation, recommendedPath: undefined };
+  }
   const decisionCount = normalizedChoices.reduce(
     (total, choice) => total + Math.max(1, choice.choiceRecords.length),
     0,
@@ -465,7 +531,17 @@ function PreviewInspectorNeuralChoiceList() {
   const canApplyChoicePath = (path) =>
     readPreviewInspectorNeuralChoicePathApplyPlans(path, normalizedChoices).length > 0;
   const applyChoicePath = (path) => {
-    const plans = readPreviewInspectorNeuralChoicePathApplyPlans(path, normalizedChoices);
+    const currentChoices = path?.contextual === true && typeof readPreviewInspectorNeuralUserChoices === 'function'
+      ? readPreviewInspectorNeuralUserChoices({ explicitOnly: true, includePending: true })
+        .filter((choice) => choice !== undefined && choice.surface !== 'page-context' && Array.isArray(choice.choiceRecords))
+      : normalizedChoices;
+    if (path?.contextual === true &&
+        (typeof isPreviewInspectorNeuralContextualChoicePathCurrent !== 'function' ||
+          !isPreviewInspectorNeuralContextualChoicePathCurrent(path, currentChoices))) {
+      setPathApplyError('The page context changed. Review the refreshed next steps before applying a change.');
+      return false;
+    }
+    const plans = readPreviewInspectorNeuralChoicePathApplyPlans(path, currentChoices);
     if (plans.length === 0) {
       setPathApplyError(
         'This path has no executable choice in the current page state. Select another path or wait for the next state.',
@@ -489,6 +565,7 @@ function PreviewInspectorNeuralChoiceList() {
         if (Array.isArray(pathSelections) && pathSelections.length > 0) {
           recordPreviewInspectorNeuralChoicePathSelection(plan.choice, pathSelections, {
             pathId: path.id,
+            choices: currentChoices,
           });
         }
       }
@@ -516,6 +593,7 @@ function PreviewInspectorNeuralChoiceList() {
         ? 'Optional source-proven rendered variants'
         : 'Choices required to continue the preview',
       className: 'rpi-neural-choice-list',
+      id: 'rpi-neural-choice-list',
       'data-choice-count': String(decisionCount),
       'data-choice-purpose': targetRendered ? 'explore' : 'resolve',
     },
@@ -524,7 +602,7 @@ function PreviewInspectorNeuralChoiceList() {
       undefined,
       targetRendered
         ? decisionCount > 1 ? 'Explore variants · ' + String(decisionCount) : 'Explore variant'
-        : decisionCount > 1 ? 'Choices needed · ' + String(decisionCount) : 'Choice needed',
+        : 'Choose what to render' + (decisionCount > 1 ? ' · ' + String(decisionCount) + ' decisions' : ''),
     ),
     React.createElement(
       'div',
@@ -534,29 +612,27 @@ function PreviewInspectorNeuralChoiceList() {
         role: 'region',
         tabIndex: 0,
       },
+      React.createElement('div', { className: 'rpi-neural-choice-origin-note' },
+        readPreviewInspectorNeuralRecommendedChoicePath(pathDerivation) === undefined
+          ? 'Inspector Choice · No neural recommendation yet. Option origins are labeled below.'
+          : 'Inspector Choice · Neural choice marks the recommendation, not an applied or verified result.'),
       React.createElement(
         'div',
       { className: 'rpi-neural-choice-intro' },
-      targetRendered
+      pathDerivation?.contextual === true
+        ? 'Select an option, then apply it. Applying pauses automatic work.'
+        : targetRendered
         ? 'The page is rendered. Alternatives remain unverified until their output stays stable; apply a path to test it.'
         : normalizedChoices.length > 1
-        ? 'Several independent decisions remain. Apply a complete derived path, or apply one group below to decide incrementally.'
+        ? 'Start with one decision. Other decisions stay available below. Applying your choice pauses automatic work.'
         : automaticChoicesExhausted
           ? 'The viewer tested all ' + String(onlyChoice.automaticCandidateCount) +
             ' source-proven values. Choose the value to keep or open details.'
           : onlyChoice?.choiceKind === 'render-condition' &&
               onlyChoiceRecords[0]?.kind === 'page-control'
             ? 'Choose the same page option here or directly in the rendered page. The viewer will activate the real control.'
-            : 'Review every available option, choose one, and apply it to this preview.',
+            : 'Choose a value and apply it to this preview. Applying your choice pauses automatic work.',
     ),
-    PreviewInspectorNeuralChoicePathSummary({
-      applyError: pathApplyError,
-      canApply: canApplyChoicePath,
-      derivation: pathDerivation,
-      onApply: applyChoicePath,
-      onSelect: selectChoicePath,
-      selectedPathId,
-    }),
     normalizedChoices.map((choice, choiceIndex) => {
       const choiceRecords = choice.choiceRecords.filter((record) =>
         typeof record?.path === 'string' && record.path.length > 0 &&
@@ -575,7 +651,7 @@ function PreviewInspectorNeuralChoiceList() {
           createPreviewInspectorNeuralChoiceSelectionKey(choice, choiceIndex, record)
         ];
       }
-      return React.createElement(
+      const choiceBlock = React.createElement(
         'article',
         {
           className: 'rpi-neural-choice-block',
@@ -585,19 +661,18 @@ function PreviewInspectorNeuralChoiceList() {
         React.createElement(
           'div',
           { className: 'rpi-neural-choice-block-heading' },
-          React.createElement('strong', undefined, choice.title ?? 'Choose how to continue'),
-          React.createElement(
+          React.createElement('strong', undefined, describePreviewInspectorNeuralChoiceHeading(choice)),
+          choiceRecords.length > 1 ? React.createElement(
             'span',
             undefined,
-            String(Math.max(1, choiceRecords.length)) + ' decision' +
-              (choiceRecords.length === 1 ? '' : 's'),
-          ),
+            String(choiceRecords.length) + ' decisions',
+          ) : null,
         ),
         choiceRecords.length === 0
           ? React.createElement(
               'div',
               { className: 'rpi-neural-choice-empty' },
-              'No safe inline value is available. Open details for the focused editor.',
+              choice.title ?? 'No source-proven option is available here. Open details to inspect the blocked condition or use its control on the page.',
             )
           : choiceRecords.map((record) => {
               const selectionKey = createPreviewInspectorNeuralChoiceSelectionKey(
@@ -609,11 +684,11 @@ function PreviewInspectorNeuralChoiceList() {
               const selectedCandidate = Number.isInteger(selectedIndex)
                 ? record.candidates[selectedIndex]
                 : undefined;
-              const currentValueLabel = selectedCandidate !== undefined
-                ? 'Selected: ' + formatPreviewInspectorNeuralChoiceValue(selectedCandidate)
-                : record.currentValue === undefined
-                  ? 'No value selected'
+              const currentValueLabel = record.currentValue === undefined
+                  ? 'Current value unavailable'
                   : 'Current: ' + formatPreviewInspectorNeuralChoiceValue(record.currentValue);
+              const selectedValueLabel = selectedCandidate === undefined ? undefined
+                : 'Selected: ' + formatPreviewInspectorNeuralChoiceValue(selectedCandidate);
               return React.createElement(
                 'section',
                 { className: 'rpi-neural-choice-group', key: record.path },
@@ -621,8 +696,13 @@ function PreviewInspectorNeuralChoiceList() {
                   'div',
                   { className: 'rpi-neural-choice-heading' },
                   React.createElement('strong', { title: record.path }, record.path),
-                  React.createElement('span', { title: currentValueLabel }, currentValueLabel),
+                  React.createElement('span', { className: 'rpi-neural-choice-value-state' },
+                    React.createElement('span', { title: currentValueLabel }, currentValueLabel),
+                    selectedValueLabel === undefined ? null
+                      : React.createElement('span', { title: selectedValueLabel }, selectedValueLabel)),
                 ),
+                React.createElement('div', { className: 'rpi-neural-choice-intro' },
+                  describePreviewInspectorNeuralChoiceEffect(choice, record)),
                 React.createElement(
                   'ul',
                   {
@@ -631,6 +711,8 @@ function PreviewInspectorNeuralChoiceList() {
                   },
                   record.candidates.map((candidate, index) => {
                     const candidateLabel = formatPreviewInspectorNeuralChoiceValue(candidate);
+                    const origin = readPreviewInspectorNeuralChoiceOrigin(choice, record, candidate);
+                    const currentLabel = readPreviewInspectorNeuralChoiceCurrentLabel(choice, record, candidate);
                     const description = candidate !== null && typeof candidate === 'object' &&
                       typeof candidate.description === 'string'
                         ? candidate.description
@@ -638,12 +720,16 @@ function PreviewInspectorNeuralChoiceList() {
                     const selected = selectedIndexes[selectionKey] === index;
                     const disabled = candidate !== null && typeof candidate === 'object' &&
                       candidate.disabled === true;
+                    const recommended = !disabled && recommendedSelections[selectionKey] === index;
                     return React.createElement(
                       'li',
-                      { key: String(candidate?.id ?? index) },
+                      { key: String(candidate?.id ?? index), 'data-recommended': recommended ? 'true' : 'false' },
+                      recommended ? createPreviewInspectorNeuralChoiceBadge() : null,
                       React.createElement(
                         'button',
                         {
+                          'aria-label': candidateLabel + ' · ' + origin.label + (currentLabel ? ' · ' + currentLabel : '') +
+                            (recommended ? ' · Neural choice recommendation' : ''),
                           'aria-pressed': selected,
                           className: 'rpi-button',
                           'data-choice-index': String(index),
@@ -657,11 +743,14 @@ function PreviewInspectorNeuralChoiceList() {
                               [selectionKey]: index,
                             }));
                           },
-                          title: description || 'Use ' + candidateLabel + ' for ' + record.path,
+                          title: origin.detail + ' ' + (description || 'Use ' + candidateLabel + ' for ' + record.path),
                           type: 'button',
                         },
                         candidateLabel,
                       ),
+                      React.createElement('span', { className: 'rpi-neural-choice-origin', title: origin.detail },
+                        'Origin: ' + origin.label),
+                      currentLabel ? React.createElement('span', { className: 'rpi-neural-choice-current' }, currentLabel) : null,
                       description.length > 0
                         ? React.createElement(
                             'span',
@@ -689,7 +778,7 @@ function PreviewInspectorNeuralChoiceList() {
               },
               'Open details',
             ),
-            React.createElement(
+            choiceRecords.length > 0 ? React.createElement(
               PreviewInspectorDevtoolsButton,
               {
                 disabled: !selectionComplete,
@@ -714,13 +803,28 @@ function PreviewInspectorNeuralChoiceList() {
                     : 'Choose one value for every path in this group first',
               },
               formatPreviewInspectorNeuralChoiceApplyLabel(choice, choiceRecords.length),
-            ),
+            ) : null,
           ),
         ),
         typeof applyErrors[choiceKey] === 'string' && applyErrors[choiceKey].length > 0
           ? React.createElement('div', { className: 'rpi-error', role: 'alert' }, applyErrors[choiceKey])
           : null,
       );
+      return choiceIndex === 0 ? choiceBlock : React.createElement(
+        'details',
+        { className: 'rpi-neural-choice-path-alternatives', key: choiceKey },
+        React.createElement('summary', undefined,
+          describePreviewInspectorNeuralChoiceHeading(choice)),
+        choiceBlock,
+      );
+      }),
+      PreviewInspectorNeuralChoicePathSummary({
+        applyError: pathApplyError,
+        canApply: canApplyChoicePath,
+        derivation: pathDerivation,
+        onApply: applyChoicePath,
+        onSelect: selectChoicePath,
+        selectedPathId,
       }),
     ),
   );
@@ -731,16 +835,24 @@ function PreviewInspectorNeuralRequestButton() {
   const availability = typeof readPreviewInspectorNeuralAssistanceAvailability === 'function'
     ? readPreviewInspectorNeuralAssistanceAvailability()
     : { actionable: false, mode: 'none', pending: false, title: 'Neural assistance is unavailable.' };
+  const reviewingChoices = availability.mode === 'choice' && !availability.canPause &&
+    !availability.paused && !availability.pending;
+  const review = reviewingChoices ? availability.choiceReview : undefined;
   return React.createElement(
     PreviewInspectorDevtoolsButton,
     {
-      ariaControls: availability.mode === 'review' ? 'rpi-page-context-section' : undefined,
-      busy: availability.pending,
-      disabled: !availability.actionable,
+      ariaControls: review?.hasOptions === true ? 'rpi-neural-choice-list'
+        : availability.mode === 'review' ? 'rpi-page-context-section' : undefined,
+      busy: availability.pending && !availability.canPause,
+      disabled: !availability.actionable && !availability.canPause && !availability.paused,
       onClick: activatePreviewInspectorNeuralAssistance,
-      title: availability.title,
+      title: review === undefined ? availability.title : review.label + '. ' + review.lines.join(' ') +
+        (review.hasOptions ? ' Opens the option list without selecting or applying a value.' : ''),
+      variant: reviewingChoices ? 'choice-review' : undefined,
     },
-    availability.pending
+    availability.canPause ? 'Pause automatic'
+      : availability.paused ? 'Resume automatic'
+      : availability.pending
       ? availability.restoring === true
         ? 'Restoring best path…'
         : availability.collecting === true
@@ -751,13 +863,11 @@ function PreviewInspectorNeuralRequestButton() {
           String(availability.choiceCount) + '…'
         : 'Testing one path…'
       : availability.mode === 'choice'
-        ? availability.rendered === true
-          ? Number(availability.choiceGroupCount ?? 0) > 1
-            ? 'Review ' + String(availability.choiceGroupCount) + ' variants'
-            : 'Review variant'
-          : Number(availability.choiceGroupCount ?? 0) > 1
-            ? 'Review ' + String(availability.choiceGroupCount) + ' choices'
-            : 'Review choice'
+        ? review === undefined ? 'Show available options' : React.createElement('span', { className: 'rpi-choice-review-copy' },
+            React.createElement('strong', undefined, review.label),
+            review.lines.map((line, index) => React.createElement('span', { key: index }, line)),
+            React.createElement('span', { className: 'rpi-choice-review-hint' },
+              review.hasOptions ? 'Open options · no value changes' : 'Open details · no value changes'))
         : availability.mode === 'review'
           ? 'Review inference'
         : availability.rendered === true ? 'Page resolved' : 'Resolve blockers',

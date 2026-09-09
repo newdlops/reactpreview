@@ -80,6 +80,7 @@ function renderNeuralChoiceList(
   choice: unknown,
   applyResult = true,
   derivation?: unknown,
+  status?: unknown,
 ): {
   readonly applies: () => readonly unknown[];
   readonly element: TestElement | null;
@@ -94,7 +95,8 @@ function renderNeuralChoiceList(
     applyResult: boolean;
     choice: unknown;
     derivation: unknown;
-  } = { applyResult, choice, derivation };
+    status: unknown;
+  } = { applyResult, choice, derivation, status };
   vm.runInNewContext(
     `
       const applied = [];
@@ -121,6 +123,7 @@ function renderNeuralChoiceList(
       const readPreviewInspectorNeuralUserChoice = () =>
         readPreviewInspectorNeuralUserChoices()[0];
       const readPreviewInspectorNeuralDerivedChoicePaths = () => derivation;
+      const readPreviewInspectorNeuralLearningStatus = () => status;
       const applyPreviewInspectorNeuralUserChoices = (_choice, selectedIndexes) => {
         applied.push({ ...selectedIndexes });
         return applyResult;
@@ -157,6 +160,153 @@ function renderNeuralChoiceList(
 }
 
 describe('Preview Inspector neural learning UI runtime source', () => {
+  it('shows a failed next-step action before the scrollable alternatives', () => {
+    const sandbox: { element?: TestElement } = {};
+    vm.runInNewContext(
+      `
+      const React = { createElement: (type, props, ...children) => ({type, props, children}) };
+      ${createPreviewInspectorNeuralLearningUiRuntimeSource()}
+      globalThis.element = PreviewInspectorNeuralContextualChoiceSummary({
+        applyError: 'The page context changed. Review the refreshed choices.',
+        canApply: () => true, onApply: () => undefined,
+        derivation: { paths: [{ id: 'one', label: 'Open panel' }], context: {} },
+      });
+    `,
+      sandbox,
+    );
+    expect(sandbox.element?.children[1]).toMatchObject({
+      props: { role: 'alert' },
+      children: ['The page context changed. Review the refreshed choices.'],
+    });
+    expect(findElements(sandbox.element, 'ol')).toHaveLength(1);
+  });
+
+  it('groups recovery controls while keeping subscriptions and committed snapshots isolated', () => {
+    const sandbox: { result?: unknown } = {};
+    vm.runInNewContext(
+      `
+      let subscriptions = 0, snapshots = 0;
+      const effects = [];
+      const React = {
+        Fragment: 'fragment',
+        createElement: (type, props, ...children) => ({ type, props, children }),
+        useEffect: (effect) => effects.push(effect),
+      };
+      const usePreviewInspectorNeuralLearningStatusStore = () => { subscriptions++; };
+      const schedulePreviewInspectorCompanionSnapshot = () => { snapshots++; };
+      ${createPreviewInspectorNeuralLearningUiRuntimeSource()}
+      const element = PreviewInspectorNeuralToolbarControls();
+      const renderSnapshots = snapshots;
+      for (const effect of effects) effect();
+      globalThis.result = {
+        children: [...element.children[0].children.slice(1), element.children[1]]
+          .map((child) => child.type.name),
+        label: element.props['aria-label'],
+        committedSnapshots: snapshots,
+        renderSnapshots,
+        subscriptions,
+        type: element.type,
+      };
+    `,
+      sandbox,
+    );
+    expect(sandbox.result).toEqual({
+      children: [
+        'PreviewInspectorNeuralLearningStatus',
+        'PreviewInspectorNeuralRequestButton',
+        'PreviewInspectorNeuralChoiceList',
+      ],
+      committedSnapshots: 1,
+      label: 'Automatic recovery',
+      renderSnapshots: 0,
+      subscriptions: 1,
+      type: 'section',
+    });
+  });
+
+  it('offers an enabled pause action instead of locking the only neural control', () => {
+    const fixture = renderNeuralRequestButton({ actionable: false, canPause: true, pending: true });
+    expect(fixture.element.children).toEqual(['Pause automatic']);
+    expect(fixture.element.props).toMatchObject({ busy: false, disabled: false });
+    (fixture.element.props.onClick as () => void)();
+    expect(fixture.requests()).toBe(1);
+    const paused = renderNeuralRequestButton({ actionable: false, paused: true, pending: false });
+    expect(paused.element.children).toEqual(['Resume automatic']);
+    expect(paused.element.props.disabled).toBe(false);
+  });
+
+  it('keeps choices visible during success collection and restoration', () => {
+    const choice = {
+      id: 'choice',
+      choiceKind: 'source-proven-prop',
+      choiceRecords: [{ path: 'value', candidates: ['A', 'B'] }],
+    };
+    for (const status of [{ collecting: true }, { restoring: true }]) {
+      const fixture = renderNeuralChoiceList(choice, true, undefined, status);
+      expect(findElements(fixture.element, 'fieldset')).toHaveLength(1);
+      expect(findElements(fixture.element, 'button')).toHaveLength(2);
+    }
+  });
+
+  it('abstains visibly while allowing a person to select and apply an unranked path', () => {
+    const choice = {
+      id: 'choice',
+      choiceKind: 'source-proven-prop',
+      choiceRecords: [{ path: 'value', candidates: ['A', 'B'] }],
+    };
+    const path = {
+      id: 'path-b',
+      label: 'B',
+      steps: [
+        { choiceId: 'choice', choiceIndex: 0, path: 'value', candidateIndex: 1, current: true },
+      ],
+    };
+    const fixture = renderNeuralChoiceList(choice, true, { paths: [path] });
+    expect(
+      findElements(fixture.element, 'div').some((element) =>
+        element.children.some(
+          (child) => typeof child === 'string' && child.startsWith('No path is recommended yet.'),
+        ),
+      ),
+    ).toBe(true);
+    const buttons = findElements(fixture.element, 'detail-button');
+    expect(buttons.some((button) => button.children.includes('Apply suggestion'))).toBe(false);
+    (buttons.find((button) => button.children.includes('Select'))?.props.onClick as () => void)();
+    const selected = fixture.render();
+    const apply = findElements(selected, 'detail-button').find((button) =>
+      button.children.includes('Apply selected'),
+    );
+    expect(apply?.props.disabled).toBe(false);
+    (apply?.props.onClick as () => void)();
+    expect(fixture.applies()).toEqual([{ value: 1 }]);
+  });
+
+  it('keeps all concrete values visible when the combination limit prevents path enumeration', () => {
+    const fixture = renderNeuralChoiceList(
+      {
+        id: 'choice',
+        choiceKind: 'source-proven-prop',
+        choiceRecords: [{ path: 'value', candidates: ['A', 'B', 'C', 'D', 'E'] }],
+      },
+      true,
+      { paths: [], truncated: true },
+    );
+    expect(findElements(fixture.element, 'button')).toHaveLength(5);
+    expect(
+      findElements(fixture.element, 'div').some((element) =>
+        element.children.some(
+          (child) => typeof child === 'string' && child.startsWith('No path is recommended:'),
+        ),
+      ),
+    ).toBe(true);
+    expect(findElements(fixture.element, 'summary')).toHaveLength(0);
+    expect(
+      findElements(fixture.element, 'strong').some((element) =>
+        element.children.includes('Choose values directly'),
+      ),
+    ).toBe(true);
+  });
+
   it('announces active local learning accessibly', () => {
     const element = renderLearningStatus({ phase: 'learning', updates: 2 });
 
@@ -304,7 +454,7 @@ describe('Preview Inspector neural learning UI runtime source', () => {
     expect((checked?.children[0] as TestElement).children).toEqual(['✓']);
     expect((checked?.children[1] as TestElement).children).toEqual(['Neural checked · 6']);
     expect((choice?.children[0] as TestElement).children).toEqual(['?']);
-    expect((choice?.children[1] as TestElement).children).toEqual(['Your choice is needed']);
+    expect((choice?.children[1] as TestElement).children).toEqual(['Review the next action below']);
     expect((paused?.children[0] as TestElement).children).toEqual(['×']);
     expect(JSON.stringify([checked, choice, paused])).not.toContain('!');
   });
@@ -334,7 +484,7 @@ describe('Preview Inspector neural learning UI runtime source', () => {
       title: 'Choose a source-proven value for taxType.',
     });
 
-    expect(choice.element.children).toEqual(['Review choice']);
+    expect(choice.element.children).toEqual(['Show available options']);
     expect(choice.element.props).toMatchObject({ disabled: false });
     (choice.element.props.onClick as () => void)();
     expect(choice.requests()).toBe(1);
@@ -458,7 +608,7 @@ describe('Preview Inspector neural learning UI runtime source', () => {
       findElements(fixture.element, 'span').some(
         (element) =>
           element.children[0] ===
-          'These controls were discovered in the rendered page, including options below the viewport.',
+          'These mounted controls change the blocked state in the same source component.',
       ),
     ).toBe(true);
     (choiceButtons[1]?.props.onClick as () => void)();
@@ -657,16 +807,18 @@ describe('Preview Inspector neural learning UI runtime source', () => {
     ).toBe(true);
   });
 
-  it('stays absent without concrete candidates and keeps full blocker details reachable', () => {
+  it('stays absent without a required decision and keeps page paths and blocker details reachable', () => {
     expect(renderNeuralChoiceList(undefined).element).toBeNull();
     expect(renderNeuralChoiceList({ choiceKind: 'runtime-fallback' }).element).toBeNull();
-    expect(
-      renderNeuralChoiceList({
-        choiceKind: 'target-reachability',
-        choiceRecords: [],
-        surface: 'page-context',
-      }).element,
-    ).toBeNull();
+    const pageChoice = renderNeuralChoiceList({
+      choiceKind: 'target-reachability',
+      choiceRecords: [],
+      surface: 'page-context',
+    });
+    const pageAction = findElements(pageChoice.element, 'detail-button')[0];
+    expect(pageAction?.children).toEqual(['Open page paths']);
+    (pageAction?.props.onClick as () => void)();
+    expect(pageChoice.reveals()).toBe(1);
 
     const fixture = renderNeuralChoiceList({
       choiceKind: 'source-proven-prop',
@@ -674,7 +826,7 @@ describe('Preview Inspector neural learning UI runtime source', () => {
     });
     const detailButtons = findElements(fixture.element, 'detail-button');
     const detailButton = detailButtons.find((button) => button.children[0] === 'Open details');
-    const applyButton = detailButtons.find((button) => button.children[0] === 'Apply choice');
+    const applyButton = detailButtons.find((button) => button.children[0] === 'Apply mode');
     expect(detailButton?.children).toEqual(['Open details']);
     expect(applyButton?.props.disabled).toBe(true);
     (detailButton?.props.onClick as () => void)();
@@ -709,7 +861,7 @@ describe('Preview Inspector neural learning UI runtime source', () => {
     (candidate?.props.onClick as () => void)();
     let rerendered = fixture.render();
     const applyButton = findElements(rerendered, 'detail-button').find(
-      (button) => button.children[0] === 'Apply choice',
+      (button) => button.children[0] === 'Apply mode',
     );
     (applyButton?.props.onClick as () => void)();
     rerendered = fixture.render();

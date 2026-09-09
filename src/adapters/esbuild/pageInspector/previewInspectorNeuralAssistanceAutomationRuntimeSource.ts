@@ -3,6 +3,7 @@ export function createPreviewInspectorNeuralAssistanceAutomationRuntimeSource():
   return String.raw`
 /** Keeps verified output open only while its already-admitted bounded sweep remains incomplete. */
 function readPreviewInspectorAutomaticNeuralAssistanceCorridor() {
+  if (isPreviewInspectorNeuralAssistancePaused()) return undefined;
   const reachability = readPreviewInspectorNeuralAssistanceReachability();
   const activeBlockers = readPreviewInspectorNeuralAssistanceBlockers().active;
   const hasActiveNonReachabilityBlocker = activeBlockers.some((node) =>
@@ -43,13 +44,18 @@ function readPreviewInspectorAutomaticNeuralAssistanceCorridor() {
     readPreviewInspectorNeuralSuccessfulPathCount(record) > 0 &&
     createPreviewInspectorNeuralExplorationPlan(record) !== undefined;
   if (collecting) return reachability;
-  if (successfulPathSettled && reachability.targetHasOutput === true) return undefined;
+  const incompletePageContext = reachability.directTarget !== true &&
+    reachability.pageRootCommitted === true && reachability.targetHasOutput === true &&
+    typeof hasPreviewInspectorCompletePageExecutionContext === 'function' &&
+    !hasPreviewInspectorCompletePageExecutionContext(reachability);
+  if (!incompletePageContext && successfulPathSettled && reachability.targetHasOutput === true && activeBlockers.length === 0) return undefined;
   const pageGenerationWork = typeof hasPreviewInspectorNeuralPageGenerationWork === 'function' &&
     hasPreviewInspectorNeuralPageGenerationWork();
-  if (reachability.targetHasOutput === true && !pageGenerationWork) return undefined;
+  if (reachability.targetHasOutput === true && !incompletePageContext && !pageGenerationWork && activeBlockers.length === 0) return undefined;
   if (
     !hasActiveNonReachabilityBlocker &&
-    (reachability.directTarget === true || reachability.status === 'reached')
+    (reachability.directTarget === true ||
+      !incompletePageContext && reachability.status === 'reached' && activeBlockers.length === 0)
   ) return undefined;
   return reachability;
 }
@@ -101,11 +107,7 @@ function runPreviewInspectorAutomaticNeuralAssistance(
   initializePreviewInspectorAutomaticNeuralAssistanceState();
   const record = previewInspectorSession.automaticNeuralAssistanceByKey.get(key);
   if (record === undefined || record.scheduled !== true) return false;
-  const reachability = readPreviewInspectorAutomaticNeuralAssistanceCorridor();
-  if (
-    revision !== previewEntryRevision || reachability === undefined ||
-    createPreviewInspectorAutomaticNeuralAssistanceKey(reachability) !== key
-  ) {
+  if (revision !== previewEntryRevision || isPreviewInspectorNeuralAssistancePaused()) {
     record.scheduled = false;
     return false;
   }
@@ -116,8 +118,10 @@ function runPreviewInspectorAutomaticNeuralAssistance(
   const learningStatus = typeof readPreviewInspectorNeuralLearningStatus === 'function'
     ? readPreviewInspectorNeuralLearningStatus()
     : undefined;
+  // Pending React/verification work cannot admit a mutation. Do not rebuild the blocker tree on
+  // each waiting frame; scope and current source evidence are rechecked after that work settles.
   const busy = previewInspectorSession.neuralAssistancePending === true ||
-    previewInspectorSession.runtimeFallbackNeuralRetryScheduled === true ||
+    isPreviewInspectorNeuralAssistanceRenderPending() ||
     (learningStatus?.phase === 'learning' && Number(learningStatus?.activeCount ?? 0) > 0);
   if (busy) {
     if (busyFrames < PREVIEW_INSPECTOR_AUTOMATIC_NEURAL_ASSISTANCE_BUSY_FRAME_LIMIT) {
@@ -135,6 +139,10 @@ function runPreviewInspectorAutomaticNeuralAssistance(
     return false;
   }
   record.scheduled = false;
+  const reachability = readPreviewInspectorAutomaticNeuralAssistanceCorridor();
+  if (reachability === undefined || createPreviewInspectorAutomaticNeuralAssistanceKey(reachability) !== key) {
+    return false;
+  }
   record.lastModelUpdates = Math.max(record.lastModelUpdates, modelUpdates);
   const exploration = createPreviewInspectorNeuralExplorationPlan(record);
   if (exploration === undefined) {

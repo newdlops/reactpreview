@@ -2,6 +2,8 @@ import { createPreviewInspectorNeuralAssistanceAvailabilityRuntimeSource } from 
 import { createPreviewInspectorNeuralAssistanceAutomationRuntimeSource } from './previewInspectorNeuralAssistanceAutomationRuntimeSource';
 import { createPreviewInspectorNeuralChoiceRuntimeSource } from './previewInspectorNeuralChoiceRuntimeSource';
 import { createPreviewInspectorNeuralSuccessCheckpointRuntimeSource } from './previewInspectorNeuralSuccessCheckpointRuntimeSource';
+import { createPreviewInspectorNeuralControlRuntimeSource } from './previewInspectorNeuralControlRuntimeSource';
+import { createPreviewInspectorNeuralRequestGuardRuntimeSource } from './previewInspectorNeuralRequestGuardRuntimeSource';
 /**
  * Generates the user-invoked bridge from Inspector chrome to the bounded local neural residual.
  *
@@ -114,6 +116,7 @@ function readPreviewInspectorNeuralAssistanceReachability() {
     : undefined;
 }
 
+${createPreviewInspectorNeuralControlRuntimeSource()}
 ${neuralChoiceRuntimeSource}
 ${successCheckpointRuntimeSource}
 ${availabilityRuntimeSource}
@@ -233,6 +236,8 @@ function revealPreviewInspectorNeuralInferenceEvidence() {
   );
   try {
     if (contextToggle?.getAttribute?.('aria-expanded') === 'false') contextToggle.click?.();
+    const pageOptions = shell.querySelector?.('.rpi-page-options');
+    if (pageOptions !== null && pageOptions !== undefined) pageOptions.open = true;
   } catch {
     return false;
   }
@@ -399,10 +404,17 @@ function applyPreviewInspectorNeuralAssistanceBlocker(
   }
 }
 
-/** Rejects callbacks retained by an older preview revision or superseded request. */
-function isPreviewInspectorNeuralAssistanceRequestCurrent(sequence) {
-  return previewInspectorSession.neuralAssistanceSequence === sequence &&
-    previewInspectorSession.neuralAssistanceRevision === previewEntryRevision;
+${createPreviewInspectorNeuralRequestGuardRuntimeSource()}
+
+/** Holds retries while a resolver's partial mutation is still owned by render verification. */
+function isPreviewInspectorNeuralAssistanceRenderPending(
+  reachability = readPreviewInspectorNeuralAssistanceReachability(),
+) {
+  const attempt = previewInspectorSession.blockerTraceActiveAttempt;
+  return previewInspectorSession.runtimeFallbackNeuralRetryScheduled === true ||
+    attempt !== undefined && attempt.settledAt === undefined ||
+    typeof isPreviewInspectorTargetAutoAttemptPending === 'function' &&
+      isPreviewInspectorTargetAutoAttemptPending(reachability);
 }
 
 /** Settles the visible request after its work completes, while never delaying the page mutation. */
@@ -468,12 +480,11 @@ function finishPreviewInspectorNeuralAssistanceRequest(sequence, result) {
           ? 'applied'
           : settlement?.restoring === true
             ? 'applying'
-            : result.error === true
-              ? 'paused'
           : continued === true
             ? 'applying'
             : rendererWorkPaused ? 'yielded'
-            : needsChoice ? 'needs-choice' : result.changed ? 'applied' : 'unchanged',
+            : needsChoice ? 'needs-choice' : result.error === true ? 'paused'
+            : result.changed ? 'applied' : 'unchanged',
         restoring: settlement?.restoring === true,
         successCount,
         updates: modelUpdates,
@@ -487,7 +498,8 @@ function finishPreviewInspectorNeuralAssistanceRequest(sequence, result) {
   const minimumVisibleMs = typeof PREVIEW_INSPECTOR_NEURAL_LEARNING_MIN_VISIBLE_MS === 'number'
     ? PREVIEW_INSPECTOR_NEURAL_LEARNING_MIN_VISIBLE_MS
     : 600;
-  const waitMs = minimumVisibleMs - elapsed;
+  const waitMs = result.changed === true || isPreviewInspectorNeuralAssistanceRenderPending()
+    ? minimumVisibleMs - elapsed : 0;
   if (waitMs > 0 && typeof globalThis.setTimeout === 'function') {
     globalThis.setTimeout(finalize, waitMs);
   } else {
@@ -497,6 +509,7 @@ function finishPreviewInspectorNeuralAssistanceRequest(sequence, result) {
 
 /** Re-evaluates current evidence with persisted weights, then asks one safe resolver to proceed. */
 function beginPreviewInspectorNeuralAssistanceRequest(requestedBy = 'user', options = {}) {
+  if (isPreviewInspectorNeuralAssistancePaused()) return false;
   const availability = readPreviewInspectorNeuralAssistanceAvailability();
   const collectionRecord = typeof options?.sweepKey === 'string'
     ? previewInspectorSession.automaticNeuralAssistanceByKey?.get?.(options.sweepKey)
@@ -518,6 +531,7 @@ function beginPreviewInspectorNeuralAssistanceRequest(requestedBy = 'user', opti
   const startedAt = Date.now();
   previewInspectorSession.neuralAssistanceSequence = sequence;
   previewInspectorSession.neuralAssistanceRevision = previewEntryRevision;
+  previewInspectorSession.neuralAssistanceScope = capturePreviewInspectorNeuralAssistanceScope();
   previewInspectorSession.neuralAssistancePending = true;
   previewInspectorSession.neuralPageGenerationPending =
     options?.exploration?.pageGenerationChoice === true;
@@ -543,8 +557,15 @@ function beginPreviewInspectorNeuralAssistanceRequest(requestedBy = 'user', opti
     });
   }
   const before = readPreviewInspectorNeuralAssistanceBlockers();
+  const releaseUnappliedChoice = () => releasePreviewInspectorNeuralFiniteChoiceReservation(options?.exploration, options?.sweepKey);
+  const deferChangedEvidence = () => {
+    releaseUnappliedChoice();
+    finishPreviewInspectorNeuralAssistanceRequest(sequence, {
+      action: 'evidence-changed', changed: false, requestedBy, startedAt, sweepKey: options?.sweepKey,
+    });
+  };
   schedulePreviewInspectorNeuralAssistanceFrame(() => {
-    if (!isPreviewInspectorNeuralAssistanceRequestCurrent(sequence)) return;
+    if (!isPreviewInspectorNeuralAssistanceRequestCurrent(sequence)) { releaseUnappliedChoice(); return; }
     try {
       const preparedSummary = readPreviewInspectorNeuralAssistanceBlockers();
       const preparedBlocker = selectPreviewInspectorNeuralAssistanceBlocker(
@@ -555,9 +576,14 @@ function beginPreviewInspectorNeuralAssistanceRequest(requestedBy = 'user', opti
       const preparedIdentity = readPreviewInspectorNeuralAssistanceBlockerIdentity(
         preparedBlocker,
       );
+      if (!isPreviewInspectorNeuralAssistancePlanCurrent(preparedBlocker, options?.exploration)) {
+        deferChangedEvidence();
+        return;
+      }
+      const preparedAttemptIdentity = createPreviewInspectorNeuralAssistanceAttemptIdentity(preparedBlocker);
       preparePreviewInspectorNeuralAssistanceBlocker(preparedBlocker);
       schedulePreviewInspectorNeuralAssistanceFrame(() => {
-        if (!isPreviewInspectorNeuralAssistanceRequestCurrent(sequence)) return;
+        if (!isPreviewInspectorNeuralAssistanceRequestCurrent(sequence)) { releaseUnappliedChoice(); return; }
         try {
           const current = readPreviewInspectorNeuralAssistanceBlockers();
           const reachability = readPreviewInspectorNeuralAssistanceReachability();
@@ -568,6 +594,12 @@ function beginPreviewInspectorNeuralAssistanceRequest(requestedBy = 'user', opti
             reachability,
             { blockerIdentity: options?.exploration?.blockerIdentity, sweepKey: options?.sweepKey },
           );
+          if (!isPreviewInspectorNeuralAssistancePlanCurrent(blocker, options?.exploration) ||
+              options?.exploration?.pageGenerationChoice !== true &&
+              createPreviewInspectorNeuralAssistanceAttemptIdentity(blocker) !== preparedAttemptIdentity) {
+            deferChangedEvidence();
+            return;
+          }
           const applied = applyPreviewInspectorNeuralAssistanceBlocker(
             blocker,
             requestedBy,
@@ -671,8 +703,12 @@ function requestPreviewInspectorNeuralAssistance() {
 /** Uses one toolbar action for automatic work and the explicit user-choice handoff. */
 function activatePreviewInspectorNeuralAssistance() {
   const availability = readPreviewInspectorNeuralAssistanceAvailability();
+  if (availability.canPause) return pausePreviewInspectorNeuralAssistance();
+  if (availability.paused) return resumePreviewInspectorNeuralAssistance();
   if (!availability.actionable) return false;
   if (availability.mode === 'choice') {
+    if (availability.choiceReview?.hasOptions === true &&
+        revealPreviewInspectorNeuralChoiceControls()) return true;
     return revealPreviewInspectorNeuralUserChoice();
   }
   if (availability.mode === 'review') {
@@ -840,6 +876,7 @@ function readPreviewInspectorNeuralAssistanceEffortLimit(record, requestedBy) {
 
 /** Keeps one strategy until verified failure evidence authorizes the next admitted direction. */
 function createPreviewInspectorNeuralExplorationPlan(record) {
+  if (isPreviewInspectorNeuralAssistancePaused()) return undefined;
   const currentCandidates = readPreviewInspectorNeuralAssistanceCandidates(
     readPreviewInspectorNeuralAssistanceBlockers(),
     readPreviewInspectorNeuralAssistanceReachability(),

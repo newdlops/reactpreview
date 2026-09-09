@@ -8,7 +8,7 @@ describe('Preview Inspector neural page generation integration', () => {
     const source = createPreviewInspectorNeuralAssistanceRuntimeSource();
 
     expect(source).toContain(
-      'if (reachability.targetHasOutput === true && !pageGenerationWork) return undefined;',
+      'if (reachability.targetHasOutput === true && !incompletePageContext && !pageGenerationWork && activeBlockers.length === 0) return undefined;',
     );
     expect(source).toContain('successfulPathSettled && reachability.targetHasOutput === true');
     expect(source).toContain('recordPreviewInspectorNeuralSuccessfulPath(currentReachability)');

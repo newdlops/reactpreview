@@ -105,8 +105,8 @@ function createAssistanceFixture(): AssistanceFixture {
         health: [], paths: [], remounts: [], reviews: [], reveals: [], runtime: [], selections: [] };
       let pageContextExpanded = false;
       const pageContextEvidence = { focus: () => calls.reviews.push('focus'), scrollIntoView: () => calls.reviews.push('scroll') };
-      const pageContextToggle = { click: () => { pageContextExpanded = true; calls.reviews.push('expand'); }, getAttribute: (name) => name === 'aria-expanded' ? String(pageContextExpanded) : null };
-      const pageContextShell = { querySelector: (selector) => selector === '.rpi-page-paths' ? pageContextEvidence : selector === '[data-rpi-accordion-toggle="shell-page-context"]' ? pageContextToggle : undefined };
+      const pageContextToggle = { click: () => { pageContextExpanded = true; calls.reviews.push('expand'); }, getAttribute: (name) => name === 'aria-expanded' ? String(pageContextExpanded) : null }; const pageOptions = { set open(value) { if (value) calls.reviews.push('open-paths'); } };
+      const pageContextShell = { querySelector: (selector) => selector === '.rpi-page-options' ? pageOptions : selector === '.rpi-page-paths' ? pageContextEvidence : selector === '[data-rpi-accordion-toggle="shell-page-context"]' ? pageContextToggle : undefined };
       const previewInspectorCompanionState = { shell: pageContextShell }; const requestPreviewInspectorCompanionContextReveal = (value) => calls.reviews.push('companion:' + value);
       const document = { get visibilityState() { return rendererVisible ? 'visible' : 'hidden'; }, querySelector: () => undefined };
       const previewInspectorSession = {
@@ -214,7 +214,6 @@ function createAssistanceFixture(): AssistanceFixture {
   }
   return sandbox.__fixture;
 }
-
 describe('Preview Inspector neural assistance runtime source', () => {
   it('re-evaluates persisted learning and delegates exactly one admitted blocker', () => {
     const fixture = createAssistanceFixture();
@@ -280,6 +279,7 @@ describe('Preview Inspector neural assistance runtime source', () => {
     expect(fixture.activate()).toBe(true);
     expect(fixture.calls.reviews).toEqual([
       'expand',
+      'open-paths',
       'companion:neural-inference',
       'focus',
       'scroll',
@@ -291,14 +291,14 @@ describe('Preview Inspector neural assistance runtime source', () => {
     expect(fixture.session.neuralLearningStatus).toBeUndefined();
   });
 
-  it('retires stale actionable blockers after exact target output is verified', () => {
+  it('keeps active blockers actionable while only partial target output is visible', () => {
     const fixture = createAssistanceFixture();
     fixture.setReachabilityOutput(true);
     expect(fixture.availability()).toMatchObject({
       actionable: true,
-      blockerCount: 0,
-      mode: 'review',
-      rendered: true,
+      blockerCount: 1,
+      mode: 'resolve',
+      rendered: false,
     });
   });
 
@@ -335,18 +335,18 @@ describe('Preview Inspector neural assistance runtime source', () => {
       ],
       exportName: 'Panel',
     });
-    expect(fixture.applyChoices(choice, { taxType: 1 })).toBe(true);
-    expect(fixture.calls.choices).toEqual([['Panel', 'taxType', 'normal_tax', true]]);
-    expect(fixture.session.neuralLearningStatus).toMatchObject({
-      labelReason: 'taxType',
-      phase: 'applying',
-    });
     expect(fixture.activate()).toBe(true);
     expect(fixture.calls.failures).toEqual([]);
     expect(fixture.calls.reveals).toEqual(['tax-type-error']);
     expect(fixture.calls.selections).toEqual([
       expect.objectContaining({ id: 'tax-type-error', blockerKind: 'target-error' }),
     ]);
+    expect(fixture.applyChoices(choice, { taxType: 1 })).toBe(true);
+    expect(fixture.calls.choices).toEqual([['Panel', 'taxType', 'normal_tax', true]]);
+    expect(fixture.session.neuralLearningStatus).toMatchObject({
+      labelReason: 'taxType',
+      phase: 'applying',
+    });
   });
 
   it('requires every ambiguous path and commits a multi-choice handoff only on the final value', () => {

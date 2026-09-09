@@ -1,17 +1,21 @@
 /**
  * Generates the local neural residual used only after deterministic blocker admission.
  *
- * The model is intentionally tiny: a deterministic hashed input projection feeds isolated logistic
+ * The adaptive model stays compatible: a deterministic hashed input projection feeds isolated logistic
  * heads for each blocker-hole family. This prevents an unrendered failure from poisoning exception
  * repair or table-data recommendations while keeping an untrained head exactly neutral. Exact
  * outcome memory is scoped to the bounded problem features, while head weights generalize.
  */
 import { createPreviewInspectorNeuralModelRuntimeSource } from './previewInspectorNeuralModelRuntimeSource';
+import { createPreviewInspectorNeuralAttemptVerificationRuntimeSource } from './previewInspectorNeuralAttemptVerificationRuntimeSource';
+import { createPreviewInspectorNeuralProjectionRuntimeSource } from './previewInspectorNeuralProjectionRuntimeSource';
+import { createPreviewInspectorRecoveryPriorRuntimeSource } from './previewInspectorRecoveryPriorRuntimeSource';
 
 /** Creates browser source for bounded inference, verified online learning, and model persistence. */
 export function createPreviewInspectorNeuralResidualRuntimeSource(): string {
   return String.raw`
 ${createPreviewInspectorNeuralModelRuntimeSource()}
+${createPreviewInspectorRecoveryPriorRuntimeSource()}
 const PREVIEW_INSPECTOR_NEURAL_RESIDUAL_INPUT_SIZE = 64;
 const PREVIEW_INSPECTOR_NEURAL_RESIDUAL_TOKEN_LIMIT = 64;
 const PREVIEW_INSPECTOR_NEURAL_RESIDUAL_TEXT_LIMIT = 192;
@@ -22,8 +26,6 @@ const PREVIEW_INSPECTOR_NEURAL_RESIDUAL_SELECTION_MARGIN = 0.003;
 const PREVIEW_INSPECTOR_NEURAL_RESIDUAL_BRANCH_LEASE_LIMIT = 96;
 const PREVIEW_INSPECTOR_NEURAL_RESIDUAL_FAILURE_LABEL_MAX = 0.2;
 const PREVIEW_INSPECTOR_NEURAL_RESIDUAL_SUCCESS_LABEL_MIN = 0.65;
-const PREVIEW_INSPECTOR_NEURAL_RESIDUAL_VERIFY_INTERVAL_MS = 160;
-const PREVIEW_INSPECTOR_NEURAL_RESIDUAL_VERIFY_LIMIT_MS = 960;
 /** Produces one stable unsigned FNV-1a hash for a bounded semantic feature token. */
 function hashPreviewInspectorNeuralResidualToken(value) {
   const text = String(value).slice(0, PREVIEW_INSPECTOR_NEURAL_RESIDUAL_TEXT_LIMIT);
@@ -134,14 +136,33 @@ function addPreviewInspectorNeuralResidualFeature(vector, token, magnitude = 1) 
     : -magnitude * 0.5;
 }
 
+/** Preserves signed unit features while keeping larger counts distinguishable instead of saturated. */
+function scalePreviewInspectorNeuralResidualNumber(value) {
+  const magnitude = Math.abs(value);
+  if (magnitude <= 1) return Math.tanh(value);
+  const unit = Math.tanh(1);
+  const tail = Math.log1p(magnitude - 1);
+  return Math.sign(value) * (unit + (1 - unit) * tail / (1 + tail));
+}
+
 /** Converts a typed blocker hole into a bounded, normalized numeric feature vector. */
 function encodePreviewInspectorNeuralResidualFeatures(specification = {}) {
   const vector = Array(PREVIEW_INSPECTOR_NEURAL_RESIDUAL_INPUT_SIZE).fill(0);
+  const suppliedTokens = Array.isArray(specification?.tokens) ? specification.tokens : [];
+  // Reserve identity before context truncation; otherwise long requirements hide every action.
+  const priorityTokens = [
+    ...(typeof specification?.candidateId === 'string' && specification.candidateId.length > 0
+      ? ['candidate:' + specification.candidateId.slice(0, 120)] : []),
+    ...suppliedTokens.filter((token) =>
+      typeof token === 'string' && /^(?:strategy|row-strategy):/u.test(token),
+    ).slice(0, 8),
+  ];
   const tokens = [
     'bias',
     'hole:' + String(specification?.holeKind ?? 'unknown'),
     'blocker:' + String(specification?.blockerKind ?? 'unknown'),
-    ...(Array.isArray(specification?.tokens) ? specification.tokens : []),
+    ...priorityTokens,
+    ...suppliedTokens.filter((token) => !priorityTokens.includes(token)),
   ].filter((value) => typeof value === 'string' && value.length > 0)
     .slice(0, PREVIEW_INSPECTOR_NEURAL_RESIDUAL_TOKEN_LIMIT);
   for (const token of tokens) addPreviewInspectorNeuralResidualFeature(vector, token);
@@ -159,12 +180,13 @@ function encodePreviewInspectorNeuralResidualFeatures(specification = {}) {
   }
   const numbers = specification?.numbers;
   if (numbers !== null && typeof numbers === 'object' && !Array.isArray(numbers)) {
-    for (const [name, rawValue] of Object.entries(numbers).slice(0, 16)) {
+    for (const [name, rawValue] of Object.entries(numbers)
+      .filter(([name]) => name !== 'deterministicRank').slice(0, 16)) {
       if (!Number.isFinite(rawValue)) continue;
       addPreviewInspectorNeuralResidualFeature(
         vector,
         'number:' + name,
-        Math.tanh(Number(rawValue)),
+        scalePreviewInspectorNeuralResidualNumber(Number(rawValue)),
       );
     }
   }
@@ -172,31 +194,16 @@ function encodePreviewInspectorNeuralResidualFeatures(specification = {}) {
   return norm > 0 ? vector.map((value) => value / norm) : vector;
 }
 
-/** Returns one deterministic fixed projection weight without retaining a dense input matrix. */
-function readPreviewInspectorNeuralResidualProjectionWeight(hiddenIndex, inputIndex) {
-  const mixed = (
-    Math.imul(hiddenIndex + 1, 0x45d9f3b) ^
-    Math.imul(inputIndex + 3, 0x27d4eb2d)
-  ) >>> 0;
-  return (((mixed % 2001) / 1000) - 1) * 0.34;
-}
+${createPreviewInspectorNeuralProjectionRuntimeSource()}
 
-/** Runs the fixed nonlinear projection and the isolated head for this blocker-hole family. */
-function runPreviewInspectorNeuralResidualModel(vector, holeKind) {
-  const model = initializePreviewInspectorNeuralResidualModel();
+/** Skips neutral score-only projection; training always requests the exact hidden activations. */
+function runPreviewInspectorNeuralResidualModel(vector, holeKind, model, requireHidden = true) {
   const selectedHead = readPreviewInspectorNeuralResidualHead(model, holeKind);
-  const head = selectedHead.head ?? createPreviewInspectorNeuralResidualHead();
-  const hidden = Array(PREVIEW_INSPECTOR_NEURAL_RESIDUAL_HIDDEN_SIZE).fill(0);
-  for (let hiddenIndex = 0; hiddenIndex < hidden.length; hiddenIndex += 1) {
-    let activation = ((hiddenIndex % 3) - 1) * 0.025;
-    for (let inputIndex = 0; inputIndex < vector.length; inputIndex += 1) {
-      activation += vector[inputIndex] * readPreviewInspectorNeuralResidualProjectionWeight(
-        hiddenIndex,
-        inputIndex,
-      );
-    }
-    hidden[hiddenIndex] = Math.tanh(activation);
+  if (!requireHidden && selectedHead.head === undefined) {
+    return { headEvidence: 0, headKey: selectedHead.headKey, headUpdates: 0, score: 0.5 };
   }
+  const head = selectedHead.head ?? createPreviewInspectorNeuralResidualHead();
+  const hidden = projectPreviewInspectorNeuralResidualFeatures(vector);
   let logit = head.outputBias;
   for (let index = 0; index < hidden.length; index += 1) {
     logit += hidden[index] * head.outputWeights[index];
@@ -213,11 +220,18 @@ function runPreviewInspectorNeuralResidualModel(vector, holeKind) {
 
 /** Creates the opaque numeric residual attached to one deterministically admitted candidate. */
 function createPreviewInspectorNeuralResidualDecision(specification) {
+  return createPreviewInspectorNeuralResidualDecisionWithModel(
+    specification,
+    initializePreviewInspectorNeuralResidualModel(),
+  );
+}
+
+/** Scores one candidate against the already-validated model owned by this synchronous batch. */
+function createPreviewInspectorNeuralResidualDecisionWithModel(specification, model) {
   const holeKind = String(specification?.holeKind ?? 'unknown').slice(0, 80);
   const featureVector = encodePreviewInspectorNeuralResidualFeatures(specification);
   const contextKey = createPreviewInspectorNeuralResidualContextKey(specification, featureVector);
-  const inference = runPreviewInspectorNeuralResidualModel(featureVector, holeKind);
-  const model = initializePreviewInspectorNeuralResidualModel();
+  const inference = runPreviewInspectorNeuralResidualModel(featureVector, holeKind, model, false);
   const candidateId = typeof specification?.candidateId === 'string' &&
     specification.candidateId.length > 0
     ? specification.candidateId.slice(0, 120)
@@ -318,45 +332,65 @@ function createPreviewInspectorNeuralResidualBranchLeaseKey(specification) {
  * bounded semantic features plus a deterministic safety rank. A neutral model therefore selects
  * the safest existing candidate, while verified local learning can reorder equally admitted holes.
  */
-function selectPreviewInspectorNeuralResidualCandidate(specification, rawCandidates) {
+function selectPreviewInspectorNeuralResidualCandidate(specification, rawCandidates, verifiedPortfolioFailures = 0) {
   const exploration = readPreviewInspectorNeuralResidualExplorationPolicy();
-  const candidates = (Array.isArray(rawCandidates) ? rawCandidates : [])
+  const admittedCandidates = (Array.isArray(rawCandidates) ? rawCandidates : [])
     .filter((candidate) =>
       candidate !== null && typeof candidate === 'object' &&
       typeof candidate.id === 'string' && candidate.id.length > 0,
     )
-    .slice(0, 12)
-    .map((candidate, index) => {
-      const deterministicRank = Number.isFinite(candidate.deterministicRank)
-        ? Number(candidate.deterministicRank)
-        : index;
-      const decision = createPreviewInspectorNeuralResidualDecision({
-        blockerKind: specification?.blockerKind,
-        candidateId: candidate.id,
-        holeKind: specification?.holeKind,
-        numbers: {
-          ...(specification?.numbers ?? {}),
-          ...(candidate?.numbers ?? {}),
-          deterministicRank,
-        },
-        texts: [
-          ...(Array.isArray(specification?.texts) ? specification.texts : []),
-          ...(Array.isArray(candidate?.texts) ? candidate.texts : []),
-        ],
-        tokens: [
-          ...(Array.isArray(specification?.tokens) ? specification.tokens : []),
-          ...(Array.isArray(candidate?.tokens) ? candidate.tokens : []),
-          'candidate:' + candidate.id,
-        ],
-      });
-      return {
-        candidateId: candidate.id.slice(0, 120),
-        decision,
-        deterministicRank,
-      };
-    });
+    .slice(0, 12);
+  if (admittedCandidates.length === 0) return undefined;
+  const recoveryContext = Number.isSafeInteger(verifiedPortfolioFailures) && verifiedPortfolioFailures > 0
+    ? { ...specification?.recoveryContext, failedCandidateCount: Math.min(10000, verifiedPortfolioFailures),
+        verifiedFailureCount: Math.min(10000, verifiedPortfolioFailures), remainingCandidateCount: admittedCandidates.length }
+    : specification?.recoveryContext;
+  const model = initializePreviewInspectorNeuralResidualModel();
+  const specifications = admittedCandidates.map((candidate) => ({
+      blockerKind: specification?.blockerKind,
+      candidateId: candidate.id,
+      holeKind: specification?.holeKind,
+      recoveryContext,
+      numbers: {
+        ...(specification?.numbers ?? {}),
+        ...(candidate?.numbers ?? {}),
+      },
+      texts: [
+        ...(Array.isArray(specification?.texts) ? specification.texts : []),
+        ...(Array.isArray(candidate?.texts) ? candidate.texts : []),
+      ],
+      tokens: [
+        ...(Array.isArray(specification?.tokens) ? specification.tokens : []),
+        ...(Array.isArray(candidate?.tokens) ? candidate.tokens : []),
+        'candidate:' + candidate.id,
+      ],
+    }));
+  const candidates = admittedCandidates.map((candidate, index) => {
+    const deterministicRank = Number.isFinite(candidate.deterministicRank)
+      ? Number(candidate.deterministicRank)
+      : index;
+    const decision = createPreviewInspectorNeuralResidualDecisionWithModel(specifications[index], model);
+    return {
+      candidateId: candidate.id.slice(0, 120),
+      decision,
+      deterministicRank,
+    };
+  });
+  // Verifier failures remain excluded; unknown alternatives may still use the packaged prior.
+  const prior = rankPreviewInspectorRecoveryPrior(
+    specifications, candidates.map((candidate) => candidate.decision), exploration?.excludedCandidateIds,
+  );
+  if (prior !== undefined) {
+    for (const [index, candidate] of candidates.entries()) {
+      if (!Number.isFinite(prior.scores[index])) continue;
+      candidate.decision.priorScore = prior.scores[index];
+      candidate.decision.priorVersion = prior.id;
+    }
+  }
   candidates.sort((left, right) =>
-    comparePreviewInspectorNeuralResidualDecisions(left.decision, right.decision) ||
+    left.decision.consecutiveFailures - right.decision.consecutiveFailures ||
+    comparePreviewInspectorRecoveryPriorScores(left.decision, right.decision) ||
+    comparePreviewInspectorNeuralResidualScores(left.decision, right.decision) ||
     left.deterministicRank - right.deterministicRank ||
     left.candidateId.localeCompare(right.candidateId),
   );
@@ -410,6 +444,7 @@ function copyPreviewInspectorNeuralResidualDecision(value) {
   ) return undefined;
   return {
     blockerKind: String(value?.blockerKind ?? 'unknown').slice(0, 80),
+    ...copyPreviewInspectorRecoveryPriorMetadata(value),
     ...(typeof value?.candidateId === 'string' && value.candidateId.length > 0
       ? { candidateId: value.candidateId.slice(0, 120) }
       : {}),
@@ -437,14 +472,16 @@ function copyPreviewInspectorNeuralResidualDecision(value) {
 }
 
 /** Re-scores a retained feature vector against the latest persisted model head. */
-function refreshPreviewInspectorNeuralResidualDecision(value) {
+function refreshPreviewInspectorNeuralResidualDecision(value, validatedModel) {
   const decision = copyPreviewInspectorNeuralResidualDecision(value);
   if (decision === undefined) return undefined;
+  const model = validatedModel ?? initializePreviewInspectorNeuralResidualModel();
   const inference = runPreviewInspectorNeuralResidualModel(
     decision.featureVector,
     decision.holeKind,
+    model,
+    false,
   );
-  const model = initializePreviewInspectorNeuralResidualModel();
   const outcome = readPreviewInspectorNeuralResidualOutcome(
     model,
     inference.headKey,
@@ -464,10 +501,26 @@ function refreshPreviewInspectorNeuralResidualDecision(value) {
   };
 }
 
+/** Shares one validated model only within a synchronous ranking; callers must not retain this batch. */
+function createPreviewInspectorNeuralResidualRankingBatch() {
+  const model = initializePreviewInspectorNeuralResidualModel();
+  return {
+    compareDecisions: comparePreviewInspectorNeuralResidualScores,
+    createDecision: (specification) =>
+      createPreviewInspectorNeuralResidualDecisionWithModel(specification, model),
+    refreshDecision: (decision) => refreshPreviewInspectorNeuralResidualDecision(decision, model),
+  };
+}
+
 /** Supplies Array.sort with a neutral-safe score comparison. */
 function comparePreviewInspectorNeuralResidualDecisions(left, right) {
   const leftDecision = refreshPreviewInspectorNeuralResidualDecision(left);
   const rightDecision = refreshPreviewInspectorNeuralResidualDecision(right);
+  return comparePreviewInspectorNeuralResidualScores(leftDecision, rightDecision);
+}
+
+/** Compares fresh scores without repeating model validation and inference inside Array.sort. */
+function comparePreviewInspectorNeuralResidualScores(leftDecision, rightDecision) {
   if (
     leftDecision === undefined || rightDecision === undefined ||
     leftDecision.headKey !== rightDecision.headKey ||
@@ -494,6 +547,7 @@ function summarizePreviewInspectorNeuralResidualDecision(value) {
         holeKind: decision.holeKind,
         modelUpdates: decision.modelUpdates,
         outcomeAttempts: decision.outcomeAttempts,
+        ...copyPreviewInspectorRecoveryPriorMetadata(decision),
         score: Number(decision.score.toFixed(6)),
         selectionScore: Number(decision.selectionScore.toFixed(6)),
         consecutiveFailures: decision.consecutiveFailures,
@@ -545,6 +599,7 @@ function trainPreviewInspectorNeuralResidualDecision(value, label, confidence = 
   const inference = runPreviewInspectorNeuralResidualModel(
     decision.featureVector,
     decision.holeKind,
+    model,
   );
   const error = inference.score - label;
   for (let index = 0; index < head.outputWeights.length; index += 1) {
@@ -593,269 +648,6 @@ function trainPreviewInspectorNeuralResidualDecision(value, label, confidence = 
   };
 }
 
-/** Copies the verifier arrays retained while final target reachability is still converging. */
-function copyPreviewInspectorNeuralResidualAttemptResult(result) {
-  if (result === null || typeof result !== 'object') return undefined;
-  const copyIds = (value) => (Array.isArray(value) ? value : [])
-    .filter((id) => typeof id === 'string').slice(0, 256);
-  return {
-    changedBlockerIds: copyIds(result.changedBlockerIds),
-    discoveredBlockerIds: copyIds(result.discoveredBlockerIds),
-    outcome: result.outcome,
-    remainingBlockerIds: copyIds(result.remainingBlockerIds),
-    resolvedBlockerIds: copyIds(result.resolvedBlockerIds),
-  };
-}
-
-/** Produces a goal-aligned assessment instead of treating one removed intermediate blocker as success. */
-function assessPreviewInspectorNeuralResidualAttempt(attempt, result, deadlineReached = false) {
-  if (result?.outcome === 'superseded') return undefined;
-  if (result?.outcome === 'rolled-back') {
-    return { confidence: 1, label: 0, pending: false, reason: 'attempt-rolled-back' };
-  }
-  const state = typeof attempt?.targetReachabilityKey === 'string'
-    ? previewInspectorSession.targetReachabilityByKey?.get?.(attempt.targetReachabilityKey)
-    : undefined;
-  const remainingBlockerIds = Array.isArray(result?.remainingBlockerIds)
-    ? result.remainingBlockerIds
-    : [];
-  const resolvedBlockerIds = Array.isArray(result?.resolvedBlockerIds)
-    ? result.resolvedBlockerIds
-    : [];
-  const revealedCount = [result?.changedBlockerIds, result?.discoveredBlockerIds]
-    .reduce((count, ids) => count + (Array.isArray(ids) ? ids.length : 0), 0);
-  const targetOutput = state?.targetHasOutput === true || state?.status === 'reached';
-  const selectedBlockerId = attempt?.blocker?.id;
-  const selectedBlockerResolved = typeof selectedBlockerId === 'string' &&
-    resolvedBlockerIds.includes(selectedBlockerId);
-  const localProgress = selectedBlockerResolved || resolvedBlockerIds.length > 0;
-  const remainingTarget = remainingBlockerIds.some((id) =>
-    typeof id === 'string' && id.startsWith('target-reachability:'),
-  );
-  const remainingFatal = remainingBlockerIds.some((id) =>
-    typeof id === 'string' &&
-    (id.startsWith('target-error:') || id.startsWith('runtime-global:')),
-  );
-  const failedStatuses = new Set([
-    'page-blocked',
-    'resolver-cycle-detected',
-    'resolver-limit-reached',
-    'resolver-rolled-back',
-    'retrying-page-execution',
-    'runtime-error-output',
-    'target-error',
-  ]);
-  const failedTarget = remainingFatal || failedStatuses.has(state?.status) ||
-    state?.pendingTargetRepairFailure !== undefined;
-  if (failedTarget) {
-    return {
-      confidence: 1,
-      label: 0,
-      localProgress,
-      pending: false,
-      reason: remainingFatal ? 'fatal-blocker-remains' : 'target-failed',
-      remainingBlockerCount: remainingBlockerIds.length,
-      targetOutput: false,
-    };
-  }
-  const dataFlowSignal = attempt?.neuralDataFlowSignal;
-  const dataFlowCallCount = Number(dataFlowSignal?.calls ?? 0);
-  if (Number.isSafeInteger(dataFlowCallCount) && dataFlowCallCount > 0) {
-    const truthyReturnCount = Math.max(
-      0,
-      Math.min(dataFlowCallCount, Number(dataFlowSignal?.truthyReturns ?? 0)),
-    );
-    const retentionRatio = truthyReturnCount / dataFlowCallCount;
-    return {
-      confidence: Math.min(1, 0.4 + dataFlowCallCount * 0.2),
-      label: targetOutput ? retentionRatio : retentionRatio * 0.65,
-      localProgress: retentionRatio > 0,
-      pending: false,
-      reason: retentionRatio > 0
-        ? targetOutput
-          ? 'generated-data-flow-and-target-output-verified'
-          : 'generated-data-flow-retained-without-target-output'
-        : 'generated-data-flow-dropped',
-      remainingBlockerCount: remainingBlockerIds.length,
-      targetOutput,
-    };
-  }
-  if (targetOutput) {
-    return {
-      confidence: 1,
-      label: 1,
-      localProgress,
-      pending: false,
-      reason: 'target-output-verified',
-      remainingBlockerCount: remainingBlockerIds.length,
-      targetOutput: true,
-    };
-  }
-  const ownsTarget = typeof attempt?.targetReachabilityKey === 'string';
-  if (ownsTarget && !deadlineReached) {
-    return {
-      localProgress,
-      pending: true,
-      reason: remainingTarget ? 'target-still-converging' : 'awaiting-target-verifier',
-      remainingBlockerCount: remainingBlockerIds.length,
-      targetOutput: false,
-    };
-  }
-  if (ownsTarget) {
-    return {
-      confidence: 0.2,
-      label: localProgress ? 0.2 : revealedCount > 0 ? 0.05 : 0,
-      localProgress,
-      pending: false,
-      reason: localProgress
-        ? 'local-progress-without-target-output'
-        : revealedCount > 0
-          ? 'new-evidence-without-target-output'
-          : 'no-target-progress',
-      remainingBlockerCount: remainingBlockerIds.length,
-      targetOutput: false,
-    };
-  }
-  return {
-    confidence: localProgress ? 0.75 : revealedCount > 0 ? 0.4 : 0.65,
-    label: localProgress ? 0.65 : revealedCount > 0 ? 0.35 : 0,
-    localProgress,
-    pending: false,
-    reason: localProgress
-      ? 'standalone-blocker-resolved'
-      : revealedCount > 0
-        ? 'standalone-evidence-revealed'
-        : 'standalone-no-progress',
-    remainingBlockerCount: remainingBlockerIds.length,
-  };
-}
-
-/** Applies one verifier-owned assessment and emits diagnostics without feature vectors or values. */
-function applyPreviewInspectorNeuralResidualAttemptAssessment(attempt, assessment, event) {
-  if (assessment?.pending === true || !Number.isFinite(assessment?.label)) return undefined;
-  const previous = attempt?.neuralResidualLastAssessment;
-  if (
-    previous?.label === assessment.label && previous?.reason === assessment.reason ||
-    event === 'neural-residual-corrected' && previous?.label === 0
-  ) return undefined;
-  const update = trainPreviewInspectorNeuralResidualDecision(
-    attempt?.neuralResidualDecision,
-    assessment.label,
-    Number.isFinite(assessment.confidence) ? assessment.confidence : 1,
-  );
-  if (attempt !== undefined && update !== undefined) {
-    attempt.neuralResidualLastAssessment = {
-      confidence: assessment.confidence,
-      label: assessment.label,
-      reason: assessment.reason,
-    };
-  }
-  if (update !== undefined && typeof recordPreviewInspectorRuntimeHealth === 'function') {
-    recordPreviewInspectorRuntimeHealth({
-      category: 'neural-residual',
-      detail: {
-        blockerKind: attempt.neuralResidualDecision.blockerKind,
-        candidateId: attempt.neuralResidualDecision.candidateId,
-        confidence: update.confidence,
-        headEvidence: update.headEvidence,
-        headKey: update.headKey,
-        headUpdates: update.headUpdates,
-        holeKind: attempt.neuralResidualDecision.holeKind,
-        label: update.label,
-        labelReason: assessment.reason,
-        localProgress: assessment.localProgress === true,
-        outcomeAttempts: update.outcomeAttempts,
-        prediction: update.prediction,
-        consecutiveFailures: update.consecutiveFailures,
-        remainingBlockerCount: assessment.remainingBlockerCount ?? 0,
-        targetOutput: assessment.targetOutput === true,
-        traceId: attempt.traceId,
-        updates: update.updates,
-      },
-      event,
-    });
-  }
-  return update;
-}
-
-/** Waits through the ordinary convergence window before assigning target-level credit. */
-function observePreviewInspectorNeuralResidualAttempt(attempt, result) {
-  if (copyPreviewInspectorNeuralResidualDecision(attempt?.neuralResidualDecision) === undefined) {
-    return undefined;
-  }
-  const retainedResult = copyPreviewInspectorNeuralResidualAttemptResult(result);
-  if (retainedResult === undefined) return undefined;
-  const assessment = assessPreviewInspectorNeuralResidualAttempt(
-    attempt,
-    retainedResult,
-  );
-  if (assessment === undefined) return undefined;
-  if (assessment.pending !== true) {
-    return applyPreviewInspectorNeuralResidualAttemptAssessment(
-      attempt,
-      assessment,
-      'neural-residual-trained',
-    );
-  }
-  if (typeof globalThis.setTimeout !== 'function') {
-    return applyPreviewInspectorNeuralResidualAttemptAssessment(
-      attempt,
-      assessPreviewInspectorNeuralResidualAttempt(attempt, retainedResult, true),
-      'neural-residual-trained',
-    );
-  }
-  attempt.neuralResidualObservationRevision =
-    (Number.isSafeInteger(attempt.neuralResidualObservationRevision)
-      ? attempt.neuralResidualObservationRevision
-      : 0) + 1;
-  const revision = attempt.neuralResidualObservationRevision;
-  const startedAt = Date.now();
-  const verify = () => {
-    if (
-      attempt.neuralResidualRejected === true ||
-      attempt.neuralResidualObservationRevision !== revision
-    ) return;
-    const deadlineReached = Date.now() - startedAt >=
-      PREVIEW_INSPECTOR_NEURAL_RESIDUAL_VERIFY_LIMIT_MS;
-    const nextAssessment = assessPreviewInspectorNeuralResidualAttempt(
-      attempt,
-      retainedResult,
-      deadlineReached,
-    );
-    if (nextAssessment?.pending === true && !deadlineReached) {
-      globalThis.setTimeout(verify, PREVIEW_INSPECTOR_NEURAL_RESIDUAL_VERIFY_INTERVAL_MS);
-      return;
-    }
-    applyPreviewInspectorNeuralResidualAttemptAssessment(
-      attempt,
-      nextAssessment,
-      'neural-residual-trained',
-    );
-  };
-  globalThis.setTimeout(verify, PREVIEW_INSPECTOR_NEURAL_RESIDUAL_VERIFY_INTERVAL_MS);
-  return undefined;
-}
-
-/** Corrects an optimistic settled label when the existing fatal-error grace window rolls it back. */
-function rejectPreviewInspectorNeuralResidualAttempt(attempt) {
-  if (attempt === undefined) return undefined;
-  attempt.neuralResidualRejected = true;
-  attempt.neuralResidualObservationRevision =
-    (Number.isSafeInteger(attempt.neuralResidualObservationRevision)
-      ? attempt.neuralResidualObservationRevision
-      : 0) + 1;
-  return applyPreviewInspectorNeuralResidualAttemptAssessment(
-    attempt,
-    {
-      confidence: 1,
-      label: 0,
-      localProgress: false,
-      pending: false,
-      reason: 'fatal-error-after-attempt',
-      targetOutput: false,
-    },
-    'neural-residual-corrected',
-  );
-}
+${createPreviewInspectorNeuralAttemptVerificationRuntimeSource()}
 `;
 }

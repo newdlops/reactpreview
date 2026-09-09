@@ -77,13 +77,37 @@ function normalizePreviewInspectorNeuralLearningStatus(candidate) {
   });
 }
 
-/** Coalesces progress notifications so learning discovered during render cannot re-enter React. */
+/** Registers only the learning controls; progress never invalidates the authored page or Fiber tree. */
+function subscribePreviewInspectorNeuralLearningStatus(listener) {
+  if (typeof listener !== 'function') return () => undefined;
+  if (!(previewInspectorSession.neuralLearningStatusListeners instanceof Set)) {
+    previewInspectorSession.neuralLearningStatusListeners = new Set();
+  }
+  const listeners = previewInspectorSession.neuralLearningStatusListeners;
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+/** Keeps the subscription local and reconciles changes between render and the React effect. */
+function usePreviewInspectorNeuralLearningStatusStore() {
+  const [, setStatus] = React.useState(() => previewInspectorSession.neuralLearningStatus);
+  React.useEffect(() => {
+    const refresh = () => setStatus(previewInspectorSession.neuralLearningStatus);
+    const unsubscribe = subscribePreviewInspectorNeuralLearningStatus(refresh);
+    refresh();
+    return unsubscribe;
+  }, []);
+}
+
+/** Coalesces progress-only notifications so learning discovered during render cannot re-enter React. */
 function schedulePreviewInspectorNeuralLearningStatusRefresh() {
   if (previewInspectorSession.neuralLearningStatusRefreshScheduled === true) return;
   previewInspectorSession.neuralLearningStatusRefreshScheduled = true;
   const refresh = () => {
     previewInspectorSession.neuralLearningStatusRefreshScheduled = false;
-    if (typeof notifyPreviewInspector === 'function') notifyPreviewInspector();
+    for (const listener of [...(previewInspectorSession.neuralLearningStatusListeners ?? [])]) {
+      listener();
+    }
   };
   if (typeof globalThis.queueMicrotask === 'function') {
     globalThis.queueMicrotask(refresh);

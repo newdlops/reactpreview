@@ -80,7 +80,7 @@ function upgradePreviewInspectorNeuralSuccessCollectionRecord(record) {
 /** Keeps a completed verified sweep quiet until real blocker evidence or explicit user intent. */
 function isPreviewInspectorNeuralSuccessCollectionSettled(state) {
   if (
-    state?.targetHasOutput !== true ||
+    state?.targetHasOutput !== true || hasPreviewInspectorNeuralUnresolvedSuccessBlocker() ||
     (typeof hasPreviewInspectorCompletePageExecutionContext === 'function' &&
       !hasPreviewInspectorCompletePageExecutionContext(state)) ||
     typeof createPreviewInspectorAutomaticNeuralAssistanceKey !== 'function'
@@ -183,7 +183,9 @@ function schedulePreviewInspectorNeuralSuccessfulPathRestorationVerification(key
     record.restorationVerificationScheduled === true
   ) return false;
   record.restorationVerificationScheduled = true;
+  const controlRevision = previewInspectorSession.neuralHumanControlRevision;
   const verify = () => {
+    if (previewInspectorSession.neuralHumanControlRevision !== controlRevision) return;
     record.restorationVerificationScheduled = false;
     if (
       record.restoringSuccessfulPath !== true ||
@@ -282,16 +284,11 @@ function readPreviewInspectorNeuralExplorationCandidates(record, currentCandidat
       !currentIdentities.has(readPreviewInspectorNeuralAssistanceBlockerIdentity(node))),
   ];
 }
-/** Rejects error/blocker overlays that can coexist briefly with stale target host geometry. */
-function hasPreviewInspectorNeuralFatalSuccessBlocker() {
+/** Visible geometry is only partial output while any admitted render stop still needs resolution. */
+function hasPreviewInspectorNeuralUnresolvedSuccessBlocker() {
   if (typeof readPreviewInspectorNeuralAssistanceBlockers !== 'function') return false;
   const active = readPreviewInspectorNeuralAssistanceBlockers()?.active;
-  return Array.isArray(active) && active.some((node) =>
-    ['runtime-global', 'target-error'].includes(node?.blockerKind) ||
-    node?.blockerKind === 'target-reachability' &&
-      node?.blocker?.targetHasOutput !== true &&
-      (node?.blocker?.status === 'page-blocked' || node?.blocker?.exhausted === true),
-  );
+  return Array.isArray(active) && active.length > 0;
 }
 /** Requires the same reproducible viewer state and real target-owned output at observation time. */
 function isPreviewInspectorNeuralSuccessSnapshotVisible(state, snapshot) {
@@ -300,7 +297,7 @@ function isPreviewInspectorNeuralSuccessSnapshotVisible(state, snapshot) {
     state?.targetHasOutput !== true || snapshot === undefined ||
     (typeof hasPreviewInspectorCompletePageExecutionContext === 'function' &&
       !hasPreviewInspectorCompletePageExecutionContext(state)) ||
-    hasPreviewInspectorNeuralFatalSuccessBlocker()
+    hasPreviewInspectorNeuralUnresolvedSuccessBlocker()
   ) return false;
   const visible = typeof hasPreviewInspectorTargetHostOutput === 'function'
     ? hasPreviewInspectorTargetHostOutput(state)
@@ -331,6 +328,9 @@ function clearPreviewInspectorNeuralProvisionalSuccess(record) {
 }
 /** Continues a verified sweep before declaring its best checkpoint final. */
 function continuePreviewInspectorNeuralSuccessCollection(key, record) {
+  if (typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused()) {
+    return { continued: false, remaining: false, restoring: false };
+  }
   if (typeof createPreviewInspectorNeuralExplorationPlan !== 'function') {
     record.successCollectionSettled = readPreviewInspectorNeuralSuccessfulPathCount(record) > 0;
     return { continued: false, remaining: false, restoring: false };
@@ -474,7 +474,9 @@ function schedulePreviewInspectorNeuralProvisionalSuccessVerification(key) {
   const snapshot = record.provisionalSuccessfulPath;
   if (snapshot === undefined) return false;
   record.successVerificationScheduled = true;
+  const controlRevision = previewInspectorSession.neuralHumanControlRevision;
   const verify = () => {
+    if (previewInspectorSession.neuralHumanControlRevision !== controlRevision) return;
     record.successVerificationScheduled = false;
     if (record.provisionalSuccessfulPath?.fingerprint !== snapshot.fingerprint) return;
     const state = typeof readPreviewInspectorNeuralAssistanceReachability === 'function'
@@ -650,6 +652,7 @@ function restorePreviewInspectorNeuralSuccessViewerValues(best) {
 }
 /** Settles the best verified snapshot without consuming retained user-selectable alternatives. */
 function settlePreviewInspectorNeuralSuccessfulPaths(key) {
+  if (typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused()) return undefined;
   const record = previewInspectorSession.automaticNeuralAssistanceByKey?.get?.(key);
   if (record === undefined) return undefined;
   upgradePreviewInspectorNeuralSuccessCollectionRecord(record);

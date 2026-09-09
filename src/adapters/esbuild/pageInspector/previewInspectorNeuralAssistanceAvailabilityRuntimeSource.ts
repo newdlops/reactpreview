@@ -1,8 +1,12 @@
+import { createPreviewInspectorNeuralChoiceReviewRuntimeSource } from './previewInspectorNeuralChoiceReviewRuntimeSource';
+
 /** Generates the observable availability state shared by neural UI controls. */
 export function createPreviewInspectorNeuralAssistanceAvailabilityRuntimeSource(): string {
   return String.raw`
+${createPreviewInspectorNeuralChoiceReviewRuntimeSource()}
 /** Describes button availability without subscribing the application tree to Inspector state. */
 function readPreviewInspectorNeuralAssistanceAvailability() {
+  const paused = isPreviewInspectorNeuralAssistancePaused();
   const blockers = readPreviewInspectorNeuralAssistanceBlockers();
   const actionableBlockers = blockers.active.filter((node) =>
     previewInspectorNeuralAssistanceBlockerKinds.has(node?.blockerKind),
@@ -26,22 +30,22 @@ function readPreviewInspectorNeuralAssistanceAvailability() {
   const verifying = learningStatus?.verifying === true ||
     typeof isPreviewInspectorNeuralSuccessVerificationPending === 'function' &&
       isPreviewInspectorNeuralSuccessVerificationPending(assistanceRecord);
-  const pending = (
+  const pending = !paused && ((
     previewInspectorSession.neuralAssistancePending === true &&
     previewInspectorSession.neuralAssistanceRevision === previewEntryRevision
-  ) || collecting || restoring || verifying;
+  ) || collecting || restoring || verifying);
   const choiceAttempt = pending && Number.isSafeInteger(learningStatus?.choiceAttempt)
     ? learningStatus.choiceAttempt
     : undefined;
   const choiceCount = pending && Number.isSafeInteger(learningStatus?.choiceCount)
     ? learningStatus.choiceCount
     : undefined;
-  const learning = learningStatus?.phase === 'learning' &&
+  const learning = !paused && learningStatus?.phase === 'learning' &&
     Number(learningStatus?.activeCount ?? 0) > 0;
   const selectedExportName = typeof previewInspectorSession.selectedExportName === 'string'
     ? previewInspectorSession.selectedExportName
     : '';
-  const renderedCorridor = reachability?.targetHasOutput === true;
+  const renderedCorridor = reachability?.targetHasOutput === true && blockers.count === 0;
   const unresolvedCorridor = reachability !== undefined && !renderedCorridor;
   const temporalPinned = typeof isPreviewInspectorNeuralTemporalStateContractActive === 'function' &&
     isPreviewInspectorNeuralTemporalStateContractActive(
@@ -79,18 +83,22 @@ function readPreviewInspectorNeuralAssistanceAvailability() {
           ? 'resolve'
           : reviewAvailable ? 'review' : 'none';
   const actionable = !pending && !learning && mode !== 'none';
+  const canPause = !paused && (pending || learning || assistanceRecord?.scheduled === true);
   return Object.freeze({
     actionable,
+    canPause,
     blockerCount: renderedCorridor && !pageGenerationAvailable ? 0 : actionableBlockers.length,
     choiceAttempt,
     choiceAvailable: userChoice !== undefined,
     choiceCount,
     choiceGroupCount: userChoices.length,
+    choiceReview: mode === 'choice' ? readPreviewInspectorNeuralChoiceReview(userChoices, userChoice) : undefined,
     collecting,
     learning,
     mode,
     modelUpdates,
     pending,
+    paused,
     rendered: renderedCorridor,
     refining: renderedCorridor && pageGenerationAvailable,
     reviewAvailable,
@@ -99,7 +107,11 @@ function readPreviewInspectorNeuralAssistanceAvailability() {
     temporalPinned,
     temporalReleased,
     verifying,
-    title: temporalPinned
+    title: paused
+      ? 'Automatic work is paused. Your values stay in place until you explicitly resume.'
+      : canPause
+        ? 'Pause automatic work and cancel queued retries. Keep the current values and choose manually.'
+      : temporalPinned
       ? 'This loading checkpoint is intentionally pinned. Choose Resume in Page Context Paths to let pending application work continue.'
       : temporalReleased
         ? 'The loading checkpoint was released. Authored application time is progressing without automatic repair treating its disappearance as failure.'

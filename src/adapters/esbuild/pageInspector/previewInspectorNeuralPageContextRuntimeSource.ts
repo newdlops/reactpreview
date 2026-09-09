@@ -1,4 +1,6 @@
 /** Generates neural ranking and verified exploration for compiler-proven page contexts. */
+import { createPreviewInspectorNeuralPagePreparationRuntimeSource } from './previewInspectorNeuralPagePreparationRuntimeSource';
+import { createPreviewInspectorNeuralPageOutcomeRuntimeSource } from './previewInspectorNeuralPageOutcomeRuntimeSource';
 
 /**
  * Creates the browser runtime that connects the existing page-choice neural head to page roots.
@@ -7,6 +9,8 @@
  */
 export function createPreviewInspectorNeuralPageContextRuntimeSource(): string {
   return String.raw`
+${createPreviewInspectorNeuralPagePreparationRuntimeSource()}
+${createPreviewInspectorNeuralPageOutcomeRuntimeSource()}
 const PREVIEW_INSPECTOR_NEURAL_PAGE_CONTEXT_PORTFOLIO_LIMIT = 12;
 const PREVIEW_INSPECTOR_NEURAL_PAGE_CONTEXT_RECORD_LIMIT = 24;
 
@@ -498,12 +502,15 @@ function selectPreviewInspectorBestVerifiedPageContextCandidate(candidates, inve
  * is still exhausted in bounded batches without weakening the residual model's twelve-item limit.
  */
 function selectPreviewInspectorNeuralPageContextCandidate(descriptor, options = {}) {
-  const candidates = readPreviewInspectorPageCandidates(descriptor);
-  if (candidates.length === 0) return undefined;
-  const inventory = createPreviewInspectorPageContextPathInventory(candidates);
+  const admitted = readPreviewInspectorPageCandidates(descriptor);
+  if (admitted.length === 0) return undefined;
   const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
   if (record === undefined) return undefined;
   const explicitId = previewInspectorSession.userSelectedPageCandidateId;
+  const candidates = admitted.filter((candidate) => candidate?.id === explicitId ||
+    isPreviewInspectorNeuralPagePreparationAvailable(record, candidate?.id));
+  if (candidates.length === 0) { record.status = 'exhausted'; return undefined; }
+  const inventory = createPreviewInspectorPageContextPathInventory(candidates);
   const explicitIndex = candidates.findIndex((candidate) => candidate?.id === explicitId);
   if (explicitIndex >= 0) {
     const candidate = candidates[explicitIndex];
@@ -636,7 +643,7 @@ function selectPreviewInspectorNeuralPageContextCandidate(descriptor, options = 
     inventory,
   );
   const selected = typeof selectPreviewInspectorNeuralResidualCandidate === 'function'
-    ? selectPreviewInspectorNeuralResidualCandidate(specification, portfolio)
+    ? selectPreviewInspectorNeuralResidualCandidate(specification, portfolio, record.failedCandidateIds.size)
     : undefined;
   const selectedInput = portfolio.find((input) => input.id === selected?.candidateId);
   const candidate = candidates.find((item) =>
@@ -674,6 +681,7 @@ function schedulePreviewInspectorNeuralPageContextSelection() {
   const revision = previewInspectorSession.neuralPageContextScheduleRevision;
   Promise.resolve().then(() => {
     if (previewInspectorSession.neuralPageContextScheduleRevision !== revision) return;
+    if (typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused()) return;
     const descriptor = findSelectedPreviewInspectorDescriptor();
     const executableId = descriptor?.inspector?.executablePageCandidateId;
     const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
@@ -741,21 +749,6 @@ function recordPreviewInspectorUserPageContextSelection(candidateId) {
   record.status = 'user-selected';
 }
 
-/** Tracks the host hand-off separately from target-output success or failure. */
-function handlePreviewInspectorNeuralPageContextSelectionStatus(message) {
-  if (previewInspectorSession.pendingPageCandidateOrigin !== 'neural-page-context') return;
-  const descriptor = findSelectedPreviewInspectorDescriptor();
-  const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
-  if (record === undefined) return;
-  if (message?.status === 'committed') {
-    record.status = 'verifying';
-    record.selectionReason = 'candidate-artifact-committed';
-  } else if (['failed', 'cancelled', 'rejected'].includes(message?.status)) {
-    record.status = 'selection-error';
-    record.selectionReason = 'candidate-artifact-' + String(message.status);
-  }
-}
-
 /** Emits a compact page-choice health event without feature vectors or absolute source paths. */
 function recordPreviewInspectorNeuralPageContextHealth(record, candidate, update, outcome, state) {
   if (typeof recordPreviewInspectorRuntimeHealth !== 'function') return;
@@ -801,8 +794,9 @@ function markPreviewInspectorNeuralPageContextProvisional(state) {
   const candidate = readPreviewInspectorPageCandidates(descriptor).find(
     (item) => item?.id === state.candidateId,
   );
+  if (!isPreviewInspectorNeuralPageOutcomeCurrent(descriptor, candidate, state)) return false;
   const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
-  if (candidate === undefined || record === undefined || state.directTarget === true) return false;
+  if (record === undefined) return false;
   record.provisionalCandidateIds.add(candidate.id);
   record.selectionReason = 'visible-output-stability-check';
   record.status = 'verifying';
@@ -846,31 +840,17 @@ function observePreviewInspectorNeuralPageContextConsoleEntry(entry) {
  * not become negative examples; a terminal page-blocked state advances to the next finite path.
  */
 function observePreviewInspectorNeuralPageContextOutcome(descriptor, candidate, state) {
-  if (
-    descriptor === undefined || candidate === undefined || state?.directTarget === true ||
-    typeof candidate?.id !== 'string'
-  ) return false;
-  const success = state.neuralStableOutputVerified === true &&
-    state.pageRootCommitted === true && state.targetHasOutput === true &&
-    (state.targetMounted === true || state.targetWasMounted === true) &&
-    (typeof hasPreviewInspectorCompletePageExecutionContext !== 'function' ||
-      hasPreviewInspectorCompletePageExecutionContext(state));
-  const pageExecutionContextComplete =
-    typeof hasPreviewInspectorCompletePageExecutionContext !== 'function' ||
-    hasPreviewInspectorCompletePageExecutionContext(state);
-  const failure = (state.targetHasOutput !== true || !pageExecutionContextComplete) && (
-    state.neuralStableOutputRegressed === true ||
-    state.status === 'page-blocked' && state.exhausted === true
-  );
-  if (!success && !failure) return false;
-  const outcome = success ? 'verified' : 'failed';
-  if (state.neuralPageContextOutcome === outcome) return false;
-  state.neuralPageContextOutcome = outcome;
+  if (!isPreviewInspectorNeuralPageOutcomeCurrent(descriptor, candidate, state)) return false;
   const candidates = readPreviewInspectorPageCandidates(descriptor);
   const index = candidates.findIndex((item) => item?.id === candidate.id);
   if (index < 0) return false;
+  const assessment = readPreviewInspectorNeuralPageOutcome(state);
+  if (assessment === undefined) return false;
+  const { success, pageExecutionContextComplete } = assessment;
+  const outcome = success ? 'verified' : 'failed';
   const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
   if (record === undefined) return false;
+  state.neuralPageContextOutcome = outcome;
   if (success) {
     capturePreviewInspectorNeuralPageContextExecutionContract(record, candidate, index, state);
   }
@@ -958,6 +938,7 @@ function observePreviewInspectorNeuralPageContextOutcome(descriptor, candidate, 
 /** Continues across caller/HOC mount paths only after the current path's inner sweep has settled. */
 function continuePreviewInspectorNeuralPageContextCoverage() {
   if (
+    typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused() ||
     typeof findSelectedPreviewInspectorDescriptor !== 'function' ||
     typeof previewInspectorSession.userSelectedPageCandidateId === 'string' &&
       previewInspectorSession.userSelectedPageCandidateId.length > 0 ||
@@ -994,6 +975,5 @@ function continuePreviewInspectorNeuralPageContextCoverage() {
     origin: 'neural-page-context',
   });
 }
-
 `;
 }

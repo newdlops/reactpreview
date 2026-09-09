@@ -443,7 +443,8 @@ describe('Preview Inspector neural residual runtime source', () => {
       outcome: 'committed',
       resolvedBlockerIds: [],
     });
-    expect(fixture.serialize().updates).toBe(2);
+    // This fixture has no timer: one visible sample cannot establish render stability.
+    expect(fixture.serialize().updates).toBe(1);
   });
 
   /** Keeps typed value generation outside the model and preserves the safest neutral candidate. */

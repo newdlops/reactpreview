@@ -1,5 +1,6 @@
 import { createPreviewInspectorNeuralChoicePathRuntimeSource } from './previewInspectorNeuralChoicePathRuntimeSource';
 import { createPreviewInspectorNeuralPageGenerationRuntimeSource } from './previewInspectorNeuralPageGenerationRuntimeSource';
+import { createPreviewInspectorNeuralPageChoiceScopeRuntimeSource } from './previewInspectorNeuralPageChoiceScopeRuntimeSource';
 
 /** Generates the finite user-choice handoff shared by neural assistance and Inspector chrome. */
 
@@ -98,6 +99,7 @@ function createPreviewInspectorNeuralFiniteChoiceScopeKey(node) {
 const PREVIEW_INSPECTOR_NEURAL_USER_CHOICE_LIMIT = 16;
 const PREVIEW_INSPECTOR_NEURAL_PAGE_CHOICE_LIMIT = 24;
 let previewInspectorNeuralPageChoiceElements = new Map();
+${createPreviewInspectorNeuralPageChoiceScopeRuntimeSource()}
 
 /** Creates one stable UI identity without depending on an exception message that may change. */
 function createPreviewInspectorNeuralUserChoiceIdentity(node) {
@@ -176,76 +178,13 @@ function readPreviewInspectorNeuralPageChoiceGeometry(element) {
   }
 }
 
-/** Creates a structural family so one repeated authored choice group beats unrelated page chrome. */
-function readPreviewInspectorNeuralPageChoiceFamily(element, role, inputType) {
-  const normalize = (value) => typeof value === 'string'
-    ? value.replace(/\s+/gu, ' ').trim().slice(0, 160)
-    : '';
-  const tagName = String(element?.tagName ?? 'control').toLowerCase();
-  const semanticKind = role === 'radio' || inputType === 'radio'
-    ? 'radio'
-    : role === 'option'
-      ? 'option'
-      : inputType === 'checkbox'
-        ? 'checkbox'
-        : role === 'button'
-          ? 'role-button'
-          : inputType === 'submit'
-            ? 'submit'
-            : 'button';
-  const groupName = normalize(element?.getAttribute?.('name')) ||
-    normalize(element?.getAttribute?.('aria-controls'));
-  const rawClassName = normalize(element?.getAttribute?.('class')) ||
-    normalize(typeof element?.className === 'string' ? element.className : '');
-  const className = rawClassName.split(' ').filter(Boolean).sort().join('.');
-  const familyKey = [semanticKind, tagName, groupName, className].join(':');
-  const priority = semanticKind === 'radio' || semanticKind === 'option'
-    ? 0
-    : semanticKind === 'role-button'
-      ? 1
-      : semanticKind === 'checkbox'
-        ? 2
-        : semanticKind === 'button'
-          ? 3
-          : 4;
-  return { familyKey, priority, semanticKind };
-}
-
-/** Keeps the strongest repeated option family instead of mixing in navigation and utility buttons. */
-function selectPreviewInspectorNeuralPageChoiceFamily(controls) {
-  const families = new Map();
-  for (const control of controls) {
-    const family = families.get(control.familyKey) ?? [];
-    family.push(control);
-    families.set(control.familyKey, family);
-  }
-  const repeatedFamilies = [...families.values()].filter((family) => family.length >= 2);
-  repeatedFamilies.sort((left, right) =>
-    left[0].priority - right[0].priority || right.length - left.length ||
-      right.filter((control) => control.geometry.viewportVisible).length -
-        left.filter((control) => control.geometry.viewportVisible).length ||
-      left[0].geometry.top - right[0].geometry.top);
-  if (repeatedFamilies.length > 0) return repeatedFamilies[0];
-
-  const semanticFamilies = new Map();
-  for (const control of controls) {
-    const family = semanticFamilies.get(control.semanticKind) ?? [];
-    family.push(control);
-    semanticFamilies.set(control.semanticKind, family);
-  }
-  const repeatedSemanticFamilies = [...semanticFamilies.values()].filter((family) =>
-    family.length >= 2,
-  );
-  repeatedSemanticFamilies.sort((left, right) =>
-    left[0].priority - right[0].priority || right.length - left.length ||
-      left[0].geometry.top - right[0].geometry.top);
-  return repeatedSemanticFamilies[0] ?? controls.slice(0, 1);
-}
-
-/** Lists one complete authored option family, including choices below the current viewport. */
-function readPreviewInspectorNeuralPageChoices() {
+/** Lists the complete bounded group proven to change this exact condition's local state. */
+function readPreviewInspectorNeuralPageChoices(condition) {
   const documentValue = globalThis.document;
   if (typeof documentValue?.querySelectorAll !== 'function') return [];
+  const sources = readPreviewInspectorNeuralPageChoiceSources(condition);
+  if (sources.length === 0) return [];
+  const scope = createPreviewInspectorNeuralPageChoiceScope(condition);
   const controls = [];
   const selector = [
     'button',
@@ -257,32 +196,36 @@ function readPreviewInspectorNeuralPageChoices() {
     '[role="option"]',
     '[role="radio"]',
   ].join(',');
+  let scanned = 0;
   for (const element of documentValue.querySelectorAll(selector)) {
-    if (controls.length >= PREVIEW_INSPECTOR_NEURAL_PAGE_CHOICE_LIMIT * 3) break;
+    if (++scanned > 512) return [];
+    if (!hasPreviewInspectorNeuralPageChoiceProof(element, sources)) continue;
     const geometry = readPreviewInspectorNeuralPageChoiceGeometry(element);
     const label = geometry === undefined ? '' : readPreviewInspectorNeuralPageChoiceLabel(element);
     if (label.length === 0) continue;
     const role = element?.getAttribute?.('role') ?? '';
     const inputType = String(element?.getAttribute?.('type') ?? '').toLowerCase();
-    const family = readPreviewInspectorNeuralPageChoiceFamily(element, role, inputType);
-    controls.push({ element, geometry, inputType, label, role, ...family });
+    controls.push({ element, geometry, inputType, label, role });
+    if (controls.length > PREVIEW_INSPECTOR_NEURAL_PAGE_CHOICE_LIMIT) return [];
   }
   controls.sort((left, right) =>
-    left.priority - right.priority || left.geometry.top - right.geometry.top ||
+    left.geometry.top - right.geometry.top ||
       left.geometry.left - right.geometry.left || left.label.localeCompare(right.label));
-  const selectedControls = selectPreviewInspectorNeuralPageChoiceFamily(controls);
+  const selectedControls = controls;
   const occurrenceBySignature = new Map();
-  const nextElements = new Map();
+  const nextElements = new Map([...previewInspectorNeuralPageChoiceElements].filter(
+    ([id]) => !id.startsWith('page-control:' + scope + ':'),
+  ));
   const choices = [];
   for (const control of selectedControls.slice(0, PREVIEW_INSPECTOR_NEURAL_PAGE_CHOICE_LIMIT)) {
     const tagName = String(control.element?.tagName ?? 'control').toLowerCase();
     const signature = [tagName, control.role, control.inputType, control.label].join(':');
     const occurrence = occurrenceBySignature.get(signature) ?? 0;
     occurrenceBySignature.set(signature, occurrence + 1);
-    const id = 'page-control:' + hashPreviewInspectorNeuralFiniteChoiceSignature(
+    const id = 'page-control:' + scope + ':' + hashPreviewInspectorNeuralFiniteChoiceSignature(
       signature + ':' + String(occurrence),
     );
-    nextElements.set(id, control.element);
+    nextElements.set(id, { condition, element: control.element });
     choices.push(Object.freeze({
       actionKind: 'page-control',
       description: 'Activate this page option. The viewer will bring it into view if needed.',
@@ -293,18 +236,21 @@ function readPreviewInspectorNeuralPageChoices() {
         control.element?.checked === true,
     }));
   }
+  while (nextElements.size > PREVIEW_INSPECTOR_NEURAL_USER_CHOICE_LIMIT * PREVIEW_INSPECTOR_NEURAL_PAGE_CHOICE_LIMIT) {
+    nextElements.delete(nextElements.keys().next().value);
+  }
   previewInspectorNeuralPageChoiceElements = nextElements;
   return choices;
 }
 
 /** Activates an exact page option and fails closed when the DOM changed underneath it. */
 function activatePreviewInspectorNeuralPageChoice(choiceId) {
-  let element = previewInspectorNeuralPageChoiceElements.get(choiceId);
-  if (element?.isConnected !== true) {
-    readPreviewInspectorNeuralPageChoices();
-    element = previewInspectorNeuralPageChoiceElements.get(choiceId);
-  }
-  if (element?.isConnected !== true || readPreviewInspectorNeuralPageChoiceGeometry(element) === undefined) {
+  const retained = previewInspectorNeuralPageChoiceElements.get(choiceId);
+  if (retained === undefined) return false;
+  const refreshed = readPreviewInspectorNeuralPageChoices(retained.condition);
+  const element = previewInspectorNeuralPageChoiceElements.get(choiceId)?.element;
+  if (!refreshed.some((choice) => choice.id === choiceId) ||
+      element?.isConnected !== true || readPreviewInspectorNeuralPageChoiceGeometry(element) === undefined) {
     return false;
   }
   try {
@@ -352,7 +298,8 @@ function createPreviewInspectorNeuralPropUserChoice(node) {
     : undefined;
   if (
     automaticMutation !== undefined && finiteChoiceProgress?.exhausted !== true &&
-    !successfulPathSettled
+    !successfulPathSettled &&
+    !(typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused())
   ) return undefined;
   const choiceRecords = Object.freeze(choices.map((choice) => Object.freeze({
     candidates: Object.freeze([...choice.candidates]),
@@ -385,7 +332,7 @@ function createPreviewInspectorNeuralActionUserChoice(node) {
   if (node?.blockerKind === 'render-condition') {
     const condition = node.condition ?? node.blocker;
     const requiresAuthoredState = condition?.requiresAuthoredState === true;
-    const pageChoices = requiresAuthoredState ? readPreviewInspectorNeuralPageChoices() : [];
+    const pageChoices = requiresAuthoredState ? readPreviewInspectorNeuralPageChoices(condition) : [];
     const branchChoices = !requiresAuthoredState && typeof condition?.id === 'string'
       ? [
           Object.freeze({
@@ -438,7 +385,7 @@ function createPreviewInspectorNeuralActionUserChoice(node) {
       title: requiresAuthoredState
         ? candidates.length > 0
           ? 'Choose from ' + String(candidates.length) + ' page option(s).'
-          : 'Choose an option in the rendered page to continue.'
+          : 'No page control is proven to change this condition. Use the page or open details.'
         : 'Choose which source-authored branch should stay visible.',
     });
   }
@@ -538,6 +485,8 @@ function readPreviewInspectorNeuralRetainedUserChoiceCandidates(reachability) {
 
 /** Returns every semantic choice after deterministic viewer-owned repair has no safe answer. */
 function readPreviewInspectorNeuralUserChoices(options = {}) {
+  const manualReview = typeof isPreviewInspectorNeuralAssistancePaused === 'function' &&
+    isPreviewInspectorNeuralAssistancePaused();
   if (
     options.explicitOnly === true && options.includePending !== true &&
     previewInspectorSession.neuralAssistancePending === true &&
@@ -574,8 +523,8 @@ function readPreviewInspectorNeuralUserChoices(options = {}) {
     const resolutionKind = typeof readPreviewInspectorResolutionKind === 'function'
       ? readPreviewInspectorResolutionKind(node)
       : undefined;
-    if (resolutionKind !== undefined && resolutionKind !== 'choice') continue;
-    if (options.explicitOnly === true && resolutionKind !== 'choice') continue;
+    if (!manualReview && resolutionKind !== undefined && resolutionKind !== 'choice') continue;
+    if (!manualReview && options.explicitOnly === true && resolutionKind !== 'choice') continue;
     if (
       node.blockerKind === 'target-reachability' && results.some((choice) =>
         choice.choiceKind === 'render-condition' &&
@@ -741,6 +690,9 @@ function applyPreviewInspectorNeuralActionUserChoice(choice, selection) {
 function applyPreviewInspectorNeuralUserChoices(choice, selectedIndexes, options = {}) {
   const selections = readPreviewInspectorNeuralUserChoiceSelections(choice, selectedIndexes);
   if (!Array.isArray(selections) || selections.length === 0) return false;
+  if (typeof pausePreviewInspectorNeuralAssistance === 'function') {
+    pausePreviewInspectorNeuralAssistance();
+  }
   if (
     options?.recordSelection !== false &&
     typeof recordPreviewInspectorNeuralChoicePathSelection === 'function'

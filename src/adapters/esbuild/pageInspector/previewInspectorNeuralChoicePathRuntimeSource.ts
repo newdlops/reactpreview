@@ -1,3 +1,5 @@
+import { createPreviewInspectorNeuralChoiceContextRuntimeSource } from './previewInspectorNeuralChoiceContextRuntimeSource';
+
 /** Generates the bounded page-choice graph used by the local neural path recommender. */
 
 /** Creates browser source that derives finite paths without inventing application choices. */
@@ -8,6 +10,7 @@ const PREVIEW_INSPECTOR_NEURAL_CHOICE_PATH_DEPTH_LIMIT = 12;
 const PREVIEW_INSPECTOR_NEURAL_CHOICE_PATH_STATE_LIMIT = 48;
 const PREVIEW_INSPECTOR_NEURAL_CHOICE_PATH_EDGE_LIMIT = 192;
 const PREVIEW_INSPECTOR_NEURAL_CHOICE_PATH_COMPLETED_LIMIT = 24;
+${createPreviewInspectorNeuralChoiceContextRuntimeSource()}
 
 /** Returns one stable candidate identity without retaining arbitrary project values. */
 function createPreviewInspectorNeuralChoicePathCandidateId(candidate, index) {
@@ -60,9 +63,17 @@ function readPreviewInspectorNeuralChoicePathUnits(choices) {
 }
 
 /** Snapshots only serializable finite edges so prior graph states never retain project DOM nodes. */
-function createPreviewInspectorNeuralChoicePathUnitSnapshots(units) {
+function createPreviewInspectorNeuralChoicePathUnitSnapshots(units, context) {
   return units.map((unit) => ({
+    context: readPreviewInspectorNeuralChoiceUnitContext(unit, context),
     candidates: unit.candidates.map((candidate, candidateIndex) => ({
+      actionKind: candidate !== null && typeof candidate === 'object' && typeof candidate.actionKind === 'string'
+        ? candidate.actionKind.slice(0, 80) : undefined,
+      value: candidate !== null && typeof candidate === 'object' && typeof candidate.value === 'boolean'
+        ? candidate.value : undefined,
+      current: Object.is(candidate, unit.record.currentValue) ||
+        (typeof isPreviewInspectorNeuralPageGenerationCandidateCurrent === 'function' &&
+          isPreviewInspectorNeuralPageGenerationCandidateCurrent(unit.choice, candidate)),
       candidateId: createPreviewInspectorNeuralChoicePathCandidateId(candidate, candidateIndex),
       candidateIndex,
       disabled: candidate !== null && typeof candidate === 'object' && candidate.disabled === true,
@@ -81,8 +92,10 @@ function createPreviewInspectorNeuralChoicePathUnitSnapshots(units) {
 function createPreviewInspectorNeuralChoicePathState(choices) {
   const units = readPreviewInspectorNeuralChoicePathUnits(choices);
   if (units.length === 0) return undefined;
-  const pathUnits = createPreviewInspectorNeuralChoicePathUnitSnapshots(units);
-  const signature = JSON.stringify(pathUnits.map((unit) => [
+  const context = readPreviewInspectorNeuralChoicePageContext();
+  const pathUnits = createPreviewInspectorNeuralChoicePathUnitSnapshots(units, context);
+  const signature = JSON.stringify([context.scopeKey, context.goal, pathUnits.map((unit) => [
+    unit.context,
     unit.choiceId,
     unit.choiceKind,
     unit.path,
@@ -91,9 +104,14 @@ function createPreviewInspectorNeuralChoicePathState(choices) {
       candidate.candidateId,
       candidate.label,
       candidate.selected,
+      candidate.current,
+      candidate.disabled,
+      candidate.actionKind,
+      candidate.value,
     ]),
-  ]));
+  ])]);
   return {
+    context,
     id: 'choice-state:' + hashPreviewInspectorNeuralFiniteChoiceSignature(signature),
     pathUnits,
     signature,
@@ -107,7 +125,8 @@ function initializePreviewInspectorNeuralChoicePathSearch(searchKind = 'user') {
     ? 'neuralPageGenerationChoicePathSearch'
     : 'neuralChoicePathSearch';
   let search = previewInspectorSession[stateKey];
-  if (search?.revision !== previewEntryRevision) {
+  const scopeKey = readPreviewInspectorNeuralChoicePageContext().scopeKey;
+  if (search?.revision !== previewEntryRevision || search?.scopeKey !== scopeKey) {
     search = {
       activeEdges: [],
       completedPaths: [],
@@ -116,6 +135,7 @@ function initializePreviewInspectorNeuralChoicePathSearch(searchKind = 'user') {
       nodes: new Map(),
       pending: undefined,
       revision: previewEntryRevision,
+      scopeKey,
       rootStateId: undefined,
     };
     previewInspectorSession[stateKey] = search;
@@ -170,9 +190,20 @@ function setPreviewInspectorNeuralActiveChoicePath(pathId) {
 }
 
 /** Creates one residual decision for a path using only bounded semantic features. */
-function createPreviewInspectorNeuralChoicePathDecision(path, stateId, deterministicRank) {
+function createPreviewInspectorNeuralChoicePathDecision(path, stateId, deterministicRank, rankingBatch) {
   if (typeof createPreviewInspectorNeuralResidualDecision !== 'function') return undefined;
-  return createPreviewInspectorNeuralResidualDecision({
+  const createDecision = rankingBatch?.createDecision ?? createPreviewInspectorNeuralResidualDecision;
+  const context = path.context ?? previewInspectorSession.neuralChoicePathSearch?.nodes?.get?.(stateId)?.context ??
+    previewInspectorSession.neuralPageGenerationChoicePathSearch?.nodes?.get?.(stateId)?.context ??
+    readPreviewInspectorNeuralChoicePageContext();
+  const state = previewInspectorSession.neuralChoicePathSearch?.nodes?.get?.(stateId) ??
+    previewInspectorSession.neuralPageGenerationChoicePathSearch?.nodes?.get?.(stateId);
+  const steps = path.steps.slice(-PREVIEW_INSPECTOR_NEURAL_CHOICE_PATH_DEPTH_LIMIT).map((step) => {
+    const unit = state?.pathUnits?.find((item) => item.choiceId === step.choiceId && item.path === step.path);
+    return { ...step, evidence: unit?.context ?? step.contextEvidence,
+      valueLabel: unit?.candidates?.find((item) => item.candidateId === step.candidateId)?.label ?? step.label };
+  });
+  return createDecision({
     blockerKind: 'render-condition',
     candidateId: path.id,
     holeKind: 'page-choice-path',
@@ -182,11 +213,16 @@ function createPreviewInspectorNeuralChoicePathDecision(path, stateId, determini
       pathDepth: path.steps.length,
     },
     texts: [
-      previewInspectorSession.selectedExportName,
-      globalThis.location?.pathname,
-      path.label,
+      context.route, context.rootName, context.targetName,
+      ...steps.flatMap((step) => [step.path, step.valueLabel, step.evidence?.expression, step.evidence?.failure]),
     ],
     tokens: [
+      'page-scope:' + context.scopeKey,
+      'page-goal:' + context.goal,
+      ...steps.flatMap((step) => [
+        'field:' + step.path,
+        'relation:' + String(step.evidence?.relation ?? 'source-choice'),
+      ]),
       'choice-state:' + stateId,
       ...path.steps.slice(-PREVIEW_INSPECTOR_NEURAL_CHOICE_PATH_DEPTH_LIMIT)
         .map((step) => 'choice-step:' + step.candidateId),
@@ -260,6 +296,7 @@ function observePreviewInspectorNeuralChoicePathState(
   if (currentState !== undefined) {
     const previous = search.nodes.get(currentState.id);
     search.nodes.set(currentState.id, {
+      context: currentState.context,
       id: currentState.id,
       pathUnits: currentState.pathUnits,
       signature: currentState.signature,
@@ -376,6 +413,14 @@ function enumeratePreviewInspectorNeuralChoiceCombinations(
 ) {
   const combinations = [];
   let truncated = false;
+  // Refuse a partial prefix: later source values must not disappear before model ranking.
+  const candidateCounts = pathUnits.map((unit) => unit.candidates.filter((candidate) => !candidate.disabled).length);
+  const domainSize = singleChoice
+    ? candidateCounts.reduce((total, count) => total + count, 0)
+    : candidateCounts.reduce((total, count) => Math.min(PREVIEW_INSPECTOR_NEURAL_CHOICE_PATH_LIMIT + 1, total * count), 1);
+  if (domainSize > PREVIEW_INSPECTOR_NEURAL_CHOICE_PATH_LIMIT) {
+    return { combinations: [], truncated: true };
+  }
   if (singleChoice) {
     for (const unit of pathUnits) {
       for (const candidate of unit.candidates) {
@@ -389,10 +434,6 @@ function enumeratePreviewInspectorNeuralChoiceCombinations(
           label: candidate.label,
           path: unit.path,
         }]);
-        if (combinations.length >= PREVIEW_INSPECTOR_NEURAL_CHOICE_PATH_LIMIT) {
-          truncated = true;
-          return { combinations, truncated };
-        }
       }
     }
     return { combinations, truncated };
@@ -434,6 +475,18 @@ function createPreviewInspectorNeuralChoicePathStepKey(steps) {
 function enumeratePreviewInspectorNeuralChoiceGraph(search, currentState, prefix, options = {}) {
   const paths = [];
   const pathIds = new Set();
+  // Rebuild a bounded adjacency index per traversal so later observations cannot leave stale edges.
+  const edgesByState = new Map();
+  for (const edge of search.edges.values()) {
+    const fromStateId = edge?.fromStateId;
+    if (typeof fromStateId !== 'string' || !Array.isArray(edge?.steps)) continue;
+    const byCombination = edgesByState.get(fromStateId) ?? new Map();
+    const key = createPreviewInspectorNeuralChoicePathStepKey(edge.steps);
+    const outgoing = byCombination.get(key) ?? [];
+    outgoing.push(edge);
+    byCombination.set(key, outgoing);
+    edgesByState.set(fromStateId, byCombination);
+  }
   let truncated = false;
   const appendPath = (steps, terminal = {}) => {
     if (paths.length >= PREVIEW_INSPECTOR_NEURAL_CHOICE_PATH_LIMIT) {
@@ -446,8 +499,15 @@ function enumeratePreviewInspectorNeuralChoiceGraph(search, currentState, prefix
     pathIds.add(id);
     paths.push({
       ...terminal,
+      context: currentState.context,
+      ...(options.contextual === true ? {
+        contextual: true, contextStateId: currentState.id,
+        reason: boundedSteps.filter((step) => step.current === true)
+          .map((step) => step.contextEvidence?.reason).filter(Boolean).join(' '),
+      } : {}),
       id,
-      label: boundedSteps.map((step) => step.label).join(' → '),
+      label: boundedSteps.filter((step) => options.contextual !== true || step.current === true)
+        .map((step) => step.label).join(' → '),
       steps: boundedSteps,
     });
   };
@@ -461,7 +521,9 @@ function enumeratePreviewInspectorNeuralChoiceGraph(search, currentState, prefix
       appendPath(routeSteps, { blocked: true });
       return;
     }
-    const local = enumeratePreviewInspectorNeuralChoiceCombinations(
+    const local = options.contextual === true
+      ? enumeratePreviewInspectorNeuralContextualCombinations(node.pathUnits, current)
+      : enumeratePreviewInspectorNeuralChoiceCombinations(
       node.pathUnits,
       current,
       options.singleChoice === true,
@@ -474,9 +536,12 @@ function enumeratePreviewInspectorNeuralChoiceGraph(search, currentState, prefix
         continue;
       }
       const combinationKey = createPreviewInspectorNeuralChoicePathStepKey(combination);
-      const outgoing = [...search.edges.values()].filter((edge) =>
-        edge.fromStateId === stateId && edge.steps.length === combination.length &&
-        createPreviewInspectorNeuralChoicePathStepKey(edge.steps) === combinationKey);
+      const outgoing = edgesByState.get(stateId)?.get(combinationKey) ?? [];
+      if (options.contextual === true) {
+        // Explain the next executable change, not every hypothetical continuation after it.
+        appendPath(steps, { verified: outgoing.some((edge) => edge.targetReady === true) });
+        continue;
+      }
       if (outgoing.length === 0) {
         appendPath(steps);
         continue;
@@ -530,11 +595,28 @@ function readPreviewInspectorNeuralDerivedChoicePaths(choices, options = {}) {
     observation.search,
     currentState,
     prefix,
-    { singleChoice: options.singleChoice === true },
+    { contextual: options.contextual === true, singleChoice: options.singleChoice === true },
   );
-  const ranked = enumeration.paths.map((path, deterministicRank) => {
+  if (normalizedChoices.reduce((count, choice) => count + (choice.choiceRecords?.length ?? 0), 0) >
+      PREVIEW_INSPECTOR_NEURAL_CHOICE_PATH_DEPTH_LIMIT || normalizedChoices.some((choice) =>
+      choice.choiceRecords?.some((record) => record.candidates?.length > PREVIEW_INSPECTOR_NEURAL_PAGE_CHOICE_LIMIT))) {
+    enumeration.truncated = true;
+  }
+  const candidatePaths = enumeration.truncated ? [] : enumeration.paths;
+  const rankCandidates = options.rankCandidates !== false;
+  const rankingBatch = rankCandidates && candidatePaths.length > 0 &&
+      typeof createPreviewInspectorNeuralResidualRankingBatch === 'function'
+    ? createPreviewInspectorNeuralResidualRankingBatch()
+    : undefined;
+  const ranked = candidatePaths.map((path, deterministicRank) => {
+    const decision = rankCandidates
+      ? createPreviewInspectorNeuralChoicePathDecision(path, currentState.id, deterministicRank, rankingBatch)
+      : undefined;
+    if (options.contextual === true && Number(decision?.consecutiveFailures ?? 0) > 0) {
+      path.verified = false;
+    }
     return {
-      decision: createPreviewInspectorNeuralChoicePathDecision(path, currentState.id, deterministicRank),
+      decision,
       deterministicRank,
       path,
     };
@@ -546,24 +628,47 @@ function readPreviewInspectorNeuralDerivedChoicePaths(choices, options = {}) {
       : path.blocked === true
         ? 2
         : 1;
+  const compareDecisions = rankingBatch?.compareDecisions ??
+    (typeof comparePreviewInspectorNeuralResidualDecisions === 'function'
+      ? comparePreviewInspectorNeuralResidualDecisions
+      : () => 0);
+  // Exact local failure evidence takes precedence over a generalized score within the same terminal tier.
   ranked.sort((left, right) => terminalRank(left.path) - terminalRank(right.path) ||
-    (
-      typeof comparePreviewInspectorNeuralResidualDecisions === 'function' &&
-      left.decision !== undefined && right.decision !== undefined
-        ? comparePreviewInspectorNeuralResidualDecisions(left.decision, right.decision)
-        : 0
-    ) || Number(left.decision?.consecutiveFailures ?? 0) -
+    Number(left.decision?.consecutiveFailures ?? 0) -
       Number(right.decision?.consecutiveFailures ?? 0) ||
-      left.deterministicRank - right.deterministicRank || left.path.id.localeCompare(right.path.id),
+    (left.decision !== undefined && right.decision !== undefined
+      ? compareDecisions(left.decision, right.decision)
+      : 0) ||
+    left.deterministicRank - right.deterministicRank || left.path.id.localeCompare(right.path.id),
   );
-  const paths = ranked.map((item) => item.path);
+  const paths = ranked.map((item) => {
+    item.path.failureCount = Number(item.decision?.consecutiveFailures ?? 0);
+    return item.path;
+  });
+  const best = ranked[0];
+  const decision = best?.decision;
+  const score = decision?.selectionScore ?? decision?.score;
+  const runnerScore = ranked[1]?.decision?.selectionScore ?? ranked[1]?.decision?.score;
+  const learnedRecommendation = best?.path.verified !== true &&
+    best?.path.blocked !== true && best?.path.cyclic !== true && best?.path.bounded !== true &&
+    Number(decision?.headEvidence ?? 0) >= 3 && Number(decision?.outcomeAttempts ?? 0) >= 2 &&
+    Number(decision?.consecutiveFailures ?? 0) === 0 && Number.isFinite(score) && score >= 0.65 &&
+    (ranked.length === 1 || Number.isFinite(runnerScore) && score - runnerScore >= 0.05);
+  const recommendedPath = !enumeration.truncated &&
+    (best?.path.verified === true || learnedRecommendation) ? best.path : undefined;
   return {
+    context: currentState.context,
+    contextual: options.contextual === true,
     completedPaths: [...observation.search.completedPaths],
     currentStateId: currentState.id,
     cycle: observation.search.lastCycle,
     pathCount: paths.length,
     paths,
-    recommendedPath: paths[0],
+    recommendedPath,
+    recommendationReason: options.contextual === true && paths.length === 0 && !enumeration.truncated
+      ? 'insufficient-page-context' : enumeration.truncated ? 'choice-domain-too-large' :
+      recommendedPath === undefined ? 'insufficient-evidence' :
+      best.path.verified === true ? 'verified-output' : 'repeated-positive-evidence',
     stateCount: observation.search.nodes.size,
     truncated: enumeration.truncated,
   };

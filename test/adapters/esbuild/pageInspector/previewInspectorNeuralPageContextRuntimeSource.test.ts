@@ -185,20 +185,21 @@ function createPageContextFixture(
       const requests = [];
       const health = [];
       let persistenceCount = 0;
+      const targetExportName = globalThis.__candidates[0].target.exportName;
       const descriptor = {
-        exportName: 'TaxTypeBadge',
+        exportName: targetExportName,
         sourcePath: '/workspace/components/tax-type-badge.tsx',
         inspector: {
           executablePageCandidateId: globalThis.__candidates[0].id,
           pageCandidates: globalThis.__candidates,
-          target: { exportName: 'TaxTypeBadge', sourcePath: '/workspace/components/tax-type-badge.tsx' },
+          target: { exportName: targetExportName, sourcePath: '/workspace/components/tax-type-badge.tsx' },
         },
       };
       const previewInspectorSession = {
         activeTargetReachabilityKey: undefined,
         minimumRequirementSearchByKey: new Map(),
         pendingPageCandidateId: undefined,
-        selectedExportName: 'TaxTypeBadge',
+        selectedExportName: targetExportName,
         selectedPageCandidateId: globalThis.__candidates[0].id,
         targetReachabilityByKey: new Map(),
         userSelectedPageCandidateId: '',
@@ -848,6 +849,7 @@ describe('Preview Inspector neural page-context runtime source', () => {
   it('persists verified output and restores that candidate across a fresh runtime', async () => {
     const fixture = createPageContextFixture();
     fixture.session.selectedPageCandidateId = secondCandidate.id;
+    fixture.setExecutableCandidateId(secondCandidate.id);
 
     expect(
       fixture.observe(secondCandidate, {
@@ -885,6 +887,7 @@ describe('Preview Inspector neural page-context runtime source', () => {
   it('demotes a stable page path when its output regresses to a blocker-only state', () => {
     const fixture = createPageContextFixture();
     fixture.session.selectedPageCandidateId = secondCandidate.id;
+    fixture.setExecutableCandidateId(secondCandidate.id);
 
     expect(
       fixture.observe(secondCandidate, {
@@ -923,6 +926,7 @@ describe('Preview Inspector neural page-context runtime source', () => {
     const fixture = createPageContextFixture();
     fixture.session.userSelectedPageCandidateId = secondCandidate.id;
     fixture.session.selectedPageCandidateId = secondCandidate.id;
+    fixture.setExecutableCandidateId(secondCandidate.id);
 
     expect(fixture.select()).toMatchObject({ candidate: secondCandidate, origin: 'user' });
     expect(
@@ -976,7 +980,7 @@ describe('Preview Inspector neural page-context runtime source', () => {
     expect(componentSource).toContain("'Apply page path '");
     expect(componentSource).toContain("'Apply path'");
     expect(componentSource).toContain("'Try next'");
-    expect(componentSource).toContain("'Queue path'");
+    expect(componentSource).toContain("'Use after build'");
     expect(componentSource).toContain('possibility.wrapperNames');
     expect(componentSource).toContain('possibility.callerNames');
     expect(componentSource).toContain('possibility.checking');

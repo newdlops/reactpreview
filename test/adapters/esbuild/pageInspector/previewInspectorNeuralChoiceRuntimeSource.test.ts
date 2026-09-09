@@ -49,8 +49,16 @@ function createChoiceRuntime(): ChoiceRuntime {
       const previewEntryRevision = 3;
       const previewInspectorSession = {
         automaticNeuralAssistanceByKey: new Map(),
+        deferredUiTriggerEntryRevision: previewEntryRevision,
+        deferredUiTriggerRecords: new Map([['state-target', { metadata: {
+          id: 'state-target', eventName: 'onClick', kind: 'local-state-transition',
+          invocationSafe: true, ownerName: 'Signup', sourcePath: '/src/Signup.tsx', stateName: 'target',
+        } }]]),
+        deferredUiTriggerHandlerSources: new WeakMap(),
         neuralAssistancePending: false,
       };
+      const hasPreviewInspectorDeferredUiStateToken = (condition, stateName) =>
+        condition.expression?.includes(stateName) === true;
       globalThis.innerHeight = 800;
       globalThis.innerWidth = 1200;
       globalThis.getComputedStyle = () => ({
@@ -174,9 +182,17 @@ function createChoiceRuntime(): ChoiceRuntime {
           'automatic',
         ),
         reveal: (choice) => revealPreviewInspectorNeuralUserChoice(choice),
-        setNodes: (next) => { nodes = next; },
+        setNodes: (next) => { nodes = next.map((node) => ({ ...node,
+          ...(node.condition === undefined ? {} : { condition: {
+            expression: '!target', ownerName: 'Signup', sourcePath: '/src/Signup.tsx', ...node.condition,
+          } }),
+        })); },
         setPageControls: (labels) => {
-          const createControl = (label, index, options = {}) => ({
+          const createControl = (label, index, options = {}) => {
+            const handler = () => calls.pageControls.push(label);
+            if (options.role === 'button') previewInspectorSession.deferredUiTriggerHandlerSources.set(handler, new Set(['state-target']));
+            return ({
+              __reactProps$fixture: { onClick: handler },
               checked: false,
               click: () => calls.pageControls.push(label),
               closest: () => null,
@@ -201,7 +217,7 @@ function createChoiceRuntime(): ChoiceRuntime {
               scrollIntoView: () => undefined,
               tagName: options.tagName ?? 'DIV',
               textContent: label,
-            });
+            }); };
           pageControls = [
             createControl('서비스 의견 보내기', -0.08, {
               className: 'header-feedback',
@@ -291,7 +307,8 @@ describe('Preview Inspector neural choice runtime source', () => {
     expect(runtime.derivePaths()).toMatchObject({
       pathCount: 3,
       paths: [{ label: '기업 등록' }, { label: 'VC/AC/신기사 등록' }, { label: '증권사 등록' }],
-      recommendedPath: { label: '기업 등록' },
+      recommendedPath: undefined,
+      recommendationReason: 'insufficient-evidence',
       stateCount: 1,
       truncated: false,
     });
@@ -330,7 +347,7 @@ describe('Preview Inspector neural choice runtime source', () => {
         { label: '증권사 등록' },
         { cyclic: true, label: 'VC/AC/신기사 등록 → 직접 가입' },
       ],
-      recommendedPath: { label: '기업 등록' },
+      recommendedPath: undefined,
       stateCount: 2,
     });
   });

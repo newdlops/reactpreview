@@ -54,16 +54,20 @@ export interface PreviewRouterBuildSelection {
 }
 
 /**
- * Seeds the first native build from both a cached reached graph and the current editor target.
+ * Seeds the first native build from the reached graph, or the provisional frontier on a cold build.
  * Direct router hooks are therefore wrapped on the first pass instead of compiling the same large
  * dependency graph once to discover the hook and a second time to install its MemoryRouter.
+ * Cached negative evidence outranks the broader frontier: a projected-away provider must not force
+ * the same corrective build on every revision. The current editor and final graph are still checked.
  */
 export function selectPreviewInitialRouterBuild(
   cached: PreviewRouterRequirement | undefined,
   target: PreviewRouterRequirement,
+  frontier?: PreviewRouterRequirement,
 ): PreviewRouterBuildSelection {
-  const consumesRouter = cached?.consumesRouter === true || target.consumesRouter;
-  const ownsRouter = cached?.ownsRouter === true || target.ownsRouter;
+  const reached = cached ?? frontier;
+  const consumesRouter = reached?.consumesRouter === true || target.consumesRouter;
+  const ownsRouter = reached?.ownsRouter === true || target.ownsRouter;
   return consumesRouter
     ? { automaticallyWrap: !ownsRouter, enabled: true }
     : { automaticallyWrap: false, enabled: false };

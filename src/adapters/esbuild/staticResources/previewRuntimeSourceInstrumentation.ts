@@ -17,6 +17,16 @@ import {
 } from './previewSourceReplacement';
 import { instrumentReactConditionalRendering } from './reactConditionalRendering';
 
+/** Pure probe results only: no ASTs, filesystem state, transformed source, or runtime decisions. */
+const runtimeInstrumentationProbes = new Map<
+  string,
+  { readonly sourceText: string; readonly required: boolean; readonly bytes: number }
+>();
+const MAX_RUNTIME_INSTRUMENTATION_PROBES = 128;
+const MAX_RUNTIME_INSTRUMENTATION_PROBE_BYTES = 1024 * 1024;
+const MAX_RUNTIME_INSTRUMENTATION_PROBE_SOURCE_LENGTH = 64 * 1024;
+let runtimeInstrumentationProbeBytes = 0;
+
 /** Feature switches inherited from the enclosing preview compilation request. */
 export interface PreviewRuntimeSourceInstrumentationOptions {
   /** Wraps React effects with the render-only side-effect boundary. */
@@ -43,6 +53,38 @@ export interface PreviewRuntimeSourceInstrumentationResult {
  * fails closed so native esbuild parsing cannot omit Inspector behavior.
  */
 export function mayRequirePreviewRuntimeSourceInstrumentation(
+  sourcePath: string,
+  sourceText: string,
+): boolean {
+  const cached = runtimeInstrumentationProbes.get(sourcePath);
+  if (cached?.sourceText === sourceText) return cached.required;
+  if (cached !== undefined) {
+    runtimeInstrumentationProbeBytes -= cached.bytes;
+    runtimeInstrumentationProbes.delete(sourcePath);
+  }
+  const required = inspectPreviewRuntimeSourceInstrumentation(sourcePath, sourceText);
+  const bytes = (sourcePath.length + sourceText.length) * 2;
+  if (
+    sourceText.length <= MAX_RUNTIME_INSTRUMENTATION_PROBE_SOURCE_LENGTH &&
+    bytes <= MAX_RUNTIME_INSTRUMENTATION_PROBE_BYTES
+  ) {
+    while (
+      runtimeInstrumentationProbes.size >= MAX_RUNTIME_INSTRUMENTATION_PROBES ||
+      runtimeInstrumentationProbeBytes + bytes > MAX_RUNTIME_INSTRUMENTATION_PROBE_BYTES
+    ) {
+      const oldest = runtimeInstrumentationProbes.entries().next().value;
+      if (oldest === undefined) break;
+      runtimeInstrumentationProbes.delete(oldest[0]);
+      runtimeInstrumentationProbeBytes -= oldest[1].bytes;
+    }
+    runtimeInstrumentationProbes.set(sourcePath, { bytes, required, sourceText });
+    runtimeInstrumentationProbeBytes += bytes;
+  }
+  return required;
+}
+
+/** Runs the original fail-closed proof when the exact path/text pair is not retained. */
+function inspectPreviewRuntimeSourceInstrumentation(
   sourcePath: string,
   sourceText: string,
 ): boolean {

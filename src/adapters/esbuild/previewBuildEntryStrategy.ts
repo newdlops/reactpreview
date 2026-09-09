@@ -15,9 +15,10 @@ import {
   PREVIEW_RUNTIME_ANCHOR_SPECIFIER,
 } from './previewBuildEntryPlugin';
 import type { PreviewBuildOutputSelection } from './previewBuildOutputPlanner';
+import { PREVIEW_BROWSER_OUTPUT_OPTIONS } from './previewBrowserOutputOptions';
 
 /** Versioned identity included in the compiler build plan, never derived from source bytes. */
-export const PREVIEW_BUILD_ENTRY_STRATEGY_VERSION = 1;
+export const PREVIEW_BUILD_ENTRY_STRATEGY_VERSION = 2;
 
 /** Input needed to generate one immutable entry strategy. */
 export interface PreviewBuildEntryStrategyOptions {
@@ -35,22 +36,24 @@ export interface PreviewBuildEntryStrategy {
   readonly version: number;
   readonly outputSelection: PreviewBuildOutputSelection;
   readonly plugins: readonly Plugin[];
-  readonly buildOptions:
-    | {
-        readonly entryPoints: Readonly<Record<string, string>>;
-        readonly stdin?: never;
-        readonly splitting: true;
-      }
-    | {
-        readonly entryPoints?: never;
-        readonly stdin: {
-          readonly contents: string;
-          readonly loader: 'tsx';
-          readonly resolveDir: string;
-          readonly sourcefile: string;
-        };
-        readonly splitting: false;
-      };
+  readonly buildOptions: typeof PREVIEW_BROWSER_OUTPUT_OPTIONS &
+    (
+      | {
+          readonly entryPoints: Readonly<Record<string, string>>;
+          readonly stdin?: never;
+          readonly splitting: true;
+        }
+      | {
+          readonly entryPoints?: never;
+          readonly stdin: {
+            readonly contents: string;
+            readonly loader: 'tsx';
+            readonly resolveDir: string;
+            readonly sourcefile: string;
+          };
+          readonly splitting: false;
+        }
+    );
 }
 
 /** Selects either the existing single stdin build or the package-runtime shared two-entry build. */
@@ -60,6 +63,7 @@ export function createPreviewBuildEntryStrategy(
   if (!options.sharedRuntimeChunk) {
     return {
       buildOptions: {
+        ...PREVIEW_BROWSER_OUTPUT_OPTIONS,
         splitting: false,
         stdin: {
           contents: options.entrySource,
@@ -79,6 +83,7 @@ export function createPreviewBuildEntryStrategy(
   }
   return {
     buildOptions: {
+      ...PREVIEW_BROWSER_OUTPUT_OPTIONS,
       entryPoints: {
         entry: PREVIEW_MAIN_ENTRY_SPECIFIER,
         'styled-runtime-anchor': PREVIEW_RUNTIME_ANCHOR_SPECIFIER,

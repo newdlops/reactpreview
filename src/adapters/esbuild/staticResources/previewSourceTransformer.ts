@@ -314,6 +314,11 @@ export class PreviewSourceTransformer {
             sourcePath,
             sourceText,
           ),
+          contextTypeDemand?.inferImportedHelperParameterPropertyFallback.bind(
+            contextTypeDemand,
+            sourcePath,
+            sourceText,
+          ),
         );
         replacements.push(...contextHookFallback.replacements);
         const contextRegistrations = createContextRegistrationStatements(

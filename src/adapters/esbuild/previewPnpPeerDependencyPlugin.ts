@@ -277,16 +277,19 @@ function isSyntheticReactDomCompanionRequest(
   arguments_: OnResolveArgs,
   projectRoot: string,
 ): boolean {
-  const importerDirectory = path.dirname(arguments_.importer);
-  const canonicalImporterDirectory = canonicalizeExistingPath(importerDirectory);
+  // Ordinary package edges cannot be entry-owned companions. Reject them before filesystem I/O.
+  if (
+    arguments_.namespace !== 'file' ||
+    (arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD ||
+    (arguments_.path !== 'react-dom' && arguments_.path !== 'react-dom/client') ||
+    !path.isAbsolute(arguments_.importer) ||
+    path.basename(arguments_.importer) !== PREVIEW_ENTRY_NAME
+  )
+    return false;
+  const canonicalImporterDirectory = canonicalizeExistingPath(path.dirname(arguments_.importer));
   return (
-    arguments_.namespace === 'file' &&
-    (arguments_.pluginData as unknown) !== PREVIEW_RESOLVE_GUARD &&
-    (arguments_.path === 'react-dom' || arguments_.path === 'react-dom/client') &&
-    path.isAbsolute(arguments_.importer) &&
-    path.basename(arguments_.importer) === PREVIEW_ENTRY_NAME &&
-    (canonicalImporterDirectory === projectRoot ||
-      isPathInside(projectRoot, canonicalImporterDirectory))
+    canonicalImporterDirectory === projectRoot ||
+    isPathInside(projectRoot, canonicalImporterDirectory)
   );
 }
 

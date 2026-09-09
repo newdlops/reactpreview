@@ -1779,11 +1779,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         });
         const initialRouterSelection: PreviewRouterBuildSelection = selectPreviewInitialRouterBuild(
           cachedPlan?.routerRequirement,
-          {
-            consumesRouter:
-              routerNeed.consumesRouter || adaptiveBuildSeed.routerRequirement.consumesRouter,
-            ownsRouter: routerNeed.ownsRouter || adaptiveBuildSeed.routerRequirement.ownsRouter,
-          },
+          routerNeed,
+          adaptiveBuildSeed.routerRequirement,
         );
         let fallbackBoundary = createStorybookFallbackBoundary(environment);
         activeStorybookFallbackBoundary = fallbackBoundary;

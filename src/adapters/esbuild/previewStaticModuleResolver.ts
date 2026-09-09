@@ -17,6 +17,7 @@ import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
 
 const SOURCE_EXTENSION_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
 const DECLARATION_EXTENSION_PATTERN = /\.d\.(?:cts|mts|ts)$/iu;
+const MAX_RESOLVED_SOURCE_ENTRIES = 4096;
 
 /** Immutable resolver inputs bounded by the trusted VS Code workspace. */
 export interface PreviewStaticModuleResolverOptions {
@@ -180,6 +181,7 @@ export function createPreviewStaticModuleResolver(
   const contextByConfigPath = new Map<string, PreviewStaticResolutionContext>();
   const configPathByDirectory = new Map<string, string | undefined>();
   const matchedSpecifiersByTarget = new Map<string, Set<string>>();
+  const resolvedSourceByRequest = new Map<string, string>();
   const sideEffectContractByDirectory = new Map<string, boolean>();
   const sideEffectFreeBySourcePath = new Map<string, boolean>();
   const fallbackContext = createResolutionContext(undefined, workspaceRoot);
@@ -256,8 +258,24 @@ export function createPreviewStaticModuleResolver(
     );
   }
 
-  /** Resolves one authored import with the exact compiler options selected for its source file. */
+  /** Reuses positive exact-issuer results within this request-owned resolver, with bounded storage. */
   function resolve(moduleSpecifier: string, consumerPath: string): string | undefined {
+    const cacheKey = JSON.stringify([consumerPath, moduleSpecifier]);
+    const cached = resolvedSourceByRequest.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const resolved = resolveUncached(moduleSpecifier, consumerPath);
+    if (resolved !== undefined) {
+      if (resolvedSourceByRequest.size >= MAX_RESOLVED_SOURCE_ENTRIES) {
+        const oldest = resolvedSourceByRequest.keys().next().value;
+        if (oldest !== undefined) resolvedSourceByRequest.delete(oldest);
+      }
+      resolvedSourceByRequest.set(cacheKey, resolved);
+    }
+    return resolved;
+  }
+
+  /** Resolves one authored import with the exact compiler options selected for its source file. */
+  function resolveUncached(moduleSpecifier: string, consumerPath: string): string | undefined {
     const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0];
     if (cleanSpecifier === undefined || cleanSpecifier.length === 0) {
       return undefined;

@@ -679,8 +679,9 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/ProfilePage.tsx', source),
     );
 
-    expect(transformed).toContain('"data": Object.freeze({ "genres": Object.freeze([]) })');
-    expect(transformed).toContain('"requiredPaths":["data","data.genres.map()"]');
+    expect(transformed).toContain('"data": Object.freeze({ "genres": ((__createPreviewItem)');
+    expect(transformed).toContain('() => ("genre")');
+    expect(transformed).toContain('"requiredPaths":["data","data.genres.map()","data.genres[]"]');
   });
 
   /** Refuses memo callbacks that execute project code instead of returning an identity projection. */

@@ -49,11 +49,14 @@ export function canPassThroughPreviewDependency(
   ) {
     return false;
   }
+  if (requiresPreviewDependencyCompatibility(sourceText, options.projectUsesNextRuntime)) {
+    return false;
+  }
   if (
     options.instrumentRenderConditions === true &&
     mayRequirePreviewRuntimeSourceInstrumentation(sourcePath, sourceText)
   ) {
     return false;
   }
-  return !requiresPreviewDependencyCompatibility(sourceText, options.projectUsesNextRuntime);
+  return true;
 }

@@ -14,6 +14,7 @@ import {
   type PreviewGlobalPackageBridgePlan,
 } from './globalPackageBridge';
 import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
+import { PREVIEW_BROWSER_OUTPUT_OPTIONS } from './previewBrowserOutputOptions';
 
 interface PreviewVendorDemand {
   readonly namedExports: readonly string[];
@@ -23,7 +24,7 @@ interface PreviewVendorDemand {
 }
 
 /** Invalidates persisted vendor outputs whenever the browser-module closure contract changes. */
-const PREVIEW_VENDOR_BUILD_SCHEMA = 6;
+const PREVIEW_VENDOR_BUILD_SCHEMA = 7;
 
 export interface PreviewVendorBuildOutput {
   readonly chunks: readonly PreviewBundleChunk[];
@@ -315,6 +316,7 @@ async function buildVendorOutput(
   );
   const outdir = path.resolve(options.workspaceRoot, 'react-preview-vendor-output');
   const result = await build({
+    ...PREVIEW_BROWSER_OUTPUT_OPTIONS,
     absWorkingDir: options.workspaceRoot,
     bundle: true,
     chunkNames: 'chunks/vendor/shared/[hash]',

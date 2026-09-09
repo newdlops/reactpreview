@@ -184,6 +184,9 @@ export function readPreviewRuntimeHookAliasUsagePaths(
   resolveImportedCollectionCallbackItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
   externallyProvenCollectionPaths?: ReadonlySet<string>,
   includeRootUsages = false,
+  inferCollectionItem?: (
+    access: ts.PropertyAccessExpression,
+  ) => PreviewRuntimeHookImportedHelperItemFallback | undefined,
 ): readonly PreviewRuntimeHookAliasUsagePath[] {
   const declarations = collectOwnerConstDeclarations(owner);
   const bindingCounts = countBindingNames(declarations);
@@ -244,11 +247,15 @@ export function readPreviewRuntimeHookAliasUsagePaths(
             identifier.text,
             identifier.getStart(),
             provenCollectionPaths,
+            inferCollectionItem,
           );
           if (usage === undefined) continue;
           const terminalKind =
             usage.collectionProperty ?? usage.stringProperty ?? (usage.called ? 'call' : 'value');
-          usages.set(`${usage.names.join('.')}\0${terminalKind}`, usage);
+          // Let the shared usage tree merge distinct callback readers instead of keeping only the last.
+          const occurrence =
+            usage.collectionItemExpression === undefined ? '' : `\0${String(node.pos)}`;
+          usages.set(`${usage.names.join('.')}\0${terminalKind}${occurrence}`, usage);
         }
       }
     }
@@ -878,6 +885,9 @@ function normalizeAliasUsage(
   rootName: string,
   availableBeforePosition: number,
   provenCollectionPaths: ReadonlySet<string>,
+  inferCollectionItem?: (
+    access: ts.PropertyAccessExpression,
+  ) => PreviewRuntimeHookImportedHelperItemFallback | undefined,
 ): PreviewRuntimeHookAliasUsagePath | undefined {
   if (names.length === 0 || names.length > 12) return undefined;
   const terminal = names.at(-1);
@@ -896,6 +906,16 @@ function normalizeAliasUsage(
   const collectionLengthRequiresItem =
     terminal === 'length' &&
     inferPreviewRuntimeHookCollectionLengthGuardPassValue(expression) === true;
+  // Alias receivers must preserve the same callback/helper item evidence as direct hook reads.
+  const item =
+    membershipItem ??
+    (called && collection ? inferCollectionItem?.(expression) : undefined) ??
+    (collectionLengthRequiresItem
+      ? {
+          expression: 'Object.freeze({ id: "preview-id", name: "name" })',
+          requiredPaths: ['id', 'name'],
+        }
+      : undefined);
   const stringReceiver =
     called &&
     isPreviewRuntimeHookStringUsageProperty(terminal) &&
@@ -917,14 +937,11 @@ function normalizeAliasUsage(
     : undefined;
   return Object.freeze({
     called: !collection && !stringReceiver && called,
-    ...(membershipItem === undefined && !collectionLengthRequiresItem
+    ...(item === undefined
       ? {}
       : {
-          collectionItemExpression:
-            membershipItem?.expression ?? 'Object.freeze({ id: "preview-id", name: "name" })',
-          collectionItemRequiredPaths: Object.freeze([
-            ...(membershipItem?.requiredPaths ?? ['id', 'name']),
-          ]),
+          collectionItemExpression: item.expression,
+          collectionItemRequiredPaths: Object.freeze([...(item.requiredPaths ?? [])]),
         }),
     ...(collection && terminal !== undefined ? { collectionProperty: terminal } : {}),
     names: Object.freeze(collection || stringReceiver ? names.slice(0, -1) : [...names]),

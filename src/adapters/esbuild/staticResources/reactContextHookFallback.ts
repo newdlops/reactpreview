@@ -11,7 +11,10 @@ import ts from 'typescript';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 import { createPreviewRuntimeCallableFallbackExpression } from './previewRuntimeCallableFallback';
 import { inferPreviewRuntimeHookMembershipItemFallback } from './previewRuntimeHookMembershipItem';
-import { createPreviewGeneratedListExpression } from './previewRuntimeHookUsageTree';
+import {
+  createPreviewGeneratedListExpression,
+  mergePreviewRuntimeHookCollectionItemExpressions,
+} from './previewRuntimeHookUsageTree';
 import { inferPreviewRuntimeHookAssignmentGuardPassFallback } from './previewRuntimeHookGuardValue';
 import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHookLocalScalarDemand';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
@@ -27,6 +30,7 @@ import type {
   PreviewRuntimeHookImportedHelperItemFallback,
   ResolvePreviewRuntimeHookImportedHelperItemFallback,
   ResolvePreviewRuntimeHookImportedHelperParameterFallback,
+  ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
 } from './previewRuntimeHookAliasUsage';
 import { inferPreviewRuntimeArrayItemFallback } from './previewRuntimeHookInstrumentation';
 
@@ -118,6 +122,8 @@ interface HookFallbackPlan {
   required: boolean;
   /** Exact scalar paths required to avoid an authored exhaustive throw. */
   readonly renderGuardPaths: Set<string>;
+  /** Exact imported helper object-property contracts for inline collection callbacks. */
+  readonly resolveImportedHelperProperty?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback;
   /** Root plain-object shape serialized only after all evidence is collected. */
   readonly shape: FallbackShape;
   /** Unique materialized paths used to enforce the inference budget. */
@@ -170,6 +176,7 @@ export function createReactContextHookFallbackTransform(
   sourceText: string,
   resolveImportedCollectionCallbackItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
   resolveImportedHelperParameter?: ResolvePreviewRuntimeHookImportedHelperParameterFallback,
+  resolveImportedHelperProperty?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
 ): ReactContextHookFallbackTransform {
   if (!isProjectRuntimeSource(sourcePath) || !sourceText.includes('Context')) {
     return EMPTY_TRANSFORM;
@@ -210,7 +217,7 @@ export function createReactContextHookFallbackTransform(
   const replacements: ReactContextHookFallbackReplacement[] = [];
 
   for (const candidate of candidates) {
-    const plan = createFallbackPlan(candidate);
+    const plan = createFallbackPlan(candidate, resolveImportedHelperProperty);
     analyzeCandidateScope(
       candidate.owner,
       new Map(),
@@ -490,9 +497,13 @@ function isRuntimeFunction(node: ts.Node): node is RuntimeFunction {
 }
 
 /** Creates the mutable bounded evidence state for one candidate hook call. */
-function createFallbackPlan(candidate: HookCandidate): HookFallbackPlan {
+function createFallbackPlan(
+  candidate: HookCandidate,
+  resolveImportedHelperProperty?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
+): HookFallbackPlan {
   return {
     candidate,
+    ...(resolveImportedHelperProperty === undefined ? {} : { resolveImportedHelperProperty }),
     invalid: false,
     optionalBasePaths: new Map(),
     required: false,
@@ -902,7 +913,11 @@ function inspectCallExpression(
           : collectionMethod !== undefined &&
               COLLECTION_ITEM_CALLBACK_METHODS.has(collectionMethod) &&
               ts.isPropertyAccessExpression(propertyAccess)
-            ? inferPreviewRuntimeArrayItemFallback(propertyAccess, call.getSourceFile())
+            ? inferPreviewRuntimeArrayItemFallback(
+                propertyAccess,
+                call.getSourceFile(),
+                plan.resolveImportedHelperProperty,
+              )
             : undefined;
       const collectionItem = membershipItem ?? callbackItem;
       for (const { receiverPath } of collectionPaths) {
@@ -1435,13 +1450,15 @@ function addCollectionLeaf(
         }
         child.collectionExactItemExpressions = expressions;
       }
-      if (
-        item !== undefined &&
-        (child.collectionItemExpression === undefined ||
-          (item.requiredPaths?.length ?? 0) > (child.collectionItemRequiredPaths?.length ?? 0))
-      ) {
-        child.collectionItemExpression = item.expression;
-        child.collectionItemRequiredPaths = Object.freeze([...(item.requiredPaths ?? [])]);
+      if (item !== undefined) {
+        child.collectionItemExpression =
+          mergePreviewRuntimeHookCollectionItemExpressions(
+            child.collectionItemExpression,
+            item.expression,
+          ) ?? item.expression;
+        child.collectionItemRequiredPaths = Object.freeze([
+          ...new Set([...(child.collectionItemRequiredPaths ?? []), ...(item.requiredPaths ?? [])]),
+        ]);
       }
       return true;
     }

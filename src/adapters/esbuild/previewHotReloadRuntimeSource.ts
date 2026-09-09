@@ -9,8 +9,8 @@
  * Creates JavaScript interpolated into the generated preview entry.
  *
  * The returned source expects `mountNode`, `showRuntimeError`, and the progress helpers from the
- * surrounding entry. It defines `previewHotRuntime`, `previewEntryRevision`, and runtime handshake
- * values consumed by the later React bootstrap source.
+ * surrounding entry. It defines `previewHotRuntime`, the entry revision and explicit hot-reload
+ * identity, and runtime handshake values consumed by the later React bootstrap source.
  *
  * @param progressRuntimeSource Generated Shadow DOM progress protocol placed inside the coordinator.
  * @returns Self-contained browser JavaScript for secure, revision-aware hot replacement.
@@ -43,11 +43,18 @@ function createPreviewHotRuntime() {
 const previewHotRuntime =
   globalThis[PREVIEW_HOT_RUNTIME_KEY] ?? createPreviewHotRuntime();
 globalThis[PREVIEW_HOT_RUNTIME_KEY] = previewHotRuntime;
-const previewEntryRevision = Number.isSafeInteger(previewHotRuntime.activeReloadRevision)
-  ? previewHotRuntime.activeReloadRevision
-  : 0;
-const previewRuntimeToken = mountNode.dataset?.reactPreviewRuntimeToken;
 const previewRuntimeRevisionValue = Number(mountNode.dataset?.reactPreviewRuntimeRevision);
+const previewMountRevision =
+  Number.isSafeInteger(previewRuntimeRevisionValue) && previewRuntimeRevisionValue >= 0
+    ? previewRuntimeRevisionValue
+    : 0;
+// Cold entries share the host's mount revision; replacement entries keep their prepared revision.
+const previewEntryIsHotReload = Number.isSafeInteger(previewHotRuntime.activeReloadRevision) &&
+  previewHotRuntime.activeReloadRevision >= 0;
+const previewEntryRevision = previewEntryIsHotReload
+  ? previewHotRuntime.activeReloadRevision
+  : previewMountRevision;
+const previewRuntimeToken = mountNode.dataset?.reactPreviewRuntimeToken;
 const previewRuntimeRevision =
   Number.isSafeInteger(previewRuntimeRevisionValue) && previewRuntimeRevisionValue >= 0
     ? previewRuntimeRevisionValue

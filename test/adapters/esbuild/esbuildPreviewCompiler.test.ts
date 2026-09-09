@@ -375,7 +375,7 @@ describe('EsbuildPreviewCompiler', () => {
       });
       const javascript = decodeBundleJavascript(bundle);
 
-      expect(javascript).toContain('AUTOMATIC_ROUTER_BOUNDARY_ENABLED = true');
+      expect(javascript).toMatch(/AUTOMATIC_ROUTER_BOUNDARY_ENABLED\s*=\s*true/u);
       expect(javascript).toContain('active: graph-required MemoryRouter');
       expect(javascript).not.toContain(
         'not requested: no unowned target-reachable React Router consumer was detected',
@@ -438,7 +438,7 @@ describe('EsbuildPreviewCompiler', () => {
       expect(javascript).toContain(
         'not applied: an existing target-reachable Router provider was detected',
       );
-      expect(javascript).toContain('AUTOMATIC_ROUTER_BOUNDARY_ENABLED = false');
+      expect(javascript).toMatch(/AUTOMATIC_ROUTER_BOUNDARY_ENABLED\s*=\s*false/u);
       expect(bundle.dependencies).toContain(setupPath);
     } finally {
       await rm(temporaryDirectory, { force: true, recursive: true });

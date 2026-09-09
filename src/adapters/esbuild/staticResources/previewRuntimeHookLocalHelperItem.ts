@@ -44,6 +44,8 @@ export interface PreviewRuntimeLocalHelperArgumentDemand extends PreviewRuntimeL
 
 const MAX_LOCAL_HELPER_STATES = 16;
 const ITEM_RESULT_COLLECTION_METHODS = new Set(['find', 'findLast']);
+/** Parser trees are immutable; weak ownership releases indexes with their compilation ASTs. */
+const localFunctionsBySource = new WeakMap<ts.SourceFile, ReadonlyMap<string, RuntimeFunction>>();
 
 /**
  * Infers an array callback item and follows exact item arguments into local helper parameters.
@@ -188,6 +190,8 @@ export function collectPreviewRuntimeLocalHelperArgumentDemands(
 function collectUniqueLocalRuntimeFunctions(
   sourceFile: ts.SourceFile,
 ): ReadonlyMap<string, RuntimeFunction> {
+  const cached = localFunctionsBySource.get(sourceFile);
+  if (cached !== undefined) return cached;
   const candidates = new Map<string, RuntimeFunction[]>();
   const visit = (node: ts.Node): void => {
     if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
@@ -205,7 +209,7 @@ function collectUniqueLocalRuntimeFunctions(
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return new Map(
+  const declarations = new Map(
     [...candidates]
       .filter(([, functions]) => functions.length === 1)
       .flatMap(([name, functions]) => {
@@ -213,6 +217,8 @@ function collectUniqueLocalRuntimeFunctions(
         return declaration === undefined ? [] : ([[name, declaration]] as const);
       }),
   );
+  localFunctionsBySource.set(sourceFile, declarations);
+  return declarations;
 }
 
 /** Creates a stable parser-tree identity for one helper parameter without semantic resolution. */

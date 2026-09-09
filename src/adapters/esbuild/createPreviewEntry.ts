@@ -292,7 +292,7 @@ function showRuntimeError(error, runtimeContext = {}) {
   const retainsMountedRevision =
     !forceReplace &&
     (previewCommitCompleted ||
-      (previewEntryRevision > 0 &&
+      (previewEntryIsHotReload &&
         !previewActivationStarted &&
         previewHotRuntime.root !== undefined));
   if (retainsMountedRevision) {
@@ -870,7 +870,7 @@ function completePreviewCommit(outcome = 'ready', error) {
     console.warn('React Preview could not retire stale lazy stylesheets.', error);
   }
   resolvePreviewCommit(outcome);
-  if (previewEntryRevision > 0) {
+  if (previewEntryIsHotReload) {
     return;
   }
   try {
@@ -915,12 +915,12 @@ const preparedPreviewEntry = {
   },
 };
 previewHotRuntime.preparedEntry = preparedPreviewEntry;
-const previewBootstrapPromise = previewEntryRevision === 0
+const previewBootstrapPromise = !previewEntryIsHotReload
   ? preparedPreviewEntry.activate()
   : previewPreparationPromise;
 previewHotRuntime.bootstrapPromise = previewBootstrapPromise;
 void previewBootstrapPromise.catch((error) => {
-  if (previewEntryRevision === 0) {
+  if (!previewEntryIsHotReload) {
     showRuntimeError(error);
   }
 });

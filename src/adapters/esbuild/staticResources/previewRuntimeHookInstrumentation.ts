@@ -1238,6 +1238,8 @@ function createIdentifierUsageFallback(
       importedHelperPropertyFallbackBySourceFile.get(identifier.getSourceFile()),
       importedCollectionCallbackItemFallbackBySourceFile.get(identifier.getSourceFile()),
       childProvenCollectionPaths,
+      false,
+      (access) => inferPreviewRuntimeArrayItemFallback(access, identifier.getSourceFile()),
     ),
   );
   /*
@@ -1437,11 +1439,31 @@ function forEachBindingInRuntimeFunction(
   visit(scope);
 }
 
-/** Infers the first array-callback parameter from the fields actually read inside that callback. */
+/** Infers callback fields with imported-helper evidence scoped to this synchronous parser pass. */
 export const inferPreviewRuntimeArrayItemFallback = (
   propertyAccess: ts.PropertyAccessExpression,
   sourceFile: ts.SourceFile,
+  importedHelperPropertyFallback?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
 ): PreviewRuntimeLocalHelperItemFallback | undefined => {
+  if (importedHelperPropertyFallback === undefined) {
+    return inferRuntimeArrayItemFallback(propertyAccess, sourceFile);
+  }
+  const previousResolver = importedHelperPropertyFallbackBySourceFile.get(sourceFile);
+  importedHelperPropertyFallbackBySourceFile.set(sourceFile, importedHelperPropertyFallback);
+  try {
+    return inferRuntimeArrayItemFallback(propertyAccess, sourceFile);
+  } finally {
+    if (previousResolver === undefined)
+      importedHelperPropertyFallbackBySourceFile.delete(sourceFile);
+    else importedHelperPropertyFallbackBySourceFile.set(sourceFile, previousResolver);
+  }
+};
+
+/** Reads item requirements from the callback and any identity-preserving chain into reduce. */
+function inferRuntimeArrayItemFallback(
+  propertyAccess: ts.PropertyAccessExpression,
+  sourceFile: ts.SourceFile,
+): PreviewRuntimeLocalHelperItemFallback | undefined {
   const primary = inferPreviewRuntimeLocalHelperArrayItemFallback(
     propertyAccess,
     sourceFile,
@@ -1479,7 +1501,7 @@ export const inferPreviewRuntimeArrayItemFallback = (
       ...new Set([...(primary.requiredPaths ?? []), ...(item.requiredPaths ?? [])]),
     ]),
   };
-};
+}
 
 /** Follows only identity-preserving Array operations from one reached receiver into `reduce`. */
 function findPreviewRuntimeIdentityChainedReduce(

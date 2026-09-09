@@ -6,6 +6,7 @@
 import { createPreviewInspectorCompanionPaneResizeScript } from './previewInspectorCompanionPaneResizeScript';
 import { createPreviewInspectorCompanionInnerResizeScript } from './previewInspectorCompanionInnerResizeScript';
 import { createPreviewInspectorCompanionScrollScript } from './previewInspectorCompanionScrollScript';
+import { createPreviewInspectorChoiceFocusScript } from './previewInspectorChoiceFocusScript';
 
 /** Complete state needed to render one independently reloadable Inspector companion document. */
 export interface PreviewInspectorCompanionHtmlOptions {
@@ -72,17 +73,23 @@ export function createPreviewInspectorCompanionHtml(
       const vscode = acquireVsCodeApi();
       const mirror = document.getElementById('react-preview-inspector-mirror');
       const status = document.getElementById('react-preview-inspector-status');
-      // ARTICLE and HEADER are inert Inspector layout boundaries. Removing either wrapper would
-      // promote its children into a parent grid and change row sizing even though no script or
-      // resource capability was present, so they are retained under the same attribute filter.
+      // Preserve inert layout, table and form-group semantics. Flattening these elements changes
+      // the Inspector hierarchy; executable tags and resource attributes remain disallowed.
       const allowedTags = new Set([
         'ARTICLE', 'ASIDE', 'BUTTON', 'CODE', 'DETAILS', 'DIV', 'HEADER', 'INPUT',
         'LABEL', 'LI', 'OL', 'OPTION', 'P', 'PRE', 'SECTION', 'SELECT', 'SPAN',
-        'STRONG', 'SUMMARY', 'TEXTAREA', 'UL'
+        'STRONG', 'SUMMARY', 'TEXTAREA', 'UL', 'FIELDSET', 'LEGEND',
+        'TABLE', 'CAPTION', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD', 'COLGROUP', 'COL'
       ]);
       const simpleAttributes = new Set([
         'checked', 'class', 'disabled', 'hidden', 'id', 'open', 'placeholder', 'readonly', 'role',
-        'selected', 'spellcheck', 'tabindex', 'title', 'type', 'value'
+        'selected', 'spellcheck', 'tabindex', 'title', 'type', 'value', 'scope', 'colspan', 'rowspan'
+      ]);
+      // These exact attributes carry presentation state only, never scripts or resource locations.
+      const visualStateAttributes = new Set([
+        'data-phase', 'data-status-kind', 'data-state', 'data-path-status', 'data-role',
+        'data-enabled', 'data-reached', 'data-pending', 'data-lineage-blocked',
+        'data-recommended', 'data-selected'
       ]);
       const navigationKeys = new Set([
         ' ', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'End', 'Enter', 'Home'
@@ -104,7 +111,7 @@ export function createPreviewInspectorCompanionHtml(
           }
           for (const attribute of [...element.attributes]) {
             const name = attribute.name.toLowerCase();
-            const retained = simpleAttributes.has(name) || name.startsWith('aria-') ||
+            const retained = simpleAttributes.has(name) || visualStateAttributes.has(name) || name.startsWith('aria-') ||
               name.startsWith('data-rpi-') || name.startsWith('data-react-preview-');
             if (!retained) element.removeAttribute(attribute.name);
           }
@@ -143,7 +150,7 @@ export function createPreviewInspectorCompanionHtml(
           // Wrapped controls may consume nearly the whole editor height on a compact display. A
           // bounded workbench floor keeps the active section visible and lets the shell itself
           // scroll when the toolbar, context, and workbench cannot all fit in one viewport.
-          '.rpi-workbench{min-height:0!important;overflow:hidden!important}',
+          '.rpi-workbench{min-height:160px!important;overflow:hidden!important}',
           '.rpi-workbench[data-rpi-pane-axis="columns"]{grid-template-columns:',
           'minmax(0,var(--rpi-pane-first-size,52%)) 9px minmax(0,1fr)!important;',
           'grid-template-rows:minmax(0,1fr)!important}',
@@ -167,6 +174,7 @@ export function createPreviewInspectorCompanionHtml(
           '.rpi-tree-scroll,.rpi-detail-scroll,.rpi-console-list,.rpi-json{overflow-anchor:none!important}',
           '.rpi-wireframe-layer,.rpi-resize-handle,.rpi-move-handle{display:none!important}',
           '.rpi-toolbar select[aria-label="Inspector position"]{display:none!important}',
+          '.rpi-toolbar-placement{display:none!important}',
           '.rpi-toolbar button[title="Collapse inspector"],',
           '.rpi-toolbar button[title="Expand inspector"]{display:none!important}'
         ].join('');
@@ -226,9 +234,13 @@ export function createPreviewInspectorCompanionHtml(
         }
       }
 
+      ${createPreviewInspectorChoiceFocusScript()}
+
       /** Focuses ranked inference evidence while moving only the bounded Inspector viewports. */
       function revealCompanionInferenceEvidence(contextReveal) {
         if (contextReveal !== 'neural-inference') return;
+        const pageOptions = mirror.querySelector('.rpi-page-options');
+        if (pageOptions !== null) pageOptions.open = true;
         const evidence = mirror.querySelector('.rpi-page-paths');
         const contextViewport = evidence?.closest?.('.rpi-page-context');
         const shellViewport = evidence?.closest?.('.rpi-shell');
@@ -286,6 +298,8 @@ export function createPreviewInspectorCompanionHtml(
             ? () => revealCompanionTreeRow(message.treeReveal)
             : message.contextReveal === 'neural-inference'
               ? () => revealCompanionInferenceEvidence(message.contextReveal)
+              : message.contextReveal === 'neural-choices'
+                ? () => focusPreviewInspectorChoiceControls(mirror)
               : undefined
         );
       }
@@ -356,7 +370,29 @@ export function createPreviewInspectorCompanionHtml(
         );
         persistPreviewInspectorCompanionInnerState();
         revealCompanionInferenceEvidence('neural-inference');
+        postControlEvent(control, 'click');
         return true;
+      }
+
+      /** Opens the local option list immediately without waiting for the source snapshot. */
+      function activateCompanionChoiceReview(control) {
+        if (control.getAttribute('aria-controls') !== 'rpi-neural-choice-list' ||
+            !focusPreviewInspectorChoiceControls(mirror)) return false;
+        postControlEvent(control, 'click');
+        return true;
+      }
+
+      /** Mirrors roving tab focus locally so the next snapshot cannot restore the previous tab. */
+      function focusCompanionAdjacentTab(control, key) {
+        if (control.getAttribute('role') !== 'tab' ||
+          !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
+        const tablist = control.closest('[role="tablist"]');
+        const tabs = [...(tablist?.querySelectorAll('[role="tab"]') ?? [])];
+        const index = tabs.indexOf(control);
+        if (index < 0 || tabs.length === 0) return;
+        const next = key === 'Home' ? 0 : key === 'End' ? tabs.length - 1
+          : (index + (key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+        tabs[next]?.focus({ preventScroll: true });
       }
 
       mirror.addEventListener('click', (event) => {
@@ -378,6 +414,7 @@ export function createPreviewInspectorCompanionHtml(
           if (opened) return;
         }
         if (activateCompanionInferenceReview(control)) return;
+        if (activateCompanionChoiceReview(control)) return;
         postControlEvent(control, 'click');
       });
       mirror.addEventListener('dblclick', (event) => {
@@ -401,12 +438,14 @@ export function createPreviewInspectorCompanionHtml(
         const control = findRemoteControl(event);
         if (control === null || control.matches('input,textarea,select')) return;
         event.preventDefault();
-        if (control.matches('button') && (event.key === 'Enter' || event.key === ' ')) {
+        if (control.matches('button,summary') && (event.key === 'Enter' || event.key === ' ')) {
           if (activateCompanionInferenceReview(control)) return;
+          if (activateCompanionChoiceReview(control)) return;
           postControlEvent(control, 'click');
           return;
         }
         postControlEvent(control, 'keydown', event.key);
+        focusCompanionAdjacentTab(control, event.key);
       });
       window.addEventListener('message', (event) => {
         const message = event.data;

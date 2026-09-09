@@ -106,8 +106,8 @@ function readPreviewInspectorCompanionTreeReveal(clone) {
 /** Resolves an explicit region reveal only after that region exists in the inert clone. */
 function readPreviewInspectorCompanionContextReveal(clone) {
   const request = previewInspectorCompanionState.pendingContextReveal;
-  if (request !== 'neural-inference') return undefined;
-  const evidence = clone.querySelector?.('.rpi-page-paths');
+  if (request !== 'neural-inference' && request !== 'neural-choices') return undefined;
+  const evidence = clone.querySelector?.(request === 'neural-choices' ? '#rpi-neural-choice-list' : '.rpi-page-paths');
   return evidence === null || evidence === undefined ? undefined : request;
 }
 
@@ -181,7 +181,7 @@ function schedulePreviewInspectorCompanionSnapshot() {
 
 /** Publishes one explicit focus request without coupling it to a project-runtime rerender. */
 function requestPreviewInspectorCompanionContextReveal(contextReveal) {
-  if (contextReveal !== 'neural-inference') return false;
+  if (contextReveal !== 'neural-inference' && contextReveal !== 'neural-choices') return false;
   previewInspectorCompanionState.pendingContextReveal = contextReveal;
   schedulePreviewInspectorCompanionSnapshot();
   return true;

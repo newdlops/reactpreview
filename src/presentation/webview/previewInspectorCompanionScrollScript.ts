@@ -31,6 +31,7 @@ const PREVIEW_INSPECTOR_COMPANION_SCROLL_SETTLE_MS =
 const previewInspectorCompanionScrollFallbackRegions = Object.freeze([
   ['.rpi-shell', 'inspector-shell'],
   ['.rpi-toolbar', 'inspector-toolbar'],
+  ['.rpi-neural-choice-scroll', 'neural-choice-options'],
   ['.rpi-page-context', 'page-context'],
   ['.rpi-route-browser', 'route-browser'],
   ['.rpi-navigation-tabs', 'workbench-tabs'],

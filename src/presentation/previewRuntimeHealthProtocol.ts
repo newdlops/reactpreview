@@ -20,9 +20,22 @@ const HEALTH_JSON_NODE_LIMIT = 512;
 const HEALTH_JSON_CHARACTER_LIMIT = 64 * 1024;
 const HEALTH_BLOCKED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const HEALTH_EVENTS = new Set<PreviewRuntimeHealthEventKind>([
+  'automatic-condition-rolled-back',
+  'automatic-resolution-rolled-back',
   'graphql-interpolation-repaired',
+  'neural-assistance-requested',
+  'neural-residual-corrected',
+  'neural-residual-data-flow-trained',
+  'neural-residual-selected',
+  'neural-residual-shared',
+  'neural-residual-trained',
+  'neural-page-context-failed',
+  'neural-page-context-verified',
+  'neural-page-execution-context-rejected',
+  'neural-page-execution-context-verified',
   'page-composition-snapshot',
   'page-context-selected',
+  'page-execution-preparation-stopped',
   'render-attempt-started',
   'render-attempt-settled',
   'runtime-effect-isolated',
@@ -40,9 +53,22 @@ const HEALTH_SEVERITIES = new Set<PreviewRuntimeHealthSeverity>(['error', 'info'
 
 /** Renderer mechanisms and correlated outcomes admitted by the live health stream. */
 export type PreviewRuntimeHealthEventKind =
+  | 'automatic-condition-rolled-back'
+  | 'automatic-resolution-rolled-back'
   | 'graphql-interpolation-repaired'
+  | 'neural-assistance-requested'
+  | 'neural-residual-corrected'
+  | 'neural-residual-data-flow-trained'
+  | 'neural-residual-selected'
+  | 'neural-residual-shared'
+  | 'neural-residual-trained'
+  | 'neural-page-context-failed'
+  | 'neural-page-context-verified'
+  | 'neural-page-execution-context-rejected'
+  | 'neural-page-execution-context-verified'
   | 'page-composition-snapshot'
   | 'page-context-selected'
+  | 'page-execution-preparation-stopped'
   | 'render-attempt-started'
   | 'render-attempt-settled'
   | 'runtime-effect-isolated'

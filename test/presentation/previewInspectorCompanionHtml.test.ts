@@ -1,9 +1,40 @@
 /** Verifies that the dedicated Inspector tab remains inert and forwards only bounded controls. */
-import { Script } from 'node:vm';
+import { runInNewContext, Script } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorCompanionHtml } from '../../src/presentation/webview/previewInspectorCompanionHtml';
 
 describe('Preview Inspector companion HTML', () => {
+  /** Keeps consecutive arrow-key selections aligned with the visible tab's actual focus. */
+  it.each([
+    ['ArrowRight', 1, 2],
+    ['ArrowRight', 2, 0],
+    ['ArrowLeft', 0, 2],
+    ['Home', 2, 0],
+    ['End', 0, 2],
+  ] as const)('mirrors %s from tab %s to tab %s without document scrolling', (key, from, to) => {
+    const html = createPreviewInspectorCompanionHtml({
+      cspSource: 'vscode-webview://inspector-test',
+      documentName: 'Keyboard.tsx',
+      nonce: 'keyboard-nonce',
+    });
+    const start = html.indexOf('function focusCompanionAdjacentTab(');
+    const end = html.indexOf("mirror.addEventListener('click'", start);
+    const focused: unknown[] = [];
+    const tabs: unknown[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      tabs.push({
+        getAttribute: () => 'tab',
+        closest: () => ({ querySelectorAll: () => tabs }),
+        focus: (options: unknown) => focused.push({ index, options }),
+      });
+    }
+    runInNewContext(`${html.slice(start, end)}\nfocusCompanionAdjacentTab(control, key);`, {
+      control: tabs[from],
+      key,
+    });
+    expect(focused).toEqual([{ index: to, options: { preventScroll: true } }]);
+  });
+
   /** Uses a nonce-only script policy and never loads the generated project preview entry. */
   it('creates a self-contained extension-owned Inspector document', () => {
     const html = createPreviewInspectorCompanionHtml({
@@ -37,6 +68,11 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('const allowedTags = new Set([');
     expect(html).toContain("'ARTICLE', 'ASIDE'");
     expect(html).toContain("'DIV', 'HEADER', 'INPUT'");
+    expect(html).toContain("'TABLE', 'CAPTION', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD'");
+    expect(html).toContain("'FIELDSET', 'LEGEND'");
+    expect(html).toContain("'scope', 'colspan', 'rowspan'");
+    expect(html).toContain("'data-phase', 'data-status-kind', 'data-state'");
+    expect(html).toContain('visualStateAttributes.has(name)');
     expect(html).toContain("'checked', 'class', 'disabled', 'hidden', 'id'");
     expect(html).toContain("name.startsWith('data-rpi-')");
     expect(html).toContain(".replace(/@import[^;]*(?:;|$)/giu, '')");
@@ -51,7 +87,7 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('data-rpi-context-collapsed');
     expect(html).toContain('max-width:100%!important;min-width:0!important');
     expect(html).toContain('overflow:auto!important;overscroll-behavior:contain');
-    expect(html).toContain('.rpi-workbench{min-height:0!important;overflow:hidden!important}');
+    expect(html).toContain('.rpi-workbench{min-height:160px!important;overflow:hidden!important}');
     expect(html).toContain('overflow:hidden!important');
     expect(html).toContain('&lt;Unsafe&gt;.tsx');
   });
@@ -132,7 +168,9 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('applyPreviewInspectorCompanionShellRegionCollapsed(');
     expect(html).toContain('if (activateCompanionInferenceReview(control)) return;');
     expect(html).toContain("revealCompanionInferenceEvidence('neural-inference');");
-    expect(html).toContain("control.matches('button') && (event.key === 'Enter'");
+    expect(html).toContain("const pageOptions = mirror.querySelector('.rpi-page-options')");
+    expect(html).toContain('if (pageOptions !== null) pageOptions.open = true');
+    expect(html).toContain("control.matches('button,summary') && (event.key === 'Enter'");
     expect(html).toContain('function isCompanionScrollInteractionComplete(key)');
     expect(html).toContain('if (control.matches(\'[data-react-preview-source-open="true"]\'))');
     expect(html).toContain('control.matches(\'[data-react-preview-source-highlight="true"]\')');
@@ -142,6 +180,10 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('controlScrollLeft');
     expect(html).toContain('() => revealCompanionTreeRow(message.treeReveal)');
     expect(html).toContain('() => revealCompanionInferenceEvidence(message.contextReveal)');
+    expect(html).toContain("message.contextReveal === 'neural-choices'");
+    expect(html).toContain('() => focusPreviewInspectorChoiceControls(mirror)');
+    expect(html.split('if (activateCompanionChoiceReview(control)) return;')).toHaveLength(3);
+    expect(html).toContain("['.rpi-neural-choice-scroll', 'neural-choice-options']");
     expect(html).toContain("const evidence = mirror.querySelector('.rpi-page-paths')");
     expect(html).toContain('.rpi-console-list,.rpi-json{overflow-anchor:none!important}');
     expect(html).toContain("row?.closest?.('.rpi-tree-scroll')");

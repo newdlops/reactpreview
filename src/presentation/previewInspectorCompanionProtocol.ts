@@ -40,7 +40,7 @@ const COMPANION_KEY_VALUES = new Set([
 /** Serializable Inspector document emitted by the authoritative preview webview. */
 export interface PreviewInspectorCompanionSnapshot {
   /** One-shot focus target for an Inspector region explicitly requested by the user. */
-  readonly contextReveal?: 'neural-inference';
+  readonly contextReveal?: 'neural-inference' | 'neural-choices';
   /** Static extension-generated CSS used by the mirrored Inspector controls. */
   readonly css: string;
   /** Sanitized by the receiver before insertion into the companion webview. */
@@ -114,7 +114,9 @@ export function readPreviewInspectorCompanionSnapshot(
     css.length > MAX_COMPANION_CSS_LENGTH ||
     !Number.isSafeInteger(sequence) ||
     (sequence as number) < 1 ||
-    (contextReveal !== undefined && contextReveal !== 'neural-inference') ||
+    (contextReveal !== undefined &&
+      contextReveal !== 'neural-inference' &&
+      contextReveal !== 'neural-choices') ||
     (treeReveal !== undefined &&
       treeReveal !== true &&
       (typeof treeReveal !== 'string' ||

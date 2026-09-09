@@ -4,7 +4,12 @@
  * the panel-owned decoration service before unrelated runtime handlers run.
  */
 import path from 'node:path';
+import vm from 'node:vm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPreviewHotReloadRuntimeSource } from '../../src/adapters/esbuild/previewHotReloadRuntimeSource';
+import { createPreviewInspectorNeuralModelSharingRuntimeSource } from '../../src/adapters/esbuild/pageInspector/previewInspectorNeuralModelSharingRuntimeSource';
+import { createPreviewInspectorNeuralResidualRuntimeSource } from '../../src/adapters/esbuild/pageInspector/previewInspectorNeuralResidualRuntimeSource';
+import { readPreviewInspectorNeuralModel } from '../../src/presentation/previewInspectorNeuralModelProtocol';
 import {
   handlePreviewInspectorHostMessage,
   type PreviewInspectorHostMessageContext,
@@ -36,6 +41,71 @@ beforeEach(() => {
 });
 
 describe('handlePreviewInspectorHostMessage source selection', () => {
+  /** Exercises the actual cold-entry publisher, strict host guard, and returned snapshot together. */
+  it('hydrates persisted weights on the first mount without accepting stale model traffic', () => {
+    const { context, synchronizeNeuralResidualModel } = createContext();
+    const posted: unknown[] = [];
+    const browser = vm.createContext({
+      mountNode: { dataset: { reactPreviewRuntimeRevision: '1' } },
+      previewInspectorPostHostMessage: (message: unknown): void => {
+        posted.push(message);
+      },
+    });
+    const hotSource = createPreviewHotReloadRuntimeSource('');
+    const boundary = hotSource.indexOf('/** Replaces one module-owned');
+    expect(boundary).toBeGreaterThan(0);
+    vm.runInContext(
+      `
+      ${hotSource.slice(0, boundary)}
+      const previewInspectorSession = {};
+      ${createPreviewInspectorNeuralResidualRuntimeSource()}
+      ${createPreviewInspectorNeuralModelSharingRuntimeSource()}
+      publishPreviewInspectorNeuralResidualModel();
+    `,
+      browser,
+    );
+    const persisted = readPreviewInspectorNeuralModel(createNeuralModel());
+    expect(persisted).toBeDefined();
+    synchronizeNeuralResidualModel.mockImplementation((_model: unknown, revision: number) => {
+      browser.snapshot = {
+        model: persisted,
+        runtimeRevision: revision,
+        type: 'react-preview-neural-model-snapshot',
+      };
+      expect(
+        vm.runInContext('handlePreviewInspectorNeuralResidualHostMessage(snapshot)', browser),
+      ).toBe(true);
+    });
+    const coldContext = { ...context, currentRuntimeRevision: 0, expectedNeuralRuntimeRevision: 1 };
+    expect(posted).toHaveLength(1);
+    expect(handlePreviewInspectorHostMessage(posted[0], coldContext)).toBe(true);
+    expect(synchronizeNeuralResidualModel).toHaveBeenCalledTimes(1);
+    expect(vm.runInContext('serializePreviewInspectorNeuralResidualModel()', browser)).toEqual(
+      persisted,
+    );
+
+    browser.snapshot = {
+      model: {},
+      runtimeRevision: 0,
+      type: 'react-preview-neural-model-snapshot',
+    };
+    expect(
+      vm.runInContext('handlePreviewInspectorNeuralResidualHostMessage(snapshot)', browser),
+    ).toBe(false);
+    expect(vm.runInContext('serializePreviewInspectorNeuralResidualModel()', browser)).toEqual(
+      persisted,
+    );
+    handlePreviewInspectorHostMessage(
+      {
+        model: persisted,
+        runtimeRevision: 0,
+        type: 'react-preview-neural-model-sync',
+      },
+      coldContext,
+    );
+    expect(synchronizeNeuralResidualModel).toHaveBeenCalledTimes(1);
+  });
+
   /** Accepts the newest loading revision so persisted learning is not lost before ready settles. */
   it('routes a bounded anonymous neural model from the expected runtime revision', () => {
     const { context, synchronizeNeuralResidualModel } = createContext();

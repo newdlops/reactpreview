@@ -2,6 +2,7 @@
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorPageExecutionContextRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorPageExecutionContextRuntimeSource';
+import { createPreviewInspectorPageCandidateSelectionRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorPageCandidateSelectionRuntimeSource';
 
 describe('Preview Inspector page execution context runtime source', () => {
   it('recovers component-only output through a full-page execution candidate', () => {
@@ -130,6 +131,9 @@ function evaluatePageExecutionContextRecovery(): {
   } = {};
   vm.runInNewContext(
     `const React = { Component: class {} };
+const setTimeout = () => 1;
+const clearTimeout = () => undefined;
+${createPreviewInspectorPageCandidateSelectionRuntimeSource()}
 ${createPreviewInspectorPageExecutionContextRuntimeSource()}
 const previewEntryRevision = 7;
 function hashPreviewInspectorNeuralPageContextCandidateId(value) {
@@ -417,6 +421,9 @@ function evaluateCurrentPageExecutionSelection(): {
   } = {};
   vm.runInNewContext(
     `const React = { Component: class {} };
+const setTimeout = () => 1;
+const clearTimeout = () => undefined;
+${createPreviewInspectorPageCandidateSelectionRuntimeSource()}
 ${createPreviewInspectorPageExecutionContextRuntimeSource()}
 let previewEntryRevision = 3;
 function hashPreviewInspectorNeuralPageContextCandidateId(value) {

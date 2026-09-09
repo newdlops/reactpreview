@@ -353,10 +353,16 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
                 'button',
                   {
                     className: 'rpi-route-crumb',
-                    onClick: () => setOwnerId(undefined),
+                    onClick: () => {
+                      setOwnerId(undefined);
+                      setFolder(collectPreviewInspectorRouteCommonPrefix(
+                        branches.filter((branch) => branch.parentId === undefined),
+                      ));
+                    },
+                    title: 'Browse all application routes without changing the selected page',
                     type: 'button',
                   },
-                  '/',
+                  '/ All routes',
                 ),
               ownerTrail.map((owner) =>
                 React.createElement(

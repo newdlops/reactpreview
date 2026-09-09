@@ -409,6 +409,7 @@ describe('Preview Inspector requirement convergence runtime source', () => {
         detail: {
           hookCount: 1,
           mode: 'deterministic-minimum-auto',
+          propCount: 0,
           reason: 'runtime-error',
           requestCount: 1,
           target: 'Target',
@@ -420,7 +421,7 @@ describe('Preview Inspector requirement convergence runtime source', () => {
     expect(result.warnings).toEqual([
       {
         details:
-          'Trace: trace-restore\\nMode: deterministic-minimum-auto\\nTarget: Target\\nGenerated hooks: 1\\nGenerated requests: 1',
+          'Trace: trace-restore\\nMode: deterministic-minimum-auto\\nTarget: Target\\nGenerated hooks: 1\\nGenerated props: 0\\nGenerated requests: 1',
         level: 'warn',
         location: '',
         message: 'Automatic generated preview values were reverted after a new render error.',

@@ -691,6 +691,11 @@ describe('collectPreviewInspectorFastPageCorridor', () => {
     ]);
     expect(corridor?.sourcePaths).toContain(path.join(projectRoot, 'src/pages/Sibling0.tsx'));
     expect(corridor?.sourcePaths).not.toContain(path.join(projectRoot, 'src/pages/Sibling1.tsx'));
+    expect(
+      corridor?.shallowVisualPaths.some(
+        (item) => item.sourcePath === path.join(projectRoot, 'src/pages/Sibling0.tsx'),
+      ),
+    ).toBe(false);
   });
 
   /** Shape-proven page factories prune choices without requiring a React Router API name. */

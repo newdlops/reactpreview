@@ -363,7 +363,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
         targetHasOutput: false,
         targetMounted: false,
       }),
-    ).toMatchObject({ badge: 'NOT ON THIS PATH' });
+    ).toMatchObject({ badge: 'TARGET NOT REACHED' });
     expect(
       evaluatePageCandidateUiStatus({
         pageRootCommitted: true,
@@ -371,7 +371,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
         targetHasOutput: true,
         targetMounted: true,
       }),
-    ).toMatchObject({ badge: 'PAGE READY' });
+    ).toMatchObject({ badge: 'PAGE INCOMPLETE' });
     expect(
       evaluatePageCandidateUiStatus(
         {

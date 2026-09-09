@@ -19,8 +19,10 @@ export function createPreviewInspectorPageCandidateUiRuntimeSource(): string {
 ${routeExplorerSource}
 
 /** Formats page visibility with labels that describe what the user can actually see. */
-function formatPreviewInspectorPageCorridorStatus(reachability) {
+function formatPreviewInspectorPageCorridorStatus(reachability, diagnosis) {
   if (readPreviewInspectorRenderScenario() === 'file-components') return 'FILE COMPONENTS';
+  if (diagnosis?.kind === 'page-context') return 'PAGE CONTEXT UNVERIFIED';
+  if (diagnosis?.kind === 'render-error') return 'RENDER ERROR';
   const descriptor = findSelectedPreviewInspectorDescriptor();
   const moduleContext = typeof readSelectedPreviewInspectorModuleContext === 'function'
     ? readSelectedPreviewInspectorModuleContext(descriptor)
@@ -29,7 +31,11 @@ function formatPreviewInspectorPageCorridorStatus(reachability) {
     reachability?.status === 'reached' &&
     reachability?.targetMounted === true &&
     reachability?.targetHasOutput === true
-  ) return 'PAGE READY';
+  ) {
+    const blockers = typeof readPreviewInspectorActiveBlockerSummary === 'function'
+      ? readPreviewInspectorActiveBlockerSummary() : undefined;
+    return blockers?.count > 0 ? 'PAGE INCOMPLETE' : 'PAGE READY';
+  }
   if (reachability?.directTarget === true) return 'FILE ONLY';
   if (reachability?.status === 'advancing') return 'FINDING FILE';
   if (
@@ -42,7 +48,7 @@ function formatPreviewInspectorPageCorridorStatus(reachability) {
     return moduleContext === undefined ? 'NOT VISIBLE' : 'PAGE NOT VISIBLE';
   }
   if (reachability?.pageRootCommitted === true && reachability?.targetMounted !== true) {
-    return moduleContext === undefined ? 'NOT ON THIS PATH' : 'PAGE PATH SKIPPED';
+    return moduleContext === undefined ? 'TARGET NOT REACHED' : 'PAGE NOT REACHED';
   }
   if (reachability?.pageRootCommitted === true) return 'CHECKING FILE';
   return 'LOADING PAGE';
@@ -104,8 +110,21 @@ function focusPreviewInspectorPageChoice() {
     : undefined;
   const queryRoot = shell ?? document;
   const focusChoice = () => {
+    const options = queryRoot.querySelector?.('.rpi-page-options');
+    if (options !== null && options !== undefined) options.open = true;
     const control = queryRoot.querySelector?.('[data-rpi-page-choice="true"]:not(:disabled)');
-    control?.focus?.();
+    control?.focus?.({ preventScroll: true });
+    for (const selector of ['.rpi-page-path-list', '.rpi-page-context', '.rpi-shell']) {
+      const viewport = control?.closest?.(selector);
+      const bounds = viewport?.getBoundingClientRect?.();
+      const target = control?.getBoundingClientRect?.();
+      if (bounds === undefined || target === undefined) continue;
+      if (target.top < bounds.top) viewport.scrollTop += target.top - bounds.top;
+      else if (target.bottom > bounds.bottom) viewport.scrollTop += target.bottom - bounds.bottom;
+    }
+    if (typeof requestPreviewInspectorCompanionContextReveal === 'function') {
+      requestPreviewInspectorCompanionContextReveal('neural-inference');
+    }
     if (typeof schedulePreviewInspectorCompanionSnapshot === 'function') {
       schedulePreviewInspectorCompanionSnapshot();
     }
@@ -170,6 +189,25 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
   }
   const mountedWithoutOutput = reachability?.pageRootCommitted === true &&
     reachability?.targetMounted === true && reachability?.targetHasOutput !== true;
+  const diagnosis = typeof readPreviewInspectorVisibilityDiagnosis === 'function'
+    ? readPreviewInspectorVisibilityDiagnosis(reachability, { descriptor, candidate: selectedCandidate, blockers })
+    : undefined;
+  const unresolvedPathOnly = !(blockers.active ?? []).some((node) => node?.blockerKind !== 'target-reachability');
+  if (diagnosis !== undefined && (
+      ['code-condition', 'page-context', 'render-error', 'pending'].includes(diagnosis.kind) ||
+      diagnosis.kind === 'unknown' && unresolvedPathOnly)) {
+    const tracing = diagnosis.kind === 'pending' || diagnosis.kind === 'unknown' &&
+      typeof isPreviewInspectorTargetReachabilityResolving === 'function' &&
+      isPreviewInspectorTargetReachabilityResolving(reachability);
+    return {
+      action: diagnosis.action === undefined ? undefined : diagnosis.actionLabel,
+      description: diagnosis.description, diagnosis,
+      icon: tracing ? '↻' : diagnosis.kind === 'render-error' ? '×' : diagnosis.kind === 'code-condition' ? '◇' : '↳',
+      kind: tracing ? 'resolving' : diagnosis.kind === 'render-error' ? 'error' : diagnosis.kind === 'code-condition' ? 'choice' : 'flow-outcome',
+      onAction: diagnosis.action === undefined ? undefined : () => activatePreviewInspectorVisibilityDiagnosis(diagnosis),
+      title: tracing && diagnosis.kind === 'unknown' ? 'Still tracing the target on this path' : diagnosis.title,
+    };
+  }
   const specificBlocker = blockers.first !== undefined &&
     blockers.first?.blockerKind !== 'target-reachability';
   if (mountedWithoutOutput && !specificBlocker) {
@@ -183,6 +221,7 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
         });
     const resolving = resolutionKind === 'automatic';
     return {
+      diagnosis,
       action: routeChoiceName !== undefined && alternativePageChoiceAvailable
         ? 'Choose page path'
         : routeChoiceName !== undefined
@@ -247,25 +286,13 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
     blockers.count > 0 &&
     blockers.active.every((node) => node?.blockerKind === 'target-reachability');
   if (renderedWithoutTarget) {
-    if (moduleContext !== undefined) {
-      return {
-        action: 'Inspect page path',
-        description: 'The selected consuming page committed a different branch before its page boundary mounted. Inspect the authored path; this module has no independent component view.',
-        icon: '↳',
-        kind: 'flow-outcome',
-        onAction: revealPreviewInspectorMissingTargetOutput,
-        title: 'Consuming page selected another flow',
-      };
-    }
     return {
-      action: 'Show file components',
-      description: alternativePageChoiceAvailable
-        ? 'The chosen authored path committed its UI without mounting the current file. Choose another page path or inspect every current-file export; React Preview does not classify this application outcome.'
-        : 'The only proven authored path committed its UI without mounting the current file. Inspect every current-file export; React Preview does not classify this application outcome.',
+      action: 'Inspect path evidence',
+      description: 'The page loaded, but the target was not reached. This alone cannot distinguish an incorrect page path from an unobserved code or data condition.',
       icon: '↳',
       kind: 'flow-outcome',
-      onAction: () => setPreviewInspectorRenderScenario('file-components'),
-      title: 'Rendered flow does not contain the current file',
+      onAction: focusPreviewInspectorPageChoice,
+      title: 'Why this file is missing is not yet known',
     };
   }
   if (reachability?.directTarget === true) {
@@ -278,10 +305,7 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
       title: 'File-only view',
     };
   }
-  if (
-    reachability?.targetHasOutput !== true &&
-    (blockers.count > 0 || reachability?.status === 'page-blocked')
-  ) {
+  if (blockers.count > 0 || reachability?.status === 'page-blocked') {
     const firstBlocker = typeof blockers.first?.name === 'string'
       ? ' First: ' + blockers.first.name + '.'
       : '';
@@ -290,10 +314,11 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
       : readPreviewInspectorResolutionKind(blockers.first);
     return {
       action: resolutionKind === 'automatic' ? 'Review progress' : 'Open next step',
-      description: String(Math.max(1, blockers.count)) +
+      description: (reachability?.targetHasOutput === true
+        ? 'Some output is visible, but ' : '') + String(Math.max(1, blockers.count)) +
         ' unresolved step(s) remain before ' +
         (moduleContext === undefined ? 'the current file' : 'the consuming page') +
-        ' can render.' + firstBlocker + (
+        (reachability?.targetHasOutput === true ? ' is fully resolved.' : ' can render.') + firstBlocker + (
           resolutionKind === 'automatic'
             ? ' The viewer is working on the next proven repair.'
             : resolutionKind === 'error'
@@ -303,7 +328,8 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
       icon: resolutionKind === 'error' ? '×' : resolutionKind === 'automatic' ? '↻' : '?',
       kind: resolutionKind,
       onAction: revealPreviewInspectorFriendlyBlocker,
-      title: resolutionKind === 'automatic'
+      title: reachability?.targetHasOutput === true ? 'Output visible, but unresolved steps remain'
+        : resolutionKind === 'automatic'
         ? 'Viewer is resolving the page'
         : resolutionKind === 'error' ? 'Page hit a runtime error' : 'Your choice is needed',
     };
@@ -528,6 +554,9 @@ function PreviewInspectorPagePathSurface({ descriptor, reachability }) {
                   ? undefined
                   : React.createElement('span', undefined, wrapperLabel),
                 React.createElement('span', undefined, kindLabel),
+                possibility.queued
+                  ? React.createElement('span', undefined, 'Selection saved. This path runs after the current build finishes.')
+                  : undefined,
                 React.createElement(
                   'span',
                   undefined,
@@ -554,7 +583,7 @@ function PreviewInspectorPagePathSurface({ descriptor, reachability }) {
               'span',
               { 'aria-hidden': true, className: 'rpi-button rpi-page-path-apply' },
               possibility.queued
-                ? 'Queued'
+                ? 'Saved'
                 : possibility.pending
                   ? 'Applying…'
                   : possibility.state === 'checking'
@@ -566,7 +595,7 @@ function PreviewInspectorPagePathSurface({ descriptor, reachability }) {
                   : possibility.state === 'rejected'
                     ? 'Exhausted'
                     : globallyPending
-                      ? 'Queue path'
+                      ? 'Use after build'
                       : possibility.active ? 'Try next' : 'Apply path',
             ),
           ),
@@ -645,6 +674,7 @@ function PreviewInspectorFriendlyGuide({ reachability }) {
         { className: 'rpi-friendly-status-copy' },
         React.createElement('strong', undefined, status.title),
         React.createElement('span', undefined, status.description),
+        status.diagnosis === undefined ? null : React.createElement(PreviewInspectorVisibilityEvidence, { diagnosis: status.diagnosis }),
         status.steps === undefined
           ? undefined
           : React.createElement(
@@ -664,7 +694,7 @@ function PreviewInspectorFriendlyGuide({ reachability }) {
       React.createElement(
         'span',
         { className: 'rpi-context-badge' },
-        formatPreviewInspectorPageCorridorStatus(reachability),
+        formatPreviewInspectorPageCorridorStatus(reachability, status.diagnosis),
       ),
       status.onAction === undefined
         ? undefined
@@ -675,20 +705,24 @@ function PreviewInspectorFriendlyGuide({ reachability }) {
           ),
     ),
     React.createElement(
-      'div',
-      { 'aria-label': 'Inspector tree legend', className: 'rpi-tree-legend' },
-      React.createElement('strong', undefined, 'Tree guide'),
-      legend.map(([kind, icon, label]) => React.createElement(
-        'span',
-        { className: 'rpi-legend-item', 'data-role': kind, key: kind },
-        React.createElement('span', { 'aria-hidden': true }, icon),
-        label,
-      )),
+      'details',
+      { className: 'rpi-tree-guide rpi-disclosure' },
+      React.createElement('summary', undefined, 'Tree symbols'),
+      React.createElement(
+        'div',
+        { 'aria-label': 'Inspector tree legend', className: 'rpi-tree-legend' },
+        legend.map(([kind, icon, label]) => React.createElement(
+          'span',
+          { className: 'rpi-legend-item', 'data-role': kind, key: kind },
+          React.createElement('span', { 'aria-hidden': true }, icon),
+          label,
+        )),
+      ),
     ),
   );
 }
 
-/** Composes the rendering perspective, canonical path surface, status, and route explorer. */
+/** Shows the real page status first, with full path controls in a native optional disclosure. */
 function PreviewInspectorPageContextControls({ descriptor }) {
   const candidates = readPreviewInspectorPageCandidates(descriptor);
   const selected = readSelectedPreviewInspectorPageCandidate(descriptor);
@@ -697,10 +731,19 @@ function PreviewInspectorPageContextControls({ descriptor }) {
   return React.createElement(
     React.Fragment,
     undefined,
-    React.createElement(PreviewInspectorRenderScenarioSelect),
-    React.createElement(PreviewInspectorPagePathSurface, { descriptor, reachability }),
     React.createElement(PreviewInspectorFriendlyGuide, { reachability }),
-    React.createElement(PreviewInspectorRouteExplorer, { descriptor }),
+    React.createElement(
+      'details',
+      { className: 'rpi-page-options rpi-disclosure' },
+      React.createElement('summary', undefined, 'Paths & rendering · ' + String(candidates.length)),
+      React.createElement(
+        'div',
+        { className: 'rpi-page-options-body' },
+        React.createElement(PreviewInspectorRenderScenarioSelect),
+        React.createElement(PreviewInspectorPagePathSurface, { descriptor, reachability }),
+        React.createElement(PreviewInspectorRouteExplorer, { descriptor }),
+      ),
+    ),
   );
 }
 `;

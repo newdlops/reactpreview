@@ -1,6 +1,10 @@
 /** Generates live page-owner verification and neural Page Execution context recovery. */
+import { createPreviewInspectorPageExecutionPreparationRuntimeSource } from './previewInspectorPageExecutionPreparationRuntimeSource';
+
+/** Joins compiler/live-owner evidence with the correlated preparation transport. */
 export function createPreviewInspectorPageExecutionContextRuntimeSource(): string {
   return String.raw`
+${createPreviewInspectorPageExecutionPreparationRuntimeSource()}
 const previewInspectorFullPageExecutionFidelities = new Set([
   'route-page-authentic',
   'route-page-sliced',
@@ -19,6 +23,9 @@ const previewInspectorTransientPageExecutionTargetWords = Object.freeze([
   'spinner',
 ]);
 const PREVIEW_INSPECTOR_PAGE_EXECUTION_CONTEXT_RECORD_LIMIT = 24;
+const previewInspectorPageOwnerWrapperPattern = /^[\p{L}_$][\p{L}\p{N}_.$]*\(\s*(.*?)\s*\)$/u;
+const previewInspectorPageOwnerInvalidPattern = /[(),]/u;
+const previewInspectorPageOwnerSeparatorPattern = /[^\p{L}\p{N}]+/gu;
 
 /** Keeps temporary loading surfaces on the stricter authored-owner and temporal contract. */
 function isPreviewInspectorTransientPageExecutionTarget(descriptor, candidate, state) {
@@ -35,23 +42,24 @@ function isPreviewInspectorTransientPageExecutionTarget(descriptor, candidate, s
     semanticText.includes(word));
 }
 
-/** Normalizes authored and runtime owner spellings without trusting display punctuation. */
+/** Unwraps bounded HOC display names without confusing arbitrary prefixes/suffixes for identity. */
 function normalizePreviewInspectorPageExecutionOwnerName(value) {
-  return typeof value === 'string'
-    ? value.replace(/^@/u, '').replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase()
-    : '';
+  if (typeof value !== 'string' || value.length > 512) return '';
+  let name = value.trim();
+  for (let depth = 0; depth < 8; depth += 1) {
+    const wrapper = previewInspectorPageOwnerWrapperPattern.exec(name);
+    if (wrapper === null) break;
+    name = wrapper[1].trim();
+  }
+  if (previewInspectorPageOwnerInvalidPattern.test(name)) return '';
+  return name.replace(previewInspectorPageOwnerSeparatorPattern, '').toLowerCase();
 }
 
 /** Matches wrappers whose runtime display names retain a source-proven owner identity. */
 function matchesPreviewInspectorPageExecutionOwnerName(expected, actual) {
   const left = normalizePreviewInspectorPageExecutionOwnerName(expected);
   const right = normalizePreviewInspectorPageExecutionOwnerName(actual);
-  if (left.length === 0 || right.length === 0) return false;
-  if (left === right) return true;
-  return Math.min(left.length, right.length) >= 4 && (
-    left.startsWith(right) || left.endsWith(right) ||
-    right.startsWith(left) || right.endsWith(left)
-  );
+  return left.length > 0 && left === right;
 }
 
 /** Rejects compiler placeholders that cannot prove an authored page owner at runtime. */
@@ -150,13 +158,23 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
   const rootStep = Number.isSafeInteger(candidate?.rootStepIndex)
     ? candidate?.renderPath?.steps?.[candidate.rootStepIndex]
     : undefined;
+  const executionPageRootPath = execution?.pageRootSourcePath;
+  const samePageRoot = (executionPageRootPath === undefined ||
+    executionPageRootPath === candidate?.root?.sourcePath) &&
+    (execution?.pageRootExportName === undefined ||
+      execution.pageRootExportName === candidate?.root?.exportName);
   const pageRootNames = [];
   for (const name of [
     execution?.pageRootExportName,
-    candidate?.root?.exportName,
-    rootStep?.label,
-    readPreviewInspectorPageExecutionSourceName(candidate?.root?.sourcePath),
-    readPreviewInspectorPageExecutionSourceName(execution?.pageRootSourcePath),
+    ...(samePageRoot ? [
+      candidate?.root?.exportName,
+      rootStep?.sourcePath === undefined || rootStep.sourcePath === candidate?.root?.sourcePath
+        ? rootStep?.label : undefined,
+      isPreviewInspectorPageExecutionOwnerAnchor(candidate?.root?.exportName, targetExportName)
+        ? undefined : readPreviewInspectorPageExecutionSourceName(candidate?.root?.sourcePath),
+    ] : []),
+    isPreviewInspectorPageExecutionOwnerAnchor(execution?.pageRootExportName, targetExportName)
+      ? undefined : readPreviewInspectorPageExecutionSourceName(execution?.pageRootSourcePath),
   ]) {
     if (
       isPreviewInspectorPageExecutionOwnerAnchor(name, targetExportName) &&
@@ -169,14 +187,33 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
     readPreviewInspectorPageExecutionSourceName(execution?.executionRootSourcePath),
     readPreviewInspectorPageExecutionSourceName(candidate?.root?.sourcePath),
   ].find((name) => isPreviewInspectorPageExecutionOwnerAnchor(name, targetExportName));
-  const matchesObserved = (expected) => observedOwnerNames.some((actual) =>
-    matchesPreviewInspectorPageExecutionOwnerName(expected, actual));
+  const observedOwnerIdentities = new Set(observedOwnerNames
+    .map(normalizePreviewInspectorPageExecutionOwnerName).filter(Boolean));
+  const matchesObserved = (expected) => observedOwnerIdentities.has(
+    normalizePreviewInspectorPageExecutionOwnerName(expected));
   const pageRootObserved = pageRootNames.length === 0
     ? observedOwnerNames.length > 0
     : pageRootNames.some(matchesObserved);
   const executionRootObserved = executionRootName === undefined || matchesObserved(executionRootName);
+  // Static outer owners/layouts are a contract, not alternate aliases for an inner content root.
+  // Siblings are not ancestors; their placement remains compiler-owned.
+  const pageFrameAliases = (Array.isArray(candidate?.virtualPage?.shells)
+    ? candidate.virtualPage.shells : [])
+    .filter((shell) => ['owner', 'wrapper'].includes(shell?.relation))
+    .map((shell) => [shell?.root?.exportName,
+      readPreviewInspectorPageExecutionSourceName(shell?.root?.sourcePath)]
+      .filter((name) => isPreviewInspectorPageExecutionOwnerAnchor(name, targetExportName)))
+    .filter((aliases) => aliases.length > 0)
+    .slice(0, 24);
+  const pageFrameNames = pageFrameAliases.map((aliases) => aliases[0]);
+  const missingPageFrameNames = pageFrameAliases
+    .filter((aliases) => !aliases.some(matchesObserved)).map((aliases) => aliases[0]);
+  const pageFrameObserved = missingPageFrameNames.length === 0;
   const matchedOwnerNames = expectedOwnerNames.filter(matchesObserved);
-  const missingOwnerNames = expectedOwnerNames.filter((name) => !matchesObserved(name));
+  const missingOwnerNames = [...new Set([
+    ...missingPageFrameNames,
+    ...expectedOwnerNames.filter((name) => !matchesObserved(name)),
+  ])];
   const transientTarget = isPreviewInspectorTransientPageExecutionTarget(
     descriptor,
     candidate,
@@ -189,7 +226,7 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
     (state?.targetMounted === true || state?.targetWasMounted === true);
   const contextComplete = state?.directTarget === true ||
     pageCandidateComplete && pageLevel && !componentOnly && pageRootObserved &&
-      executionRootObserved;
+      executionRootObserved && pageFrameObserved;
   return Object.freeze({
     authoredOwnerDepth: Number.isSafeInteger(execution?.authoredOwnerDepth)
       ? execution.authoredOwnerDepth
@@ -209,6 +246,8 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
     pageCandidateEntryConnected: candidate?.renderPath?.entryPoint !== undefined,
     pageCandidateStopReason: candidate?.stopReason ?? 'unknown',
     pageLevel,
+    pageFrameObserved,
+    pageFrameNames: Object.freeze(pageFrameNames),
     pageRootNames: Object.freeze(pageRootNames.slice(0, 8)),
     pageRootObserved,
     transientTarget,
@@ -331,6 +370,13 @@ function isPreviewInspectorNeuralPageExecutionContextRecoveryExhausted(state) {
   return readPreviewInspectorPageExecutionContextRecoveryRecord(state)?.status === 'exhausted';
 }
 
+/** Stops unrelated gate traversal after a failed handoff without claiming that every render failed. */
+function isPreviewInspectorPageExecutionPreparationBlocked(state) {
+  const record = readPreviewInspectorPageExecutionContextRecoveryRecord(state);
+  return record?.status === 'preparation-blocked' &&
+    record.preparationBlockedRevision === previewEntryRevision;
+}
+
 /** Gives page-level execution alternatives to the existing local residual head. */
 function createPreviewInspectorPageExecutionContextDecision(
   descriptor,
@@ -429,8 +475,11 @@ function selectPreviewInspectorNeuralPageExecutionContextCandidate(
     texts: [observation?.missingOwnerNames?.join(' ')],
     tokens: ['component-output-found:true', 'page-context-missing:true'],
   };
+  const verifiedFailures = record.outcomeByExecutionCandidateId instanceof Map
+    ? [...record.outcomeByExecutionCandidateId.values()].filter((success) => success === false).length
+    : 0;
   const selected = typeof selectPreviewInspectorNeuralResidualCandidate === 'function'
-    ? selectPreviewInspectorNeuralResidualCandidate(specification, portfolio)
+    ? selectPreviewInspectorNeuralResidualCandidate(specification, portfolio, verifiedFailures)
     : undefined;
   const selectedInput = portfolio.find((input) => input.id === selected?.candidateId) ??
     [...portfolio].sort((left, right) => left.deterministicRank - right.deterministicRank)[0];
@@ -487,26 +536,6 @@ function settlePreviewInspectorNeuralPageExecutionContextOutcome(
   return true;
 }
 
-/** Posts one exact compiler-owned execution choice while retaining the visible artifact. */
-function postPreviewInspectorPageExecutionCandidate(descriptor, candidate, executionCandidateId) {
-  if (
-    typeof candidate?.id !== 'string' ||
-    typeof executionCandidateId !== 'string' ||
-    previewInspectorSession.pageExecutionRetryRevision === previewEntryRevision ||
-    typeof previewInspectorPostHostMessage !== 'function'
-  ) return false;
-  previewInspectorSession.pageExecutionRetryRevision = previewEntryRevision;
-  previewInspectorPostHostMessage({
-    candidateId: candidate.id,
-    executionCandidateId,
-    interactionId: 'execution:' + String(readPreviewInspectorHostRuntimeRevision()) + ':' +
-      String(++previewInspectorSession.interactionSequence),
-    runtimeRevision: readPreviewInspectorHostRuntimeRevision(),
-    type: 'react-preview-inspector-page-execution-retry',
-  });
-  return true;
-}
-
 /**
  * Turns component-only output into a repair recipe, then replays it through a finite neural search
  * over compiler-proven full-page artifacts. The same recipe never restarts an exhausted cycle.
@@ -517,7 +546,24 @@ function requestPreviewInspectorNeuralPageExecutionContextRecovery(
   state,
   snapshot,
 ) {
+  if (typeof isPreviewInspectorNeuralAssistancePaused === 'function' &&
+    isPreviewInspectorNeuralAssistancePaused()) return false;
   if (state?.directTarget === true || snapshot === undefined) return false;
+  const retained = readPreviewInspectorPageExecutionContextRecoveryRecord(state);
+  if (retained?.status === 'preparation-blocked') {
+    if (retained.preparationBlockedRevision === previewEntryRevision) {
+      state.pageExecutionContextRecoveryRequested = true;
+      state.status = 'page-context-incomplete';
+      return false;
+    }
+    retained.status = 'searching';
+  }
+  if (typeof retained?.pendingExecutionCandidateId === 'string' &&
+    retained.pendingExecutionCandidateId !== descriptor?.inspector?.pageExecutionCandidateId) {
+    state.pageExecutionContextRecoveryRequested = true;
+    state.status = 'recovering-page-context';
+    return true;
+  }
   const observation = readPreviewInspectorPageExecutionContextObservation(
     descriptor,
     candidate,
@@ -567,6 +613,7 @@ function requestPreviewInspectorNeuralPageExecutionContextRecovery(
     // Descriptor reconciliation can commit the requested artifact before its deferred activation
     // callback runs. Treat the matching live descriptor as the acknowledgement so recovery cannot
     // remain permanently in applying state when that callback loses the revision race.
+    reconcilePreviewInspectorPageExecutionPreparation(descriptor);
     record.activeExecutionCandidateId = currentExecutionId;
     record.pendingExecutionCandidateId = undefined;
     record.status = 'verifying';
@@ -591,31 +638,12 @@ function requestPreviewInspectorNeuralPageExecutionContextRecovery(
     }
     return false;
   }
-  if (!postPreviewInspectorPageExecutionCandidate(
+  return postPreviewInspectorPageExecutionCandidate(
     descriptor,
     candidate,
     selected.execution.id,
-  )) return false;
-  record.attemptedExecutionCandidateIds.add(selected.execution.id);
-  if (selected.decision !== undefined) {
-    record.decisionByExecutionCandidateId.set(selected.execution.id, selected.decision);
-  }
-  record.pendingExecutionCandidateId = selected.execution.id;
-  record.status = 'applying';
-  state.pageExecutionContextRecoveryRequested = true;
-  state.status = 'recovering-page-context';
-  if (typeof setPreviewInspectorNeuralLearningStatus === 'function') {
-    setPreviewInspectorNeuralLearningStatus({
-      activeCount: 1,
-      labelReason: 'component-output-found-restoring-full-page-context',
-      phase: 'applying',
-      successCount: 0,
-      updates: typeof readPreviewInspectorNeuralLearningModelUpdates === 'function'
-        ? readPreviewInspectorNeuralLearningModelUpdates()
-        : 0,
-    });
-  }
-  return true;
+    { record, state, decision: selected.decision },
+  );
 }
 
 /** Continues a recovery search after one full-page artifact failed before target verification. */
@@ -626,6 +654,8 @@ function continuePreviewInspectorNeuralPageExecutionContextRecovery(descriptor, 
   if (record === undefined || !['applying', 'searching', 'verifying'].includes(record.status)) {
     return false;
   }
+  if (isPreviewInspectorNeuralPageExecutionContextTransitionPending(state) &&
+    record.pendingExecutionCandidateId !== descriptor?.inspector?.pageExecutionCandidateId) return true;
   settlePreviewInspectorNeuralPageExecutionContextOutcome(state, false);
   return requestPreviewInspectorNeuralPageExecutionContextRecovery(
     descriptor,
@@ -637,6 +667,7 @@ function continuePreviewInspectorNeuralPageExecutionContextRecovery(descriptor, 
 
 /** Restores the inner success recipe after the host commits the requested full-page artifact. */
 function activatePreviewInspectorNeuralPageExecutionContextRecovery(descriptor) {
+  reconcilePreviewInspectorPageExecutionPreparation(descriptor);
   const executionId = descriptor?.inspector?.pageExecutionCandidateId;
   const pageCandidateId = descriptor?.inspector?.executablePageCandidateId ??
     previewInspectorSession.selectedPageCandidateId;
@@ -656,11 +687,13 @@ function activatePreviewInspectorNeuralPageExecutionContextRecovery(descriptor) 
 
 /** Defers recipe restoration until descriptor reconciliation has installed the new artifact. */
 function schedulePreviewInspectorNeuralPageExecutionContextRecoveryActivation(descriptor) {
+  reconcilePreviewInspectorPageExecutionPreparation(descriptor);
   previewInspectorSession.neuralPageExecutionContextActivationRevision =
     (Number(previewInspectorSession.neuralPageExecutionContextActivationRevision) || 0) + 1;
   const revision = previewInspectorSession.neuralPageExecutionContextActivationRevision;
   Promise.resolve().then(() => {
     if (previewInspectorSession.neuralPageExecutionContextActivationRevision !== revision) return;
+    if (typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused()) return;
     if (!activatePreviewInspectorNeuralPageExecutionContextRecovery(descriptor)) return;
     if (typeof notifyPreviewInspector === 'function') notifyPreviewInspector();
     if (typeof schedulePreviewInspectorCommitRefresh === 'function') {

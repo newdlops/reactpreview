@@ -83,6 +83,81 @@ describe('Preview Inspector failure evidence runtime', () => {
     ).toEqual(['slice']);
   });
 
+  it.each([
+    ['props.items is not iterable', ['props.items']],
+    [
+      'TypeError: this.props.items is not iterable (cannot read property Symbol(Symbol.iterator))',
+      ['this.props.items'],
+    ],
+    ["undefined is not an object (evaluating 'props.profile.name')", ['props.profile.name']],
+    ['can\'t access property "name", props.profile is undefined', ['props.profile.name']],
+    ['can\'t access property "name", props.profile is null', ['props.profile.name']],
+    ["undefined is not an object (evaluating 'loadProfile().name')", []],
+    ['Cannot convert undefined or null to object', []],
+  ])('reads only the explicit safe receiver in %s', (message, paths) => {
+    expect(evaluateFailureEvidenceRuntime().paths(new TypeError(message))).toEqual(paths);
+  });
+
+  it('unwraps a cause without widening an already actionable outer failure', () => {
+    const runtime = evaluateFailureEvidenceRuntime();
+    const cause = new TypeError('props.items is not iterable');
+    expect(runtime.paths(new Error('Render failed', { cause }))).toEqual(['props.items']);
+    expect(runtime.paths(new TypeError('props.onSubmit is not a function', { cause }))).toEqual([
+      'props.onSubmit()',
+    ]);
+    const missingGlobal = new Error('Render failed', {
+      cause: new ReferenceError('React is not defined'),
+    });
+    expect(runtime.runtimeGlobal(missingGlobal)).toBe('React');
+    expect(runtime.paths(missingGlobal, [{ path: 'React', kind: 'object' }])).toEqual([]);
+  });
+
+  it('does not invoke diagnostic getters or project string conversion while recovering', () => {
+    const runtime = evaluateFailureEvidenceRuntime();
+    let reads = 0;
+    const hostile = {
+      get message() {
+        reads += 1;
+        throw new Error('message accessor');
+      },
+      get cause() {
+        reads += 1;
+        throw new Error('cause accessor');
+      },
+      get name() {
+        reads += 1;
+        throw new Error('name accessor');
+      },
+      toString() {
+        reads += 1;
+        return 'props.items is not iterable';
+      },
+    };
+    expect(runtime.paths(hostile)).toEqual([]);
+    expect(runtime.runtimeGlobal(hostile)).toBeUndefined();
+    expect(reads).toBe(0);
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    expect(runtime.paths(revoked.proxy)).toEqual([]);
+  });
+
+  it('bounds cause traversal, cycles, diagnostic bytes, and retained path count', () => {
+    const runtime = evaluateFailureEvidenceRuntime();
+    const cycle: { message: string; cause?: unknown } = { message: 'Render failed' };
+    cycle.cause = cycle;
+    expect(runtime.paths(cycle)).toEqual([]);
+    let chain: unknown = new TypeError('props.items is not iterable');
+    for (let depth = 0; depth < 8; depth += 1) chain = { message: 'Wrapped', cause: chain };
+    expect(runtime.paths(chain)).toEqual([]);
+    expect(runtime.paths('x'.repeat(4_096) + " reading 'hidden'")).toEqual([]);
+    expect(runtime.paths('props.' + 'x'.repeat(241) + ' is not iterable')).toEqual([]);
+    expect(
+      runtime.paths(
+        Array.from({ length: 80 }, (_, index) => `reading 'field${String(index)}'`).join(' '),
+      ),
+    ).toHaveLength(32);
+  });
+
   /** Keeps authored stack hierarchy while removing React host and Inspector implementation rows. */
   it('reads unique authored component names from the innermost failure outward', () => {
     const runtime = evaluateFailureEvidenceRuntime();

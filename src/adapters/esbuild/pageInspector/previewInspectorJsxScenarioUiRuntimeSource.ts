@@ -322,11 +322,21 @@ function findPreviewInspectorJsxScenarioTreeNode(nodes, scenario) {
 
 /** Formats one table mode without conflating target-guided values with explicit user choices. */
 function describePreviewInspectorJsxScenarioMode(scenario) {
-  if (scenario?.reached === false && typeof scenario?.override === 'boolean') return 'manual · pending';
-  if (scenario?.reached === false || typeof scenario?.id !== 'string') return 'waiting';
-  if (typeof scenario.override === 'boolean') return 'manual';
-  if (typeof scenario.autoOverride === 'boolean') return 'automatic';
-  return 'authored';
+  if (typeof scenario?.id !== 'string') return 'No runtime control registered. Highlight code to inspect.';
+  const blockedBy = scenario.lineageBlockedByExpression;
+  const requirement = typeof blockedBy === 'string'
+    ? 'Blocked by ' + blockedBy + '. '
+    : typeof scenario.lineageParentExpression === 'string'
+      ? 'Requires ' + scenario.lineageParentExpression + ' ' +
+        (scenario.lineageParentRequiredEnabled === false ? 'OFF' : 'ON') + '. ' : '';
+  if (scenario.reached === false && typeof scenario.override === 'boolean') {
+    return requirement + 'Saved, not applied yet. Applies when this condition runs.';
+  }
+  if (scenario.reached === false) return requirement + 'This condition has not run. On/Off also selects its required parent branches.';
+  if (scenario.lineageBlocked === true) return requirement + 'The parent path is not active.';
+  if (typeof scenario.override === 'boolean') return 'Manual override';
+  if (typeof scenario.autoOverride === 'boolean') return 'Automatic preview value';
+  return 'From page code';
 }
 
 /**
@@ -372,7 +382,7 @@ function PreviewInspectorJsxScenarioRow({ roots, scenario, scenarios }) {
   const controllable = typeof scenario.id === 'string';
   const lineageBlocked = scenario.lineageBlocked === true;
   const pending = !reached && typeof scenario.override === 'boolean';
-  const enabled = controllable && scenario.effectiveEnabled === true;
+  const enabled = controllable && (pending ? scenario.override === true : scenario.effectiveEnabled === true);
   const overridden = typeof scenario.override === 'boolean' ||
     typeof scenario.autoOverride === 'boolean';
   const selectScenario = () => {
@@ -485,9 +495,9 @@ function PreviewInspectorJsxScenarioRow({ roots, scenario, scenarios }) {
           'data-pending': pending,
           'data-reached': reached,
         },
-        pending
-          ? enabled ? 'QUEUED ON' : 'QUEUED OFF'
-          : lineageBlocked ? 'BLOCKED' : reached ? enabled ? 'ON' : 'OFF' : 'WAIT',
+        !controllable ? 'Not tracked' : pending
+          ? scenario.override ? 'ON selected' : 'OFF selected'
+          : lineageBlocked && reached ? 'Parent blocked' : reached ? enabled ? 'ON' : 'OFF' : 'Not reached',
       ),
       React.createElement(
         'span',
@@ -506,7 +516,7 @@ function PreviewInspectorJsxScenarioRow({ roots, scenario, scenarios }) {
           pressed: controllable && !enabled && (reached || pending),
           title: reached
             ? 'Force the OFF JSX branch'
-            : 'Queue this branch and every required parent switch',
+            : 'Save OFF and select the required parent branches; apply when this condition runs',
         },
         'Off',
       ),
@@ -518,7 +528,7 @@ function PreviewInspectorJsxScenarioRow({ roots, scenario, scenarios }) {
           pressed: controllable && enabled,
           title: reached
             ? 'Force the ON JSX branch'
-            : 'Queue this branch and every required parent switch',
+            : 'Save ON and select the required parent branches; apply when this condition runs',
         },
         'On',
       ),

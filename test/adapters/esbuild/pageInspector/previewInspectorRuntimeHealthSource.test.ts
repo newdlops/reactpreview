@@ -2,6 +2,7 @@
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorRuntimeHealthSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRuntimeHealthSource';
+import { readPreviewRuntimeHealthMessage } from '../../../../src/presentation/previewRuntimeHealthProtocol';
 
 /** Minimal host message surface emitted by the generated health runtime. */
 interface RuntimeHealthMessage {
@@ -35,6 +36,39 @@ interface RuntimeHealthFixture {
 }
 
 describe('Preview Inspector runtime health source', () => {
+  it.each([
+    'automatic-condition-rolled-back',
+    'automatic-resolution-rolled-back',
+    'neural-assistance-requested',
+    'neural-residual-corrected',
+    'neural-residual-data-flow-trained',
+    'neural-residual-selected',
+    'neural-residual-shared',
+    'neural-residual-trained',
+    'neural-page-context-failed',
+    'neural-page-context-verified',
+    'neural-page-execution-context-rejected',
+    'neural-page-execution-context-verified',
+    'page-execution-preparation-stopped',
+  ])('delivers %s through the strict browser-to-host protocol', (event) => {
+    const runtime = createRuntimeHealthFixture();
+    runtime.record({ category: 'neural-residual', detail: { updates: 2 }, event });
+    expect(runtime.messages).toHaveLength(1);
+    expect(readPreviewRuntimeHealthMessage(runtime.messages[0])?.event.event).toBe(event);
+    expect(
+      readPreviewRuntimeHealthMessage({
+        ...runtime.messages[0],
+        event: { ...runtime.messages[0]?.event, event: 'neural-unrecognized' },
+      }),
+    ).toBeUndefined();
+    expect(
+      readPreviewRuntimeHealthMessage({
+        ...runtime.messages[0],
+        event: { ...runtime.messages[0]?.event, detail: { constructor: 'unsafe' } },
+      }),
+    ).toBeUndefined();
+  });
+
   /** Records the selected shell and inferred route as an independent informational decision. */
   it('records page context selection evidence', () => {
     const runtime = createRuntimeHealthFixture();

@@ -75,6 +75,29 @@ describe('requiresPreviewRouter', () => {
 });
 
 describe('selectPreviewInitialRouterBuild', () => {
+  it('uses frontier ownership only until the reached graph has proved it absent', () => {
+    const target = { consumesRouter: true, ownsRouter: false };
+    const frontier = { consumesRouter: true, ownsRouter: true };
+    expect(selectPreviewInitialRouterBuild(undefined, target, frontier)).toEqual({
+      automaticallyWrap: false,
+      enabled: true,
+    });
+    expect(selectPreviewInitialRouterBuild(target, target, frontier)).toEqual({
+      automaticallyWrap: true,
+      enabled: true,
+    });
+  });
+
+  it('retains exact no-consumer evidence against a broader provisional graph', () => {
+    const absent = { consumesRouter: false, ownsRouter: false };
+    expect(
+      selectPreviewInitialRouterBuild(absent, absent, {
+        consumesRouter: true,
+        ownsRouter: true,
+      }),
+    ).toEqual({ automaticallyWrap: false, enabled: false });
+  });
+
   /** Direct target evidence avoids a redundant discovery build on a cold large graph. */
   it('preseeds a MemoryRouter from the current target before graph discovery', () => {
     expect(

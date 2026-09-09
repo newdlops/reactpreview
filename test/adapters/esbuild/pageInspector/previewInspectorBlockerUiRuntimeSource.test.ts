@@ -154,7 +154,7 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain('PREVIEW_INSPECTOR_REQUIRED_PATH_SUMMARY_LIMIT = 10');
     expect(source).toContain("'ran · no visible element'");
     expect(source).toContain('Rendering stops at this point in the component tree.');
-    expect(source).toContain('This page path did not use the current file.');
+    expect(source).toContain('Why this file is missing is not yet known');
     expect(source).toContain("helpKind = 'flow-outcome'");
     expect(source).toContain('React Preview supplied a local preview value here.');
     expect(source).toContain('This child overlay is explicitly forced OFF.');
@@ -321,9 +321,9 @@ describe('Preview Inspector blocker UI runtime source', () => {
     for (const expected of [
       'Automatic search stopped because a generated preview value caused a render error and was reverted.',
       'Page: Application · loaded',
-      'Current file: Target · not used on this path',
+      'Current file: Target · not reached',
       'Page path: Application > Page > Target',
-      'No login, session, or permission condition has been proven for this path yet.',
+      'Only observed target-path conditions can establish a code-logic cause.',
       'Possible data needed next (1): useProfile.value',
       'Automatic requirement search: pass 2 of 8 · stopped: unsafe generated values reverted · 1 possible field(s) seen.',
       'Preview values never change source code or backend data. Your manual condition and payload choices stay in control.',

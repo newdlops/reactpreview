@@ -26,6 +26,7 @@ import type {
   PreviewInspectorShallowVisualRelation,
 } from './previewInspectorShallowVisualTypes';
 import { isPreviewInspectorComponentShapedBinding } from './previewInspectorVisualBinding';
+import { createPreviewInspectorShallowRouteAlternativeTest } from './previewInspectorShallowVisualRouteScope';
 
 const MAXIMUM_LOCAL_TRANSPORT_DEPTH = 6;
 const MAXIMUM_RAW_VISUAL_PATHS = 512;
@@ -205,7 +206,8 @@ export function collectPreviewInspectorShallowVisualEvidence(
       plan.truncated ||
       plan.outcomes.some(
         (outcome) =>
-          outcome.componentNames.length >= PREVIEW_REACT_RENDER_OUTCOME_LIMITS.componentsPerOutcome,
+          flattenVisualOccurrences(outcome.componentTree).length >=
+          PREVIEW_REACT_RENDER_OUTCOME_LIMITS.componentsPerOutcome,
       ),
   );
   truncated ||= outcomeEvidenceTruncated;
@@ -233,7 +235,8 @@ export function collectPreviewInspectorShallowVisualEvidence(
           selected.node.line,
           selected.node.column,
         );
-        const visualParentIds = new Set([selected.parentId, ...selected.ancestors]);
+        // The forest root also owns chrome beside an ancestor Route or layout.
+        const visualParentIds = new Set([-1, selected.parentId, ...selected.ancestors]);
         for (const occurrence of occurrences) {
           if (occurrence.id === selected.id) continue;
           const relation = classifyVisualRelation(
@@ -275,10 +278,19 @@ export function collectPreviewInspectorShallowVisualEvidence(
     resolveOrigins,
     selectedChildPath,
   });
+  const isRouteAlternative = createPreviewInspectorShallowRouteAlternativeTest(
+    importerPath,
+    options.sourceText,
+  );
+  const scopedCandidatePaths = candidatePaths.map((visualPath) =>
+    isRouteAlternative(visualPath.occurrenceStart, visualPath.selectedOccurrenceStart)
+      ? Object.freeze({ ...visualPath, relation: 'route-alternative' as const })
+      : visualPath,
+  );
   const admittedCandidatePaths = deduplicateVisualPaths(
     options.admitVisualPath === undefined
-      ? candidatePaths
-      : candidatePaths.filter(options.admitVisualPath),
+      ? scopedCandidatePaths
+      : scopedCandidatePaths.filter(options.admitVisualPath),
   );
   if (admittedCandidatePaths.length > MAXIMUM_RAW_VISUAL_PATHS) truncated = true;
   return Object.freeze({
@@ -461,7 +473,9 @@ function appendOwnerFallbackPaths(options: {
   const reachableOwnerIds = collectReachableOwnerIds(options.facts, options.ownerExportName);
   const selectedEdges = options.facts.localEdges.filter(
     (edge) =>
-      isVisualRenderEdge(edge.kind, edge.invocation?.mode, edge.childLocalName) &&
+      (isVisualRenderEdge(edge.kind, edge.invocation?.mode, edge.childLocalName) ||
+        (edge.kind === 'route-branch' &&
+          isPreviewInspectorComponentShapedBinding(edge.childLocalName))) &&
       (reachableOwnerIds.size === 0 || reachableOwnerIds.has(edge.ownerId)) &&
       options
         .resolveOrigins(edge.childLocalName)
@@ -522,12 +536,10 @@ function isVisualRenderEdge(
   /*
    * Route factories place path builders and component elements under one configuration owner.
    * `route-branch` alone therefore proves shared control flow, not a visual React value. A route
-   * child must additionally look like a component binding; lowercase path/map helpers remain exact
-   * executable dependencies so their string/object contracts cannot become placeholder elements.
+   * child must have an actual render invocation. Enums and path/map helpers remain exact executable
+   * dependencies so their data contracts cannot become placeholder elements. Only the already-proven
+   * selected child may anchor a route factory's registry in appendOwnerFallbackPaths.
    */
-  if (kind === 'route-branch') {
-    return true;
-  }
   return (
     kind === 'component-render' ||
     kind === 'create-element' ||

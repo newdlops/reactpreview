@@ -13,7 +13,7 @@ describe('Preview Inspector target attempt runtime source', () => {
         `
         let notifications = 0;
         let treeRefreshes = 0;
-        let currentTime = 100;
+        const currentTime = 100;
         const timers = [];
         Date.now = () => currentTime;
         globalThis.setTimeout = (callback, delay = 0) => {
@@ -53,8 +53,6 @@ describe('Preview Inspector target attempt runtime source', () => {
         const duplicateSchedule = schedulePreviewInspectorTargetReachabilityResumeAfterAutoAttempt(
           attempt,
         );
-        currentTime += 160;
-        timers.shift().callback();
         const duplicateResume = resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt);
         globalThis.__result = {
           duplicateResume,
@@ -67,6 +65,7 @@ describe('Preview Inspector target attempt runtime source', () => {
           probeRevision: state.probeRevision,
           retainedKey: attempt.targetReachabilityKey,
           status: state.status,
+          timerCount: timers.length,
           treeRefreshes,
         };
       `,
@@ -84,6 +83,7 @@ describe('Preview Inspector target attempt runtime source', () => {
         probeRevision: 4,
         retainedKey: 'candidate:Target',
         status: 'probing',
+        timerCount: 0,
         treeRefreshes: 1,
       });
     },
@@ -321,13 +321,12 @@ describe('Preview Inspector target attempt runtime source', () => {
     expect(context.__result).toEqual({ rollbackCalls: 0, rolledBack: false });
   });
 
-  /** Prevents an older condition grace timer from resuming after a newer Auto attempt takes over. */
-  it('retires a superseded delayed resume without advancing the new corridor attempt', () => {
+  /** Cached hot entries may still deliver their old continuation after a newer attempt takes over. */
+  it('retires a superseded legacy continuation without advancing the new corridor attempt', () => {
     const context: { __result?: Record<string, unknown> } = {};
     vm.runInNewContext(
       `
         let notifications = 0;
-        let scheduledCallback;
         const state = { key: 'candidate:Target', probeRevision: 5, status: 'advancing' };
         const oldAttempt = {
           autoMode: 'target-guided-auto',
@@ -341,17 +340,16 @@ describe('Preview Inspector target attempt runtime source', () => {
           renderConditions: new Map(),
           targetReachabilityByKey: new Map([[state.key, state]]),
         };
-        globalThis.setTimeout = (callback) => { scheduledCallback = callback; return 1; };
         const notifyPreviewInspector = () => { notifications += 1; };
         const schedulePreviewInspectorTreeRefresh = () => undefined;
         ${createPreviewInspectorTargetAttemptRuntimeSource()}
-        schedulePreviewInspectorTargetReachabilityResumeAfterAutoAttempt(oldAttempt);
+        const legacyContinuation = () => resumePreviewInspectorTargetReachabilityAfterConditionAttempt(oldAttempt);
         previewInspectorSession.blockerTraceActiveAttempt = {
           autoMode: 'minimum-requirement-dfs',
           blocker: { id: 'target-reachability:' + state.key },
           traceId: 'trace-new',
         };
-        scheduledCallback();
+        legacyContinuation();
         globalThis.__result = {
           handled: oldAttempt.targetReachabilityResumeHandled,
           notifications,
@@ -367,6 +365,46 @@ describe('Preview Inspector target attempt runtime source', () => {
       notifications: 0,
       probeRevision: 5,
       status: 'advancing',
+    });
+  });
+
+  /** A caller cannot release a live corridor before the trace has actually settled. */
+  it.each([
+    'target-guided-auto',
+    'target-overlay-auto',
+    'target-prop-repair-auto',
+    'deterministic-minimum-auto',
+    'minimum-requirement-dfs',
+  ])('keeps an unsettled %s attempt locked without scheduling work', (mode) => {
+    const context: { result?: unknown } = {};
+    vm.runInNewContext(
+      `
+      let notifications = 0;
+      const state = { key: 'page:Target', status: 'settling-auto-attempt', probeRevision: 3 };
+      const attempt = { autoMode: ${JSON.stringify(mode)}, targetReachabilityKey: state.key, traceId: 'pending' };
+      const previewInspectorSession = {
+        blockerTraceActiveAttempt: attempt,
+        targetReachabilityByKey: new Map([[state.key, state]]),
+      };
+      const notifyPreviewInspector = () => { notifications += 1; };
+      const schedulePreviewInspectorTreeRefresh = () => { notifications += 1; };
+      ${createPreviewInspectorTargetAttemptRuntimeSource()}
+      globalThis.result = {
+        scheduled: schedulePreviewInspectorTargetReachabilityResumeAfterAutoAttempt(attempt),
+        resumed: resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt),
+        pending: isPreviewInspectorTargetAutoAttemptPending(state),
+        notifications,
+        state,
+      };
+    `,
+      context,
+    );
+    expect(context.result).toEqual({
+      scheduled: false,
+      resumed: false,
+      pending: true,
+      notifications: 0,
+      state: { key: 'page:Target', status: 'settling-auto-attempt', probeRevision: 3 },
     });
   });
 

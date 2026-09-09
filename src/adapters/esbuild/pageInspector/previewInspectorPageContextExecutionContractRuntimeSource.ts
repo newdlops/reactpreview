@@ -567,10 +567,14 @@ function capturePreviewInspectorNeuralPageContextExecutionContract(
 
 /** Marks a candidate transition so its own contract is restored after the compiler hand-off. */
 function preparePreviewInspectorNeuralPageContextExecutionContract(descriptor, candidateId, origin) {
+  if (origin === 'neural' && typeof isPreviewInspectorNeuralAssistancePaused === 'function' &&
+      isPreviewInspectorNeuralAssistancePaused()) return false;
   const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
   if (record === undefined || typeof candidateId !== 'string') return false;
   record.pendingExecutionContractCandidateId = candidateId;
   record.pendingExecutionContractOrigin = origin;
+  record.pendingExecutionContractControlRevision =
+    Number(previewInspectorSession.neuralHumanControlRevision) || 0;
   return true;
 }
 
@@ -581,6 +585,15 @@ function activatePreviewInspectorNeuralPageContextExecutionContract(descriptor, 
     record === undefined || record.pendingExecutionContractCandidateId !== candidateId ||
     typeof restorePreviewInspectorNeuralPageGenerationBaseline !== 'function'
   ) return false;
+  if (record.pendingExecutionContractOrigin === 'neural' && (
+    (record.pendingExecutionContractControlRevision ?? 0) !==
+      (Number(previewInspectorSession.neuralHumanControlRevision) || 0) ||
+    typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused()
+  )) {
+    record.pendingExecutionContractCandidateId = undefined;
+    record.pendingExecutionContractOrigin = undefined;
+    return false;
+  }
   const contract = record.executionContractByCandidateId.get(candidateId);
   const recoverySnapshot = record.pageContextRecoveryRecipe?.sourceCandidateId === candidateId
     ? undefined

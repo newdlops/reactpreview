@@ -8,6 +8,7 @@
 import type { PreviewRenderExportReference, PreviewRenderInvocation } from '../renderGraph';
 import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
 import type { PreviewInspectorPageCandidate } from './previewInspectorAncestorTypes';
+import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
 
 /** The semantic position of one source on the selected target-to-page path. */
 export type PreviewInspectorPagePathSegmentRole =
@@ -48,6 +49,8 @@ export interface PreviewInspectorMountSurface {
   readonly bypassedWrapperNames: readonly string[];
   readonly exportName: string;
   readonly id: string;
+  /** Bounded neutral props for a detached authored sibling; never shared with target ownership. */
+  readonly propInference?: PreviewInferredExportProps;
   readonly localName?: string;
   readonly omittedTopLevelEffectCount: number;
   readonly preservedWrapperKinds?: readonly ('forward-ref' | 'memo' | 'styled')[];

@@ -5,6 +5,7 @@
  * drawer dimensions, floating coordinates, pointer/keyboard gestures, and viewport clamping. This
  * keeps project React state untouched while letting the Inspector move away from important content.
  */
+import { createPreviewInspectorChromeStyleRuntimeSource } from './previewInspectorChromeStyleRuntimeSource';
 
 /**
  * Creates browser source for resizable bottom/side drawers and a movable floating Inspector.
@@ -17,6 +18,7 @@
  */
 export function createPreviewInspectorLayoutRuntimeSource(): string {
   return String.raw`
+${createPreviewInspectorChromeStyleRuntimeSource()}
 /** CSS is scoped by the Inspector Shadow Root and cannot alter the rendered application page. */
 const previewInspectorDevtoolsCss = [
   ':host{all:initial!important;color-scheme:light dark!important}',
@@ -44,7 +46,7 @@ const previewInspectorDevtoolsCss = [
   'color:var(--vscode-symbolIcon-interfaceForeground,#75beff)}',
   '.rpi-neural-status[data-phase="learned"],.rpi-neural-status[data-phase="applied"],.rpi-neural-status[data-phase="unchanged"]{background:color-mix(in srgb,var(--vscode-testing-iconPassed,#73c991) 10%,transparent);',
   'color:var(--vscode-testing-iconPassed,#73c991)}',
-  '.rpi-neural-status[data-phase="needs-choice"]{background:color-mix(in srgb,var(--vscode-charts-yellow,#cca700) 10%,transparent);',
+  '.rpi-neural-status[data-phase="needs-choice"],.rpi-neural-status[data-phase="incomplete"]{background:color-mix(in srgb,var(--vscode-charts-yellow,#cca700) 10%,transparent);',
   'color:var(--vscode-charts-yellow,#cca700)}',
   '.rpi-neural-status[data-phase="paused"]{background:color-mix(in srgb,var(--vscode-errorForeground,#f48771) 10%,transparent);',
   'color:var(--vscode-errorForeground,#f48771)}',
@@ -53,7 +55,7 @@ const previewInspectorDevtoolsCss = [
   '.rpi-neural-status-indicator{align-items:center;display:inline-flex;flex:0 0 10px;font-size:9px;height:10px;justify-content:center;width:10px}',
   '.rpi-neural-status[data-phase="learning"]>.rpi-neural-status-indicator,.rpi-neural-status[data-phase="applying"]>.rpi-neural-status-indicator{animation:rpi-neural-learning-spin .8s linear infinite;',
   'border:1.5px solid currentColor;border-radius:50%;border-right-color:transparent}',
-  '.rpi-neural-status-label{min-width:0;overflow:hidden;text-overflow:ellipsis}',
+  '.rpi-neural-status-label{color:var(--vscode-editor-foreground,#ddd);min-width:0;overflow:hidden;text-overflow:ellipsis}',
   '.rpi-neural-choice-list{background:color-mix(in srgb,var(--vscode-charts-yellow,#cca700) 6%,transparent);border:1px solid var(--rpi-border);',
   'border-left:3px solid var(--vscode-charts-yellow,#cca700);border-radius:4px;display:grid;flex:1 0 100%;margin:1px 0 0;max-height:min(52dvh,520px);max-width:100%;min-height:0;min-width:0;overflow:hidden;padding:7px 8px}',
   '.rpi-neural-choice-list>legend{color:var(--vscode-charts-yellow,#cca700);font-size:10px;font-weight:800;padding:0 4px}',
@@ -69,6 +71,10 @@ const previewInspectorDevtoolsCss = [
   '.rpi-neural-choice-path-recommendation .rpi-neural-choice-path-actions>.rpi-button:first-child:hover{background:var(--vscode-button-hoverBackground,#1177bb)}',
   '.rpi-neural-choice-path-copy{display:grid;gap:1px;min-width:0}.rpi-neural-choice-path-copy>span{color:var(--rpi-muted);font-size:9px;text-transform:uppercase}',
   '.rpi-neural-choice-path-copy>strong{font-size:10px;min-width:0;overflow-wrap:anywhere}',
+  '.rpi-neural-context .rpi-neural-choice-path-copy>span{font-size:10px;line-height:1.4;overflow-wrap:anywhere;text-transform:none}',
+  '.rpi-neural-context-steps{display:grid;gap:7px;list-style:none;margin:0;min-width:0;padding:0}',
+  '.rpi-neural-context-steps>li{align-items:start;display:grid;gap:6px;grid-template-columns:minmax(0,1fr) auto;min-width:0}',
+  '.rpi-neural-context .rpi-button{align-self:start;min-height:28px}.rpi-neural-context .rpi-neural-choice-path-copy{gap:3px}',
   '.rpi-neural-choice-path-cycle,.rpi-neural-choice-path-verified,.rpi-neural-choice-path-note{font-size:9px;line-height:1.4;overflow-wrap:anywhere}',
   '.rpi-neural-choice-path-cycle{color:var(--vscode-charts-yellow,#cca700)}.rpi-neural-choice-path-verified{color:var(--vscode-testing-iconPassed,#73c991)}',
   '.rpi-neural-choice-path-alternatives{font-size:10px;min-width:0}.rpi-neural-choice-path-alternatives>summary{color:var(--vscode-textLink-foreground,#3794ff);cursor:pointer;outline:none;width:max-content;max-width:100%}',
@@ -85,10 +91,18 @@ const previewInspectorDevtoolsCss = [
   '.rpi-neural-choice-group{display:grid;gap:5px;min-width:0}.rpi-neural-choice-group+.rpi-neural-choice-group{border-top:1px solid var(--rpi-border);padding-top:7px}',
   '.rpi-neural-choice-heading{align-items:baseline;display:flex;gap:7px;justify-content:space-between;min-width:0}',
   '.rpi-neural-choice-heading>strong{font-family:var(--vscode-editor-font-family,monospace);min-width:0;overflow-wrap:anywhere}',
-  '.rpi-neural-choice-heading>span{color:var(--rpi-muted);flex:0 1 auto;font-size:9px;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.rpi-neural-choice-heading>span{color:var(--rpi-muted);flex:0 1 auto;font-size:10px;max-width:55%;overflow-wrap:anywhere}',
   '.rpi-neural-choice-options{display:flex;flex-wrap:wrap;gap:5px;list-style:none;margin:0;min-width:0;padding:0}',
   '.rpi-neural-choice-options>li{display:grid;flex:1 1 150px;gap:2px;max-width:100%;min-width:min(150px,100%)}.rpi-neural-choice-options .rpi-button{max-width:100%;overflow-wrap:anywhere;text-align:left;white-space:normal;width:100%}',
   '.rpi-neural-choice-option-copy{color:var(--rpi-muted);font-size:9px;line-height:1.35;overflow-wrap:anywhere;padding:0 2px}',
+  '.rpi-neural-choice-origin,.rpi-neural-choice-current,.rpi-neural-choice-origin-note{color:var(--vscode-editor-foreground,#ddd);font-size:10px;line-height:1.4;min-width:0;overflow-wrap:anywhere}',
+  '.rpi-neural-choice-origin,.rpi-neural-choice-current{padding:0 2px}.rpi-neural-choice-current{font-weight:600}',
+  '.rpi-neural-choice-value-state{display:grid;gap:2px}',
+  '.rpi-neural-controls-heading>.rpi-button[data-rpi-variant="choice-review"]{flex:1 1 220px;max-width:100%;padding:5px 7px;text-align:left;white-space:normal}',
+  '.rpi-choice-review-copy{display:grid;gap:2px;min-width:0;overflow-wrap:anywhere}.rpi-choice-review-copy>strong{font-size:11px}.rpi-choice-review-copy>span{font-size:10px;line-height:1.4}.rpi-choice-review-hint{font-style:italic}',
+  '.rpi-neural-choice-options>li,.rpi-neural-context-steps>li,.rpi-neural-choice-path-recommendation{border:1px solid transparent;border-radius:3px;padding:4px}',
+  '.rpi-neural-choice-options>li[data-recommended="true"],.rpi-neural-context li[data-recommended="true"],.rpi-neural-choice-path-recommendation[data-recommended="true"],.rpi-neural-choice-path-alternatives li[data-recommended="true"]{background:color-mix(in srgb,var(--vscode-focusBorder,#007fd4) 10%,transparent);border:1px solid var(--vscode-focusBorder,#007fd4)}',
+  '.rpi-neural-choice-list span.rpi-neural-choice-badge{align-self:start;background:var(--vscode-button-background,#0e639c);border-radius:3px;color:var(--vscode-button-foreground,#fff);font-size:10px;font-weight:600;justify-self:start;line-height:1.4;max-width:100%;overflow-wrap:anywhere;padding:2px 6px;text-transform:none;width:fit-content}',
   '.rpi-neural-choice-footer{align-items:center;color:var(--rpi-muted);display:flex;font-size:9px;gap:7px;justify-content:space-between;min-width:0}',
   '.rpi-neural-choice-footer>span{min-width:0;overflow-wrap:anywhere}.rpi-neural-choice-actions{display:flex;flex:0 0 auto;flex-wrap:wrap;gap:5px;justify-content:flex-end}',
   '@keyframes rpi-neural-learning-spin{to{transform:rotate(360deg)}}',
@@ -138,6 +152,10 @@ const previewInspectorDevtoolsCss = [
   'font-weight:800;height:24px;justify-content:center;width:24px}',
   '.rpi-friendly-status-copy{display:grid;gap:1px;min-width:0}.rpi-friendly-status-copy>strong{font-size:12px}',
   '.rpi-friendly-status-copy>span{color:var(--rpi-muted);font-size:10px;overflow-wrap:anywhere}',
+  '.rpi-visibility-evidence{display:grid;gap:4px;margin-top:6px;min-width:0;font-size:11px;line-height:1.45;overflow-wrap:anywhere}',
+  '.rpi-visibility-evidence>span{min-width:0}.rpi-visibility-evidence strong{color:var(--vscode-editor-foreground,#ddd)}',
+  '.rpi-visibility-evidence code{font:inherit;font-family:var(--vscode-editor-font-family,monospace);white-space:pre-wrap;overflow-wrap:anywhere}',
+  '.rpi-visibility-evidence>.rpi-button{justify-self:start;max-width:100%;white-space:normal}',
   '.rpi-friendly-status-steps{align-items:center;display:flex!important;flex-wrap:wrap;gap:4px;margin-top:3px}',
   '.rpi-friendly-status-step{border:1px solid var(--rpi-border);border-radius:10px;color:inherit!important;padding:1px 6px}',
   '.rpi-friendly-status-step[data-state="blocked"]{border-color:var(--vscode-errorForeground,#f48771);color:var(--vscode-errorForeground,#f48771)!important}',
@@ -220,7 +238,6 @@ const previewInspectorDevtoolsCss = [
   'color:var(--rpi-muted);font-size:9px;letter-spacing:.04em;padding:6px 7px;position:sticky;text-align:left;text-transform:uppercase;top:0;z-index:1}',
   '.rpi-scenario-table td{border-bottom:1px solid color-mix(in srgb,var(--rpi-border) 68%,transparent);padding:7px;vertical-align:top}',
   '.rpi-scenario-table tbody tr:hover{background:var(--vscode-list-hoverBackground,#2a2d2e)}',
-  '.rpi-scenario-table tbody tr[data-reached="false"]{opacity:.66}',
   '.rpi-scenario-table tbody tr[data-lineage-blocked="true"]{background:color-mix(in srgb,var(--vscode-charts-yellow,#cca700) 7%,transparent)}',
   '.rpi-scenario-expression{display:grid;gap:3px;min-width:270px;max-width:460px}',
   '.rpi-scenario-lineage{align-items:stretch;display:flex;min-width:0}',
@@ -240,7 +257,7 @@ const previewInspectorDevtoolsCss = [
   '.rpi-scenario-state[data-reached="false"]{color:var(--rpi-muted)}',
   '.rpi-scenario-state[data-pending="true"]{color:var(--vscode-charts-blue,#75beff)}',
   '.rpi-scenario-table tr[data-lineage-blocked="true"] .rpi-scenario-state{color:var(--vscode-errorForeground,#f48771)}',
-  '.rpi-scenario-mode{color:var(--rpi-muted);display:block;font-size:9px;margin-top:3px}',
+  '.rpi-scenario-mode{color:var(--rpi-muted);display:block;font-size:10px;line-height:1.4;margin-top:3px;min-width:130px;max-width:210px;overflow-wrap:anywhere;white-space:normal}',
   '.rpi-scenario-actions{min-width:176px;white-space:nowrap}.rpi-scenario-actions>.rpi-button{margin:0 3px 3px 0;min-width:42px}',
   '.rpi-detail-scroll{min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}',
   '.rpi-tree,.rpi-tree-group{box-sizing:border-box;list-style:none;margin:0;min-width:100%;width:max-content}',
@@ -442,6 +459,7 @@ const previewInspectorDevtoolsCss = [
   '.rpi-blocker-help{grid-template-columns:24px minmax(0,1fr);padding:7px}',
   '.rpi-console-controls{grid-template-columns:1fr}.rpi-console-controls>*{grid-column:1!important;max-width:100%;width:100%}}',
   '@media(max-width:460px){.rpi-shell{max-width:calc(100vw - 8px)}}',
+  previewInspectorChromeCss,
 ].join('');
 
 const PREVIEW_INSPECTOR_LAYOUT_MARGIN = 8;

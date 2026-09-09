@@ -73,9 +73,9 @@ function PreviewInspectorNavigationPane({ node, roots, selectedId, status, trunc
     isPreviewInspectorDeferredUiTriggerNode(node) ||
     isPreviewInspectorRenderChoiceNode(node);
   const tabs = [
-    ['scenarios', 'JSX scenarios'],
+    ['scenarios', 'Conditions'],
     ['tree', 'Components'],
-    ['details', renderControlSelected ? 'Selected blocker' : 'Inspect selection'],
+    ['details', renderControlSelected ? 'Blocker' : 'Details'],
     ['console', 'Console (' + String(readPreviewInspectorConsoleEntries().length) + ')'],
   ];
   return React.createElement(
@@ -105,6 +105,10 @@ function PreviewInspectorNavigationPane({ node, roots, selectedId, status, trunc
             role: 'tab',
             tabIndex: navigationTab === id ? 0 : -1,
             type: 'button',
+            title: id === 'scenarios' ? 'Explore JSX conditions and rendered branches'
+              : id === 'tree' ? 'Find and select a React component'
+              : id === 'details' ? 'Inspect the selected component or blocker'
+              : 'Review captured runtime messages',
           },
           label,
         )),

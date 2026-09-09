@@ -76,14 +76,14 @@ describe('Preview Inspector target reachability progress UI', () => {
     const text = collectRenderedText(detail).join(' ');
 
     expect(runtime.isResolving(blocker)).toBe(false);
-    expect(node.name).toBe('Current file not used · default');
+    expect(node.name).toBe('Target not reached · default');
     expect(runtime.badge({ blocker, blockerKind: 'target-reachability' })).toBe('page path');
     expect(detail.children[0]).toMatchObject({
       props: { className: 'rpi-error', role: 'alert' },
     });
-    expect(text).toContain('The page loaded, but this path did not use default.');
+    expect(text).toContain('Why this file is missing is not yet known');
     expect(collectRenderedText(guide).join(' ')).toContain(
-      'This page path did not use the current file.',
+      'Why this file is missing is not yet known',
     );
     expect(guide.props['data-help-kind']).toBe('flow-outcome');
   });

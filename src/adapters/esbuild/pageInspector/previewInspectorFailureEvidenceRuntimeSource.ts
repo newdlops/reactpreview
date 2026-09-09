@@ -20,6 +20,8 @@ export const PREVIEW_INSPECTOR_FAILURE_EVIDENCE_LIMIT = 32;
 export function createPreviewInspectorFailureEvidenceRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_FAILURE_EVIDENCE_LIMIT = ${PREVIEW_INSPECTOR_FAILURE_EVIDENCE_LIMIT};
+const PREVIEW_INSPECTOR_FAILURE_MESSAGE_LIMIT = 4_096;
+const PREVIEW_INSPECTOR_FAILURE_CAUSE_LIMIT = 8;
 const PREVIEW_INSPECTOR_FAILURE_COLLECTION_METHOD_NAMES = new Set(
   ${JSON.stringify(PREVIEW_COLLECTION_METHOD_NAMES)},
 );
@@ -60,6 +62,48 @@ function readPreviewInspectorFailureMessage(error) {
   }
 }
 
+/** Reads diagnostic data without invoking application accessors or string conversion. */
+function readPreviewInspectorFailureDiagnosticValue(value, key, inherit = false) {
+  try {
+    for (let depth = 0; depth < (inherit ? 3 : 1); depth += 1) {
+      if (value === null || typeof value !== 'object') return undefined;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor !== undefined) return 'value' in descriptor ? descriptor.value : undefined;
+      value = inherit ? Object.getPrototypeOf(value) : undefined;
+    }
+  } catch { /* Revoked proxies and unavailable metadata are not recovery evidence. */ }
+  return undefined;
+}
+
+/** Walks a small causal chain, never a project-owned aggregate, stack, getter, or recursive graph. */
+function readPreviewInspectorFailureDiagnostics(error) {
+  const diagnostics = [];
+  const seen = new Set();
+  for (let depth = 0; depth < PREVIEW_INSPECTOR_FAILURE_CAUSE_LIMIT; depth += 1) {
+    if (error === undefined || error === null || seen.has(error)) break;
+    seen.add(error);
+    const message = typeof error === 'string'
+      ? error : readPreviewInspectorFailureDiagnosticValue(error, 'message');
+    const name = readPreviewInspectorFailureDiagnosticValue(error, 'name', true);
+    diagnostics.push({
+      message: typeof message === 'string'
+        ? message.slice(0, PREVIEW_INSPECTOR_FAILURE_MESSAGE_LIMIT) : '',
+      name: typeof name === 'string' ? name.slice(0, 80) : '',
+    });
+    error = readPreviewInspectorFailureDiagnosticValue(error, 'cause');
+  }
+  return diagnostics;
+}
+
+/** Keeps wrapped missing lexical bindings outside all editable value-repair paths. */
+function readPreviewInspectorDiagnosticRuntimeGlobal(diagnostic) {
+  const message = diagnostic.message.trim();
+  const explicit = message.match(/(?:^|\b)ReferenceError:\s*([A-Za-z_$][\w$]*) is not defined\b/u);
+  if (explicit !== null) return explicit[1];
+  return diagnostic.name === 'ReferenceError'
+    ? message.match(/^([A-Za-z_$][\w$]*) is not defined\b/u)?.[1] : undefined;
+}
+
 /**
  * Extracts a missing lexical/runtime identifier without treating it as editable component data.
  * Reference errors describe JavaScript bindings, not property paths that Smart Fill can add to a
@@ -67,15 +111,11 @@ function readPreviewInspectorFailureMessage(error) {
  * are accepted because browser and React boundaries may cross realms before Inspector sees them.
  */
 function readPreviewInspectorMissingRuntimeGlobalName(error) {
-  const message = readPreviewInspectorFailureMessage(error).trim();
-  const explicitReferenceError = message.match(
-    /(?:^|\b)ReferenceError:\s*([A-Za-z_$][\w$]*) is not defined\b/u,
-  );
-  if (explicitReferenceError !== null) return explicitReferenceError[1];
-  let errorName = '';
-  try { errorName = typeof error?.name === 'string' ? error.name : ''; } catch { errorName = ''; }
-  if (errorName !== 'ReferenceError') return undefined;
-  return message.match(/^([A-Za-z_$][\w$]*) is not defined\b/u)?.[1];
+  for (const diagnostic of readPreviewInspectorFailureDiagnostics(error)) {
+    const globalName = readPreviewInspectorDiagnosticRuntimeGlobal(diagnostic);
+    if (globalName !== undefined) return globalName;
+  }
+  return undefined;
 }
 
 /** Identifies conventional classic and automatic JSX factory bindings for focused diagnostics. */
@@ -155,11 +195,29 @@ function readPreviewInspectorDestructurePropertyPath(propertyName, receiverText)
  * fallback so error reporting is useful even when no compiler metadata reaches the boundary.
  */
 function readPreviewInspectorErrorPropertyPaths(error, sourceEvidence = []) {
-  const message = readPreviewInspectorFailureMessage(error);
+  const diagnostics = readPreviewInspectorFailureDiagnostics(error);
+  if (diagnostics.some((diagnostic) =>
+    readPreviewInspectorDiagnosticRuntimeGlobal(diagnostic) !== undefined)) return [];
   const sourceRecords = readPreviewInspectorFailureSourcePathRecords(sourceEvidence);
+  for (const diagnostic of diagnostics) {
+    const paths = readPreviewInspectorDiagnosticPropertyPaths(diagnostic.message, sourceRecords);
+    // The nearest actionable error owns recovery; do not merge unrelated outer/cause fields.
+    if (paths.length > 0) return paths;
+  }
+  return [];
+}
+
+/** Parses bounded engine diagnostics; explicit receivers never become guessed project expressions. */
+function readPreviewInspectorDiagnosticPropertyPaths(message, sourceRecords) {
   const paths = [];
+  const seen = new Set();
   const add = (path) => {
-    if (typeof path === 'string' && path.length > 0) paths.push(path);
+    if (
+      typeof path !== 'string' || path.length === 0 || path.length > 240 || seen.has(path) ||
+      paths.length >= PREVIEW_INSPECTOR_FAILURE_EVIDENCE_LIMIT
+    ) return;
+    seen.add(path);
+    paths.push(path);
   };
   const addObservedProperty = (propertyName) => {
     add(correlatePreviewInspectorErrorPropertyPath(propertyName, sourceRecords) ?? propertyName);
@@ -181,6 +239,21 @@ function readPreviewInspectorErrorPropertyPaths(error, sourceEvidence = []) {
   }
   for (const match of message.matchAll(/\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+) is not a function\b/gu)) {
     add(match[1] + '()');
+  }
+  for (const match of message.matchAll(
+    /(?:^|[\s:(])([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*) is not iterable\b/gu,
+  )) {
+    if (!['false', 'null', 'true', 'undefined'].includes(match[1])) add(match[1]);
+  }
+  for (const match of message.matchAll(
+    /(?:undefined|null) is not an object \(evaluating ['"]([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)['"]\)/gu,
+  )) {
+    add(match[1]);
+  }
+  for (const match of message.matchAll(
+    /can't access property ['"]([A-Za-z_$][\w$]*)['"], ([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*) is (?:undefined|null)\b/gu,
+  )) {
+    add(readPreviewInspectorDestructurePropertyPath(match[1], match[2]));
   }
   return normalizePreviewInspectorRequiredPropertyPaths(paths);
 }

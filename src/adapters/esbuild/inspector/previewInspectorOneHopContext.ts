@@ -42,7 +42,7 @@ export interface CollectPreviewInspectorOneHopContextOptions {
 export interface PreviewInspectorOneHopContext {
   /** Resolver/import/value-flow evidence for every admitted direct visual module. */
   readonly shallowVisualPaths: readonly PreviewInspectorOneHopVisualPath[];
-  /** Fair, round-robin selection of direct JSX dependencies outside the corridor itself. */
+  /** Fairly capped JSX roots plus mixed-use route dependencies retained without visual evidence. */
   readonly sourcePaths: readonly string[];
   /** True when a source read or either candidate/file cap prevented complete collection. */
   readonly truncated: boolean;
@@ -82,10 +82,10 @@ export async function collectPreviewInspectorOneHopContext(
       continue;
     }
     sourceTextByPath.set(normalizedSourcePath, sourceText);
-    const routeProjectionSpecifiers = sourceText.includes('import')
+    const routeInventory = sourceText.includes('import')
       ? collectPreviewStaticRouteProjectionInventory(normalizedSourcePath, sourceText)
-          .projectionsBySpecifier
-      : new Map();
+      : undefined;
+    const routeProjectionSpecifiers = routeInventory?.projectionsBySpecifier ?? new Map();
     const evidence = collectPreviewInspectorShallowVisualEvidence({
       admitVisualPath: (visualPath) =>
         !routeProjectionSpecifiers.has(visualPath.moduleSpecifier) &&
@@ -122,6 +122,21 @@ export async function collectPreviewInspectorOneHopContext(
       const candidatePaths = visualPathsBySourcePath.get(candidatePath) ?? [];
       candidatePaths.push(visualPath);
       visualPathsBySourcePath.set(candidatePath, candidatePaths);
+    }
+    // A route export with an ordinary data/helper use cannot be safely projected. Keep its module
+    // in the bounded dependency corridor, but never turn that non-visual use into mounted chrome.
+    for (const specifier of routeInventory?.routeBranchSpecifiers ?? []) {
+      if (routeProjectionSpecifiers.has(specifier)) continue;
+      const resolved = options.resolveModule(specifier, normalizedSourcePath);
+      if (resolved === undefined) continue;
+      const candidatePath = path.normalize(resolved);
+      if (
+        !corridorPaths.has(candidatePath) &&
+        !visualPathsBySourcePath.has(candidatePath) &&
+        isAdmittedProjectSourcePath(candidatePath, workspaceRoot, options.selectedAuxiliaryRoot)
+      ) {
+        visualPathsBySourcePath.set(candidatePath, []);
+      }
     }
     const admittedCandidates = [...visualPathsBySourcePath].map(([candidatePath, visualPaths]) =>
       Object.freeze({

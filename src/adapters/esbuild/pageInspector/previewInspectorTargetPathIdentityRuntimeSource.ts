@@ -56,9 +56,9 @@ function readPreviewInspectorRepeatedTargetOwnerNames(names) {
  * Unknown source locations use the compiler condition ID so two unlocated siblings cannot be
  * collapsed into a false single-owner proof.
  */
-function readPreviewInspectorAmbiguousTargetOwnerNames(names) {
+function readPreviewInspectorAmbiguousTargetOwnerNames(names, repeated) {
   const ambiguous = new Set([...names].filter(isPreviewInspectorSharedOwnerName));
-  const repeated = readPreviewInspectorRepeatedTargetOwnerNames(names);
+  repeated ??= readPreviewInspectorRepeatedTargetOwnerNames(names);
   for (const ownerName of repeated) ambiguous.add(ownerName);
   return ambiguous;
 }

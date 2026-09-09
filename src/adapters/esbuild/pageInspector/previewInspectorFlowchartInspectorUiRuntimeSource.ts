@@ -95,7 +95,7 @@ function normalizePreviewInspectorFlowchartLocator(locator, layout) {
 /** Labels selected-step resolution without coupling the Inspector to one blocker implementation. */
 function formatPreviewInspectorFlowchartInspectorStatus(step) {
   if (step?.status === 'active') return 'FIX THIS FIRST';
-  if (step?.status === 'waiting') return 'WAITING';
+  if (step?.status === 'waiting') return 'RESOLVE EARLIER STEP';
   if (step?.status === 'ready') return 'READY';
   if (step?.status === 'resolved' || step?.resolution === 'resolved') return 'RESOLVED';
   if (step?.status === 'context') return 'RENDER CONTEXT';

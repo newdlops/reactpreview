@@ -66,7 +66,9 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('React.createElement(PreviewInspectorNeuralChoiceList)');
     expect(source).toContain("'data-choice-path': record.path");
     expect(source).toContain("'Testing one path…'");
-    expect(source).toContain("'Review choice'");
+    expect(source).toContain("'rpi-choice-review-copy'");
+    expect(source).toContain("'Open options · no value changes'");
+    expect(source).not.toContain("'Review choice'");
     expect(source).toContain("'Review inference'");
     expect(source).toContain("'Resolve blockers'");
     expect(source).toContain("'aria-controls': ariaControls");
@@ -76,9 +78,9 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'Wireframe'");
     expect(source).toContain('function PreviewInspectorWireframeLayer');
     expect(source).toContain('function PreviewInspectorNavigationPane');
-    expect(source).toContain("'JSX scenarios'");
+    expect(source).toContain("'Conditions'");
     expect(source).toContain("'Components'");
-    expect(source).toContain("'Inspect selection'");
+    expect(source).toContain("'Details'");
     expect(source).toContain('React.createElement(PreviewInspectorJsxScenarioPane');
     expect(source).toContain('React.createElement(PreviewInspectorComponentsPane');
     expect(source).toContain("view: 'details'");
@@ -141,12 +143,12 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'File components (all exports)'");
     expect(source).toContain("'Current-file component overview'");
     expect(source).toContain("'FILE COMPONENTS'");
-    expect(source).toContain("'NOT ON THIS PATH'");
+    expect(source).toContain("'TARGET NOT REACHED'");
     expect(source).toContain("'NOT VISIBLE'");
     expect(source).toContain("'CALLBACK WAITING'");
     expect(source).toContain("'Visibility path'");
-    expect(source).toContain("'Rendered flow does not contain the current file'");
-    expect(source).toContain('React Preview does not classify this application outcome.');
+    expect(source).toContain("'Why this file is missing is not yet known'");
+    expect(source).toContain('This alone cannot distinguish an incorrect page path');
     expect(source).toContain("'aria-label': 'Inspector tree legend'");
     expect(source).toContain("'Open next step'");
     expect(source).toContain("['automatic', '↻', 'Viewer resolving']");
@@ -173,7 +175,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
   it('keeps tree-selected details in Components while preserving the shared detail workbench', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
     const detailsStart = source.indexOf('function PreviewInspectorDetailsPane');
-    const toolbarStart = source.indexOf('function PreviewInspectorToolbar');
+    const toolbarStart = source.indexOf('function PreviewInspectorToolbar()');
     const toolbarSource = source.slice(toolbarStart);
     const detailsSource = source.slice(detailsStart, toolbarStart);
 

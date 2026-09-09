@@ -226,7 +226,7 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
             ? 'Render callback is waiting · '
             : wrapperHostOnly
               ? 'Fallback shown instead · '
-              : mountedWithoutOutput ? 'No visible element · ' : 'Current file not used · ') +
+              : mountedWithoutOutput ? 'No visible element · ' : 'Target not reached · ') +
         blocker.targetExportName,
     props: {
       applicationPath: blocker.applicationPath,
@@ -582,9 +582,9 @@ function PreviewInspectorBlockerGuide({ node }) {
         ? 'React Preview is crossing this proven condition.'
         : 'Your branch choice is needed here.';
   } else if (condition) {
-    detail = 'Choose a branch below. This changes only the pinned preview.';
+    detail = 'Optional: choose another branch below. This condition is not blocking the current preview.';
     helpKind = 'condition';
-    icon = '?';
+    icon = '◇';
     title = 'This condition chooses which React branch is visible.';
   } else if (targetResolving) {
     detail = targetInvisible
@@ -592,10 +592,11 @@ function PreviewInspectorBlockerGuide({ node }) {
       : 'The page has loaded. Automatic path search is still following proven conditions and data requirements toward the selected file.';
     title = 'React Preview is still tracing this page path.';
   } else if (targetAbsent) {
-    detail = 'This may be a valid application outcome. Compare another Page path, inspect File components, or provide path values when static evidence is sufficient.';
+    const diagnosis = readPreviewInspectorVisibilityDiagnosis(node.blocker);
+    detail = diagnosis.description;
     helpKind = 'flow-outcome';
     icon = '↳';
-    title = 'This page path did not use the current file.';
+    title = diagnosis.title;
   } else if (targetInvisible) {
     const callbackWaiting = node.blocker?.targetDeferredCallbackPending === true;
     const fallbackShown = node.blocker?.targetHasAnyHostOutput === true;

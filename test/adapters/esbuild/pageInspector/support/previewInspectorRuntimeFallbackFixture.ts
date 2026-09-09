@@ -87,6 +87,8 @@ export interface RuntimeFallbackFixture {
   readonly api: TestRuntimeFallbackApi;
   readonly autoDecisions: Record<string, unknown>[];
   readonly consoleEntries: Record<string, unknown>[];
+  /** Composes additional production runtime sources in the same isolated browser realm. */
+  evaluate(source: string): unknown;
   /** Runs the next browser-frame or timer-fallback callbacks queued by the generated runtime. */
   flushEffectFrame(): void;
   /** Number of authored-page traversal resumes requested by a newly shared recommendation. */
@@ -278,6 +280,9 @@ export function createRuntimeFallbackFixture(
     api,
     autoDecisions,
     consoleEntries,
+    evaluate(source: string): unknown {
+      return runInContext(source, context);
+    },
     flushEffectFrame(): void {
       const pending = effectFrameCallbacks.splice(0);
       for (const callback of pending) callback();

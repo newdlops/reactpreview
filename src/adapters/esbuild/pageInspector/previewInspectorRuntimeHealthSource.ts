@@ -19,6 +19,8 @@ const previewInspectorRuntimeHealthDeferredAssistanceEvents = new Set([
   'runtime-error-root',
 ]);
 const previewInspectorRuntimeHealthEvents = new Set([
+  'automatic-condition-rolled-back',
+  'automatic-resolution-rolled-back',
   'graphql-interpolation-repaired',
   'neural-assistance-requested',
   'neural-residual-corrected',
@@ -28,8 +30,11 @@ const previewInspectorRuntimeHealthEvents = new Set([
   'neural-residual-trained',
   'neural-page-context-failed',
   'neural-page-context-verified',
+  'neural-page-execution-context-rejected',
+  'neural-page-execution-context-verified',
   'page-composition-snapshot',
   'page-context-selected',
+  'page-execution-preparation-stopped',
   'render-attempt-started',
   'render-attempt-settled',
   'runtime-effect-isolated',

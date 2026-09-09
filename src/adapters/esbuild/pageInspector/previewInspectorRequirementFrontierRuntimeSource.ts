@@ -173,11 +173,7 @@ function readPreviewInspectorRequirementError(state) {
 }
 
 /** Correlates a bare engine property such as status with one compiler-owned descendant path. */
-function countPreviewInspectorRequirementExceptionPathMatches(paths, state) {
-  if (typeof readPreviewInspectorErrorPropertyPaths !== 'function') return 0;
-  const errorPaths = readPreviewInspectorErrorPropertyPaths(
-    readPreviewInspectorRequirementError(state),
-  );
+function countPreviewInspectorRequirementExceptionPathMatches(paths, errorPaths) {
   if (errorPaths.length === 0) return 0;
   const candidatePaths = (Array.isArray(paths) ? paths : [])
     .filter((path) => typeof path === 'string')
@@ -200,14 +196,16 @@ function createPreviewInspectorRequirementNeuralDecision(
   requiredPaths,
   deterministicScore,
   exceptionPathMatches,
+  evaluation,
 ) {
   if (typeof createPreviewInspectorNeuralResidualDecision !== 'function') return undefined;
-  const error = readPreviewInspectorRequirementError(state);
+  const error = evaluation.error;
   const errorMessage = typeof error?.message === 'string' ? error.message : '';
   const strategy = typeof record?.neuralRecommendation?.strategy === 'string'
     ? record.neuralRecommendation.strategy
     : 'compiler-generated';
-  return createPreviewInspectorNeuralResidualDecision({
+  const createDecision = evaluation.batch?.createDecision ?? createPreviewInspectorNeuralResidualDecision;
+  return createDecision({
     blockerKind,
     candidateId: record?.id,
     holeKind: record?.residualHoleKind === 'nested-generated-shape-mismatch'
@@ -251,31 +249,24 @@ function selectPreviewInspectorRequirementIds(
   readRequiredPaths,
   options = {},
 ) {
+  if (records.length === 0) return { ids: [], neuralResidualDecision: undefined };
+  const error = readPreviewInspectorRequirementError(evidence.state);
+  const errorPaths = typeof readPreviewInspectorErrorPropertyPaths === 'function'
+    ? readPreviewInspectorErrorPropertyPaths(error)
+    : [];
   const ranked = records
     .map((record) => {
       const requiredPaths = readRequiredPaths(record);
       const score = scorePreviewInspectorRequirementRecord(record, evidence);
       const exceptionPathMatches = countPreviewInspectorRequirementExceptionPathMatches(
         requiredPaths,
-        evidence.state,
+        errorPaths,
       );
-      const retainedNeuralDecision = typeof previewInspectorSession === 'object'
-        ? previewInspectorSession.runtimeFallbackNeuralDecisions?.get?.(record?.id)
-        : undefined;
       return {
         exactSmartScalar: hasPreviewInspectorExactSmartScalar(record),
         exceptionPathMatches,
-        neuralResidualDecision:
-          retainedNeuralDecision ??
-          createPreviewInspectorRequirementNeuralDecision(
-            record,
-            evidence.state,
-            blockerKind,
-            requiredPaths,
-            score,
-            exceptionPathMatches,
-          ),
         record,
+        requiredPaths,
         score,
       };
     });
@@ -295,34 +286,57 @@ function selectPreviewInspectorRequirementIds(
     : pathLocal.length > 0
       ? pathLocal
       : ranked;
+  // Only already-admitted records incur model work; this batch is discarded before the next render.
+  const evaluation = {
+    batch: typeof createPreviewInspectorNeuralResidualRankingBatch === 'function'
+      ? createPreviewInspectorNeuralResidualRankingBatch()
+      : undefined,
+    error,
+  };
+  for (const candidate of pool) {
+    const retained = typeof previewInspectorSession === 'object'
+      ? previewInspectorSession.runtimeFallbackNeuralDecisions?.get?.(candidate.record?.id)
+      : undefined;
+    candidate.neuralResidualDecision = (
+      evaluation.batch !== undefined && retained !== undefined
+        ? evaluation.batch.refreshDecision(retained)
+        : retained
+    ) ?? createPreviewInspectorRequirementNeuralDecision(
+      candidate.record, evidence.state, blockerKind, candidate.requiredPaths,
+      candidate.score, candidate.exceptionPathMatches, evaluation,
+    );
+  }
+  const compareDecisions = evaluation.batch?.compareDecisions ??
+    (typeof comparePreviewInspectorNeuralResidualDecisions === 'function'
+      ? comparePreviewInspectorNeuralResidualDecisions
+      : () => 0);
   const excludedCandidateIds = new Set(
     Array.isArray(options?.excludedCandidateIds) ? options.excludedCandidateIds : [],
   );
   const hasNovelCandidate = pool.some((candidate) =>
     !excludedCandidateIds.has(candidate.record?.id),
   );
+  // A verified exclusion outranks heuristic similarity, but never expands the admitted pool.
   pool.sort((left, right) =>
-    right.exceptionPathMatches - left.exceptionPathMatches ||
-    Number(right.record?.residualHoleKind === 'nested-generated-shape-mismatch') -
-      Number(left.record?.residualHoleKind === 'nested-generated-shape-mismatch') ||
     (hasNovelCandidate
       ? Number(excludedCandidateIds.has(left.record?.id)) -
         Number(excludedCandidateIds.has(right.record?.id))
       : 0) ||
+    right.exceptionPathMatches - left.exceptionPathMatches ||
+    Number(right.record?.residualHoleKind === 'nested-generated-shape-mismatch') -
+      Number(left.record?.residualHoleKind === 'nested-generated-shape-mismatch') ||
     (pathLocal.length > 0 || exceptionLocal.length > 0
       ? Number(right.exactSmartScalar) - Number(left.exactSmartScalar)
       : 0) ||
-    (options?.preferNeural === true &&
-      typeof comparePreviewInspectorNeuralResidualDecisions === 'function'
-      ? comparePreviewInspectorNeuralResidualDecisions(
+    (options?.preferNeural === true
+      ? compareDecisions(
           left.neuralResidualDecision,
           right.neuralResidualDecision,
         )
       : 0) ||
     right.score - left.score ||
-    (options?.preferNeural !== true &&
-      typeof comparePreviewInspectorNeuralResidualDecisions === 'function'
-      ? comparePreviewInspectorNeuralResidualDecisions(
+    (options?.preferNeural !== true
+      ? compareDecisions(
           left.neuralResidualDecision,
           right.neuralResidualDecision,
         )

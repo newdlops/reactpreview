@@ -143,8 +143,8 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
   paths.delete('');
   names.delete(undefined);
   exactTargetNames.delete(undefined);
-  const ambiguousNames = readPreviewInspectorAmbiguousTargetOwnerNames(names);
   const repeatedOwnerNames = readPreviewInspectorRepeatedTargetOwnerNames(names);
+  const ambiguousNames = readPreviewInspectorAmbiguousTargetOwnerNames(names, repeatedOwnerNames);
   return {
     ambiguousNames,
     componentCorridorNames,
@@ -187,45 +187,38 @@ function isPreviewInspectorExactTargetOverlayCondition(condition, evidence) {
   }
   return false;
 }
-/** Scores component names embedded in one branch label against the proven root-to-target corridor. */
-function scorePreviewInspectorTargetConditionLabel(label, evidence) {
-  const normalized = String(label ?? '').replace(/[<>]/gu, '');
-  const tokens = normalized.split(/[^A-Za-z0-9_$]+/u).filter(Boolean);
-  let score = 0;
-  for (const [name, nameScore] of evidence.nameScores) {
-    if (evidence.ambiguousNames?.has(name) && !evidence.exactTargetNames?.has(name)) {
-      continue;
-    }
-    if (normalized === String(name) || tokens.includes(String(name))) {
-      score = Math.max(score, nameScore);
+/** Tokenizes one compiler label once and uses indexed names instead of rescanning the whole corridor. */
+function readPreviewInspectorTargetConditionLabelEvidence(label, evidence) {
+  // Preserve tag boundaries: removing "<" and ">" concatenates Wrapper and Target into a false name.
+  const normalized = String(label ?? '').replace(/[<>]/gu, ' ').trim();
+  const names = new Set([normalized, ...normalized.split(/[^A-Za-z0-9_$]+/u).filter(Boolean)]);
+  let score = 0, componentScore = 0, exactTarget = false;
+  for (const name of names) {
+    const exact = evidence.exactTargetNames?.has(name) === true;
+    if (exact) exactTarget = true;
+    if (evidence.ambiguousNames?.has(name) && !exact) continue;
+    const nameScore = evidence.nameScores?.get(name);
+    if (typeof nameScore === 'number') score = Math.max(score, nameScore);
+    if (evidence.componentCorridorNames?.has(name)) {
+      componentScore = Math.max(componentScore, nameScore ?? 1);
     }
   }
-  return score;
-}
-/** Reports whether one branch label names the selected export itself, not only a shared ancestor. */
-function labelsPreviewInspectorExactTargetCondition(label, evidence) {
-  const normalized = String(label ?? '').replace(/[<>]/gu, '');
-  const tokens = normalized.split(/[^A-Za-z0-9_$]+/u).filter(Boolean);
-  for (const name of evidence.exactTargetNames ?? []) {
-    if (normalized === String(name) || tokens.includes(String(name))) return true;
-  }
-  return false;
+  return { score, componentScore, exactTarget };
 }
 
-/** Scores only authored component steps, excluding JSX wrappers that may occur on both branches. */
+/** Scores authored names without promoting runtime-only wrappers. */
+function scorePreviewInspectorTargetConditionLabel(label, evidence) {
+  return readPreviewInspectorTargetConditionLabelEvidence(label, evidence).score;
+}
+
+/** Reports an exact token match, never a partial component name. */
+function labelsPreviewInspectorExactTargetCondition(label, evidence) {
+  return readPreviewInspectorTargetConditionLabelEvidence(label, evidence).exactTarget;
+}
+
+/** Scores only authored component steps, excluding generic wrappers. */
 function scorePreviewInspectorTargetComponentConditionLabel(label, evidence) {
-  const normalized = String(label ?? '').replace(/[<>]/gu, '');
-  const tokens = normalized.split(/[^A-Za-z0-9_$]+/u).filter(Boolean);
-  let score = 0;
-  for (const name of evidence.componentCorridorNames ?? []) {
-    if (evidence.ambiguousNames?.has(name) && !evidence.exactTargetNames?.has(name)) {
-      continue;
-    }
-    if (normalized === String(name) || tokens.includes(String(name))) {
-      score = Math.max(score, evidence.nameScores?.get?.(name) ?? 1);
-    }
-  }
-  return score;
+  return readPreviewInspectorTargetConditionLabelEvidence(label, evidence).componentScore;
 }
 
 /** Reads one exact plain-property path from a selected neural state fixture without invoking getters. */
@@ -239,11 +232,15 @@ function readPreviewInspectorNeuralRenderStatePath(value, path) {
   ) return { found: false, value: undefined };
   let current = value;
   for (const segment of segments) {
-    if (
-      current === null || (typeof current !== 'object' && typeof current !== 'function') ||
-      !Object.prototype.hasOwnProperty.call(current, segment)
-    ) return { found: false, value: undefined };
-    current = current[segment];
+    if (current === null || (typeof current !== 'object' && typeof current !== 'function')) {
+      return { found: false, value: undefined };
+    }
+    let descriptor;
+    try { descriptor = Object.getOwnPropertyDescriptor(current, segment); } catch { /* Proxy metadata is not evidence. */ }
+    if (descriptor === undefined || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      return { found: false, value: undefined };
+    }
+    current = descriptor.value;
   }
   return { found: true, value: current };
 }
@@ -380,26 +377,13 @@ function readPreviewInspectorTargetConditionValue(condition, evidence) {
     condition?.scalarExpression,
   );
   if (typeof coherentNeuralValue === 'boolean') return coherentNeuralValue;
-  const truthyScore = scorePreviewInspectorTargetConditionLabel(condition?.truthyLabel, evidence);
-  const falsyScore = scorePreviewInspectorTargetConditionLabel(condition?.falsyLabel, evidence);
-  const truthyNamesExactTarget = labelsPreviewInspectorExactTargetCondition(
-    condition?.truthyLabel,
-    evidence,
-  );
-  const falsyNamesExactTarget = labelsPreviewInspectorExactTargetCondition(
-    condition?.falsyLabel,
-    evidence,
-  );
+  const truthy = readPreviewInspectorTargetConditionLabelEvidence(condition?.truthyLabel, evidence);
+  const falsy = readPreviewInspectorTargetConditionLabelEvidence(condition?.falsyLabel, evidence);
+  const truthyScore = truthy.score, falsyScore = falsy.score;
+  const truthyNamesExactTarget = truthy.exactTarget, falsyNamesExactTarget = falsy.exactTarget;
   /* An exact target label can correct conservative continuation metadata. Shared wrapper labels cannot. */
   if (truthyNamesExactTarget !== falsyNamesExactTarget) return truthyNamesExactTarget;
-  const truthyComponentScore = scorePreviewInspectorTargetComponentConditionLabel(
-    condition?.truthyLabel,
-    evidence,
-  );
-  const falsyComponentScore = scorePreviewInspectorTargetComponentConditionLabel(
-    condition?.falsyLabel,
-    evidence,
-  );
+  const truthyComponentScore = truthy.componentScore, falsyComponentScore = falsy.componentScore;
   /*
    * Early-return metadata describes the generic continuation, not the selected render path. When
    * that path explicitly descends through one returned component, its deeper authored component

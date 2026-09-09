@@ -20,15 +20,20 @@ function clearPreviewInspectorPendingPageCandidateSelection() {
   previewInspectorSession.pendingPageCandidateOrigin = undefined;
   previewInspectorSession.pendingPageCandidateRevision = undefined;
   previewInspectorSession.pendingPageCandidateTimeout = undefined;
+  previewInspectorSession.pendingPageExecutionPreparation = undefined;
 }
 
 /** Bounds a lost host hand-off so page choices cannot remain disabled forever. */
 function schedulePreviewInspectorPageCandidateSelectionTimeout(candidateId, timeoutMs, message) {
+  const interactionId = previewInspectorSession.pendingPageCandidateInteractionId;
   if (previewInspectorSession.pendingPageCandidateTimeout !== undefined) {
     clearTimeout(previewInspectorSession.pendingPageCandidateTimeout);
   }
   previewInspectorSession.pendingPageCandidateTimeout = setTimeout(() => {
-    if (previewInspectorSession.pendingPageCandidateId !== candidateId) return;
+    if (previewInspectorSession.pendingPageCandidateId !== candidateId ||
+      previewInspectorSession.pendingPageCandidateInteractionId !== interactionId) return;
+    if (typeof finishPreviewInspectorPageExecutionPreparation === 'function' &&
+      finishPreviewInspectorPageExecutionPreparation('timeout')) return;
     clearPreviewInspectorPendingPageCandidateSelection();
     previewInspectorSession.pendingPageCandidateError = { candidateId, message };
     notifyPreviewInspector();
@@ -157,6 +162,8 @@ function selectPreviewInspectorPageCandidate(candidateId, options = {}) {
 
 /** Uses a matching ready milestone when the terminal page-path status was lost in hot replacement. */
 function handlePreviewInspectorPageCandidateProgress(message) {
+  if (typeof handlePreviewInspectorPageExecutionPreparationProgress === 'function' &&
+    handlePreviewInspectorPageExecutionPreparationProgress(message)) return true;
   if (previewInspectorSession.pendingPageCandidateId === undefined) return false;
   if (
     Number.isSafeInteger(message?.revision) &&
@@ -185,7 +192,13 @@ function handlePreviewInspectorPageCandidateProgress(message) {
 /** Applies correlated host status and immediately advances a queued explicit user choice. */
 function handlePreviewInspectorPageCandidateSelectionStatus(message) {
   if (message?.type !== 'react-preview-inspector-page-candidate-selection-status') return false;
-  if (message.interactionId !== previewInspectorSession.pendingPageCandidateInteractionId) return true;
+  if (typeof handlePreviewInspectorPageExecutionPreparationStatus === 'function' &&
+    handlePreviewInspectorPageExecutionPreparationStatus(message)) return true;
+  if (
+    typeof previewInspectorSession.pendingPageCandidateId !== 'string' ||
+    message.candidateId !== previewInspectorSession.pendingPageCandidateId ||
+    message.interactionId !== previewInspectorSession.pendingPageCandidateInteractionId
+  ) return true;
   if (typeof handlePreviewInspectorNeuralPageContextSelectionStatus === 'function') {
     handlePreviewInspectorNeuralPageContextSelectionStatus(message);
   }

@@ -1,6 +1,6 @@
 /** Verifies props recovery for a Page Execution root pinned below the analyzed app candidate. */
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { inferPreviewInspectorPageExecutionRootProps } from '../../../../src/adapters/esbuild/inspector/previewInspectorPageExecutionRootInference';
 import type { PreviewInspectorPageExecutionCandidate } from '../../../../src/adapters/esbuild/inspector/previewInspectorPageExecutionTypes';
 
@@ -42,6 +42,125 @@ function createCandidate(exportName = 'default'): PreviewInspectorPageExecutionC
 }
 
 describe('inferPreviewInspectorPageExecutionRootProps', () => {
+  it('infers only explicitly mounted siblings and reuses their exact source across candidates', async () => {
+    const base = createCandidate();
+    const surface = {
+      bypassedWrapperNames: [],
+      exportName: 'default',
+      id: 'chrome',
+      omittedTopLevelEffectCount: 0,
+      sourcePath: CHILD_PATH,
+      strategy: 'selected-route-surface' as const,
+      watchSourcePaths: [CHILD_PATH],
+    };
+    const preservedInference = {
+      shape: { kind: 'object' as const, properties: {} },
+      provenance: [],
+    };
+    const candidate: PreviewInspectorPageExecutionCandidate = {
+      ...base,
+      browserCandidate: { ...base.browserCandidate, rootInference: preservedInference },
+      criticalSurfaces: [
+        surface,
+        { ...surface, id: base.runtimeTargetSurfaceId, sourcePath: ROOT_PATH },
+        { ...surface, id: 'authored-child', sourcePath: ISSUE_PATH },
+      ],
+      optionalSurfaces: [{ ...surface, id: 'other-route', sourcePath: LIST_PATH }],
+      compositionEdges: [
+        {
+          parentSurfaceId: base.executionRootSurfaceId,
+          childSurfaceId: surface.id,
+          mode: 'sibling-before',
+          placementIndex: 0,
+        },
+        {
+          parentSurfaceId: base.executionRootSurfaceId,
+          childSurfaceId: 'authored-child',
+          mode: 'contains-authored-child',
+          placementIndex: 0,
+        },
+      ],
+    };
+    const readSource = vi.fn((sourcePath: string) =>
+      Promise.resolve(
+        sourcePath === CHILD_PATH
+          ? 'export default function Header({ record }) { return <header>{record.fullName}</header>; }'
+          : undefined,
+      ),
+    );
+    const results = await inferPreviewInspectorPageExecutionRootProps({
+      candidates: [candidate, { ...candidate, id: 'second-candidate' }],
+      readSource,
+      resolveModule: () => undefined,
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+    expect(readSource.mock.calls).toEqual([[CHILD_PATH]]);
+    for (const result of results) {
+      expect(result.browserCandidate.rootInference).toBe(preservedInference);
+      expect(result.criticalSurfaces[0]?.propInference?.shape).toMatchObject({
+        kind: 'object',
+        properties: { record: { kind: 'object', properties: { fullName: { kind: 'string' } } } },
+      });
+      expect(result.criticalSurfaces[1]?.propInference).toBeUndefined();
+      expect(result.criticalSurfaces[2]?.propInference).toBeUndefined();
+      expect(result.optionalSurfaces[0]?.propInference).toBeUndefined();
+    }
+    expect(results[0]?.criticalSurfaces[0]?.propInference).toBe(
+      results[1]?.criticalSurfaces[0]?.propInference,
+    );
+    expect(candidate.criticalSurfaces[0]?.propInference).toBeUndefined();
+  });
+
+  it('uses an unsaved sibling snapshot and preserves an already inferred sibling on rerun', async () => {
+    const base = createCandidate();
+    const surface = {
+      bypassedWrapperNames: [],
+      exportName: 'default',
+      id: 'chrome',
+      omittedTopLevelEffectCount: 0,
+      sourcePath: CHILD_PATH,
+      strategy: 'selected-route-surface' as const,
+      watchSourcePaths: [CHILD_PATH],
+    };
+    const candidate: PreviewInspectorPageExecutionCandidate = {
+      ...base,
+      criticalSurfaces: [surface],
+      compositionEdges: [
+        {
+          parentSurfaceId: base.executionRootSurfaceId,
+          childSurfaceId: surface.id,
+          mode: 'sibling-after',
+          placementIndex: 0,
+        },
+      ],
+    };
+    const readSource = vi.fn(() => Promise.resolve(undefined));
+    const options = {
+      candidates: [candidate],
+      readSource,
+      resolveModule: () => undefined,
+      workspaceRoot: WORKSPACE_ROOT,
+      snapshotSourceByPath: new Map([
+        [ROOT_PATH, 'export default function Board() { return <main />; }'],
+        [
+          CHILD_PATH,
+          'export default function Footer({ record }) { return <footer>{record.unsavedName}</footer>; }',
+        ],
+      ]),
+    };
+    const results = await inferPreviewInspectorPageExecutionRootProps(options);
+    expect(readSource).not.toHaveBeenCalled();
+    expect(
+      results[0]?.criticalSurfaces[0]?.propInference?.shape.properties?.record?.properties,
+    ).toHaveProperty('unsavedName');
+    const rerun = await inferPreviewInspectorPageExecutionRootProps({
+      ...options,
+      candidates: results,
+    });
+    expect(rerun[0]).toBe(results[0]);
+    expect(readSource).not.toHaveBeenCalled();
+  });
+
   /** Carries a reached child's nested collection contract back to the newly pinned root. */
   it('restores transitive props for the exact mounted execution root', async () => {
     const rootSource = [
@@ -139,7 +258,8 @@ describe('inferPreviewInspectorPageExecutionRootProps', () => {
     });
 
     expect(
-      inferred?.browserCandidate.rootInference?.shape.properties?.project?.properties?.issues?.items,
+      inferred?.browserCandidate.rootInference?.shape.properties?.project?.properties?.issues
+        ?.items,
     ).toMatchObject({
       kind: 'object',
       properties: {

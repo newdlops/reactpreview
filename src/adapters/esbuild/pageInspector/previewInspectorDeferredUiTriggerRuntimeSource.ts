@@ -462,7 +462,7 @@ function hasPreviewInspectorDeferredUiStateToken(condition, stateName) {
     .join(' ');
   let offset = expression.indexOf(stateName);
   const isIdentifierCharacter = (value) =>
-    typeof value === 'string' && value.length > 0 && /[A-Za-z0-9_$]/u.test(value);
+    typeof value === 'string' && value.length > 0 && /[$_\p{ID_Continue}\u200C\u200D]/u.test(value);
   while (offset >= 0) {
     const left = expression[offset - 1];
     const right = expression[offset + stateName.length];
@@ -494,6 +494,7 @@ function createPreviewInspectorDeferredUiAutomaticAttemptKey(state, condition, r
  * alternatives for the same positive state hole; active/selected Fiber props rank the first probe.
  */
 function autoInvokePreviewInspectorAuthoredStateTrigger(state, condition) {
+  if (typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused()) return undefined;
   initializePreviewInspectorDeferredUiTriggerState();
   if (
     state === undefined || condition === undefined || state.directTarget === true ||

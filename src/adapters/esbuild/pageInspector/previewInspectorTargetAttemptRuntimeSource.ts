@@ -176,6 +176,7 @@ function rollbackPreviewInspectorNoProgressTargetAutoAttempt(attempt, state) {
 function resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt) {
   if (
     !isPreviewInspectorTargetAutoAttemptMode(attempt?.autoMode) ||
+    attempt.settledAt === undefined ||
     attempt.targetReachabilityResumeHandled === true
   ) return false;
   if (previewInspectorSession.blockerTraceActiveAttempt !== attempt) {
@@ -189,6 +190,15 @@ function resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt) {
   const state = previewInspectorSession.targetReachabilityByKey?.get?.(reachabilityKey);
   if (state === undefined) return false;
   const rolledBack = rollbackPreviewInspectorNoProgressTargetAutoAttempt(attempt, state);
+  if (rolledBack) {
+    attempt.targetAutoAttemptRolledBack = true;
+    if (typeof rejectPreviewInspectorNeuralResidualAttempt === 'function') {
+      rejectPreviewInspectorNeuralResidualAttempt(
+        attempt,
+        attempt.autoMode === 'target-guided-auto' ? 'no-target-progress' : 'target-repair-failed',
+      );
+    }
+  }
   const neuralRetry = attempt.runtimeFallbackNeuralRetry;
   attempt.runtimeFallbackNeuralRetry = undefined;
   attempt.targetReachabilityResumeHandled = true;
@@ -211,6 +221,7 @@ function resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt) {
      * intentionally terminal and retains its existing resolver-rolled-back circuit instead.
      */
     if (attempt.autoMode !== 'target-guided-auto') return false;
+    state.status = 'probing';
     state.exhausted = false;
     state.idlePasses = 0;
     state.probeRevision = Number.isSafeInteger(state.probeRevision)
@@ -244,6 +255,7 @@ function resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt) {
 function schedulePreviewInspectorTargetReachabilityResumeAfterAutoAttempt(attempt) {
   if (
     !isPreviewInspectorTargetAutoAttemptMode(attempt?.autoMode) ||
+    attempt.settledAt === undefined ||
     attempt.targetReachabilityResumeScheduled === true ||
     attempt.targetReachabilityResumeHandled === true
   ) return false;

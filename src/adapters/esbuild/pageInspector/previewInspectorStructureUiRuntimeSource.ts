@@ -155,7 +155,7 @@ function readPreviewInspectorResolutionSymbol(node) {
 /** Produces a semantic tree icon while keeping the explicit role label available beside it. */
 function readPreviewInspectorStructureIcon(node, isCondition, isBlocking, isCurrentFileExport) {
   if (isBlocking) return readPreviewInspectorResolutionSymbol(node);
-  if (isCondition) return '?';
+  if (isCondition) return '◇';
   if (node?.kind === 'deferred-ui-trigger') return '▶';
   if (node?.blockerKind === 'target-reachability') return '↳';
   if (node?.kind === 'blocker') return '≈';

@@ -1,3 +1,5 @@
+import { createPreviewInspectorVisibilityDiagnosisUiRuntimeSource } from './previewInspectorVisibilityDiagnosisUiRuntimeSource';
+
 /**
  * Generates the target-reachability editor shown when an authored page does not visibly expose the
  * selected source export.
@@ -19,6 +21,7 @@
  */
 export function createPreviewInspectorTargetReachabilityDetailRuntimeSource(): string {
   return String.raw`
+${createPreviewInspectorVisibilityDiagnosisUiRuntimeSource()}
 const PREVIEW_INSPECTOR_TARGET_RESOLVING_STATUSES = new Set([
   'activating-authored-state',
   'activating-local-ui',
@@ -86,6 +89,7 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
     ? selectedCandidate.routeLocation.componentName
     : undefined;
   const routeChoicePath = selectedCandidate?.routeLocation?.pathname;
+  const diagnosis = readPreviewInspectorVisibilityDiagnosis(blocker, { descriptor, candidate: selectedCandidate });
   const requiredPathSummary = summarizePreviewInspectorRequiredPaths(blocker.requiredPaths);
   const minimumSearch = blocker.minimumRequirementSearch;
   const resolving = isPreviewInspectorTargetReachabilityResolving(blocker);
@@ -147,9 +151,11 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
                 : pageCommitted
                   ? targetMountedWithoutOutput
                     ? invisibleExplanation
-                    : 'The page loaded, but this path did not use ' + blocker.targetExportName + '.'
+                    : diagnosis?.title ?? 'Target not reached; the cause is not yet verified.'
                   : 'The page is still loading.',
     ),
+    React.createElement('div', { className: 'rpi-note' }, diagnosis?.description),
+    React.createElement(PreviewInspectorVisibilityEvidence, { diagnosis, showAction: true }),
     React.createElement('div', { className: 'rpi-note' },
       'Page: ' + blocker.rootName + ' · ' + (pageCommitted ? 'loaded' : 'still loading')),
     React.createElement('div', { className: 'rpi-note' },
@@ -174,7 +180,7 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
                     : 'ran · no visible element'
               : targetMounted
                 ? 'visible'
-                : 'not used on this path')),
+                : 'not reached')),
     React.createElement('div', { className: 'rpi-note' },
       'Page path: ' + blocker.applicationPath.join(' > ')),
     blocker.appliedConditions.length > 0
@@ -194,7 +200,7 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
                   ? 'Choose another Page path above, or inspect the first condition inside ' +
                     routeChoiceName + '.'
                   : 'Next likely cause: an OFF condition, missing data, or a child that intentionally returns nothing.'
-              : 'No login, session, or permission condition has been proven for this path yet.'),
+              : 'Only observed target-path conditions can establish a code-logic cause.'),
     requiredPathSummary.totalCount > 0
       ? React.createElement('div', { className: 'rpi-note' },
           'Possible data needed next (' +

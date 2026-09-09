@@ -25,11 +25,11 @@ describe('Preview Inspector navigation UI runtime source', () => {
     );
     expect(source).toContain("role: 'tablist'");
     expect(source).toContain("'data-rpi-scroll-key': 'workbench-tabs'");
-    expect(source).toContain("'JSX scenarios'");
+    expect(source).toContain("'Conditions'");
     expect(source).toContain("'Components'");
-    expect(source).toContain("'Inspect selection'");
+    expect(source).toContain("'Details'");
     expect(source).toContain("'Console ('");
-    expect(source.indexOf("'JSX scenarios'")).toBeLessThan(source.indexOf("'Components'"));
+    expect(source.indexOf("'Conditions'")).toBeLessThan(source.indexOf("'Components'"));
     expect(source).toContain('React.createElement(PreviewInspectorJsxScenarioPane');
     expect(source).toContain('React.createElement(PreviewInspectorComponentsPane');
     expect(source).toContain(
@@ -48,12 +48,12 @@ describe('Preview Inspector navigation UI runtime source', () => {
   it('opens the JSX scenario table first', () => {
     expect(evaluateNavigationRender()).toEqual({
       activePanel: 'scenario-pane',
-      firstTabLabel: 'JSX scenarios',
+      firstTabLabel: 'Conditions',
       firstTabSelected: true,
       fourthTabLabel: 'Console (3)',
       rootCount: 2,
       secondTabLabel: 'Components',
-      thirdTabLabel: 'Inspect selection',
+      thirdTabLabel: 'Details',
     });
   });
 
@@ -61,12 +61,12 @@ describe('Preview Inspector navigation UI runtime source', () => {
   it('restores the component tree as the second tab', () => {
     expect(evaluateNavigationRender('tree')).toEqual({
       activePanel: 'components-pane',
-      firstTabLabel: 'JSX scenarios',
+      firstTabLabel: 'Conditions',
       firstTabSelected: false,
       fourthTabLabel: 'Console (3)',
       rootCount: 2,
       secondTabLabel: 'Components',
-      thirdTabLabel: 'Inspect selection',
+      thirdTabLabel: 'Details',
     });
   });
 });

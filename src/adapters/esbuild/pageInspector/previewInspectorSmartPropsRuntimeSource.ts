@@ -1,4 +1,5 @@
 import { createPreviewInspectorFinitePropChoiceRuntimeSource } from './previewInspectorFinitePropChoiceRuntimeSource';
+import { createPreviewInspectorPageSurfacePropsRuntimeSource } from './previewInspectorPageSurfacePropsRuntimeSource';
 
 /**
  * Generates the Page Inspector's descriptor-aware Smart props runtime.
@@ -27,6 +28,7 @@ export const PREVIEW_INSPECTOR_SMART_PROP_SCAN_LIMIT = 256;
 export function createPreviewInspectorSmartPropsRuntimeSource(): string {
   const finitePropChoiceRuntimeSource = createPreviewInspectorFinitePropChoiceRuntimeSource();
   return String.raw`
+${createPreviewInspectorPageSurfacePropsRuntimeSource()}
 const PREVIEW_INSPECTOR_SMART_PROP_PATH_LIMIT = ${PREVIEW_INSPECTOR_SMART_PROP_PATH_LIMIT};
 const PREVIEW_INSPECTOR_SMART_PROP_SCAN_LIMIT = ${PREVIEW_INSPECTOR_SMART_PROP_SCAN_LIMIT};
 const previewInspectorSmartPropBlockedNames = new Set([
@@ -499,19 +501,26 @@ function readPreviewInspectorTargetFailureRequirementRecords(exportName, require
   if (!evidence.found) return undefined;
   const inferredRecords = readPreviewInspectorSmartPropPathRecords(evidence);
   const admittedKinds = new Set(['array', 'boolean', 'function', 'number', 'object', 'string']);
+  const resolvedPaths = [];
   for (const rawPath of normalizedPaths) {
     const parsed = parsePreviewInspectorRequiredPath(rawPath);
     if (parsed === undefined || parsed.path.length === 0) return undefined;
-    const diagnosticPath = parsed.path.join('.');
+    const diagnostic = normalizePreviewInspectorTargetPropDiagnosticPath(parsed.path.join('.'));
     const exactMatches = inferredRecords.filter((record) =>
-      record.path === diagnosticPath || record.path.endsWith('.' + diagnosticPath),
+      record.path === diagnostic.path || !diagnostic.explicitProps &&
+        record.path.endsWith('.' + diagnostic.path),
     );
-    if (new Set(exactMatches.map((record) => record.path)).size !== 1) return undefined;
+    const matches = exactMatches.length > 0 ? exactMatches : inferredRecords.filter((record) =>
+      !parsed.callable && ['array', 'string'].includes(record.kind) &&
+      diagnostic.path === record.path + '.length',
+    );
+    if (new Set(matches.map((record) => record.path)).size !== 1) return undefined;
+    resolvedPaths.push(...(parsed.callable ? [matches[0].path + '()'] :
+      readPreviewInspectorSmartPropLeafPaths(inferredRecords.map((record) => record.path), matches[0].path)));
   }
-  const resolvedPaths = resolvePreviewInspectorSmartPropRequiredPaths(exportName, normalizedPaths);
   if (resolvedPaths.length === 0) return undefined;
   const records = [];
-  for (const path of resolvedPaths) {
+  for (const path of new Set(resolvedPaths)) {
     const parsed = parsePreviewInspectorRequiredPath(path);
     if (parsed === undefined || parsed.path.length === 0) return undefined;
     const inferredPath = parsed.path.join('.');

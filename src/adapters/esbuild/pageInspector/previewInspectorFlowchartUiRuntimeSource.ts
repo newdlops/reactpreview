@@ -34,7 +34,7 @@ function formatPreviewInspectorFlowchartGraphKind(graphKind) {
 function readPreviewInspectorFlowchartNodeSymbol(step) {
   const graphKind = step?.graphKind;
   if (graphKind === 'entry') return '▶';
-  if (graphKind === 'decision') return '?';
+  if (graphKind === 'decision') return '◇';
   if (graphKind === 'branch') return '⑂';
   if (graphKind === 'join') return '●';
   if (graphKind === 'return') return '↩';

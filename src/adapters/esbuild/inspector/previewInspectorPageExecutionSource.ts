@@ -10,6 +10,7 @@ import {
 } from './previewInspectorPageRouteStatePrelude';
 import { createPreviewInspectorRouteExecutionRuntimeSource } from './previewInspectorRouteExecutionRuntimeSource';
 import { isReactOverlayComponentName } from '../staticResources/reactOverlayVisibilityInference';
+import { PREVIEW_INSPECTOR_PAGE_SURFACE_PROPS_KEY } from '../pageInspector/previewInspectorPageSurfacePropsRuntimeSource';
 import type {
   PreviewInspectorMountSurface,
   PreviewInspectorPageCompositionEdge,
@@ -49,6 +50,19 @@ export function createPreviewInspectorPageExecutionSource(
   const localById = new Map(
     surfaces.map((surface, index) => [surface.id, `Surface${index.toString()}`]),
   );
+  const inferredShapeById = new Map(
+    surfaces.flatMap((surface, index) =>
+      surface.propInference === undefined
+        ? []
+        : [[surface.id, `Surface${index.toString()}PropShape`] as const],
+    ),
+  );
+  for (const surface of surfaces) {
+    const shapeLocal = inferredShapeById.get(surface.id);
+    if (shapeLocal !== undefined && surface.propInference !== undefined) {
+      imports.push(`const ${shapeLocal} = ${JSON.stringify(surface.propInference.shape)};`);
+    }
+  }
   const childrenByParent = new Map<string, PreviewInspectorPageCompositionEdge[]>();
   const childIds = new Set<string>();
   for (const edge of options.candidate.compositionEdges) {
@@ -179,6 +193,10 @@ export function createPreviewInspectorPageExecutionSource(
     );
     const properties = surfaceId === nextAppPageSurfaceId ? nextAppPageProps : 'null';
     let current = `React.createElement(${local}, ${properties})`;
+    const inferredShape = inferredShapeById.get(surfaceId);
+    if (inferredShape !== undefined) {
+      current = `(globalThis[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_PAGE_SURFACE_PROPS_KEY)})]?.(${local}, ${inferredShape}, ${properties}) ?? ${current})`;
+    }
     if (
       surfaceId === options.candidate.runtimeTargetSurfaceId &&
       contextualTargetWrapperLocal !== undefined

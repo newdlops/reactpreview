@@ -175,7 +175,7 @@ function readPreviewInspectorPageContextPossibilities(descriptor) {
           String(stability.stableCount + stability.regressionCount) + ' stable verdict(s)',
       state,
       statusLabel: state === 'queued'
-        ? 'QUEUED'
+        ? 'AFTER CURRENT BUILD'
         : state === 'applying'
           ? 'APPLYING'
           : state === 'transient'

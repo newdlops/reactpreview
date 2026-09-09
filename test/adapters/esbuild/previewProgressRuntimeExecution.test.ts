@@ -11,6 +11,7 @@ import { build, type Plugin } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { createPreviewEntry } from '../../../src/adapters/esbuild/createPreviewEntry';
 import { createPreviewApolloBridgePlugin } from '../../../src/adapters/esbuild/previewApolloBridgePlugin';
+import { createPreviewDragDropBridgePlugin } from '../../../src/adapters/esbuild/previewDragDropBridgePlugin';
 import { createPreviewFormikBridgePlugin } from '../../../src/adapters/esbuild/previewFormikBridgePlugin';
 import { PREVIEW_SOURCE_LOADERS } from '../../../src/adapters/esbuild/previewLoaderPolicy';
 import { createPreviewProgressRuntimeSource } from '../../../src/adapters/esbuild/previewProgressRuntimeSource';
@@ -20,6 +21,7 @@ import { createPreviewSetupBridgePlugin } from '../../../src/adapters/esbuild/pr
 import { createPreviewTargetBridgePlugin } from '../../../src/adapters/esbuild/previewTargetBridgePlugin';
 import { selectPreviewTargetExports } from '../../../src/adapters/esbuild/previewTargetExports';
 import { createPreviewThemeBridgePlugin } from '../../../src/adapters/esbuild/previewThemeBridgePlugin';
+import { createPreviewYarnLibuiBridgePlugin } from '../../../src/adapters/esbuild/previewYarnLibuiBridgePlugin';
 import { createPreviewProgressMessage } from '../../../src/presentation/previewProgress';
 
 const PROJECT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -53,6 +55,8 @@ interface ProgressShadowRoot {
 
 /** Root state shared by generated-entry commit and failure tests. */
 interface ControlledMountNode {
+  /** Host-provided startup correlation, absent only for legacy fixture documents. */
+  readonly dataset: Record<string, string>;
   /** Markup committed by the controlled React DOM adapter or error renderer. */
   innerHTML: string;
   /** Current accessibility attributes on the React root. */
@@ -75,6 +79,8 @@ interface ControlledTextElement {
 
 /** Browser state returned with one generated bundle so tests can observe commit ordering. */
 interface ControlledBrowserRuntime {
+  /** Actual generated runtime acknowledgements posted through the private host bridge. */
+  readonly messages: unknown[];
   /** VM global carrying callbacks installed by the controlled React DOM module. */
   readonly sandbox: Record<string, unknown>;
   /** Initial progress host retained across the generated entry bootstrap. */
@@ -205,54 +211,151 @@ describe('preview progress runtime execution', () => {
    * Holds the renderer after `createRoot().render()` and proves bootstrap Promise resolution cannot
    * hide progress; only the class sentinel's actual `componentDidMount` commit may finish it.
    */
-  it('keeps initial progress visible until the React commit sentinel mounts', async () => {
-    const javascript = await buildControlledPreviewEntry(
-      [
-        'export function CommitTarget() {',
-        '  return <main data-state="committed">COMMIT_TARGET_MARKER</main>;',
-        '}',
-      ].join('\n'),
-      'CommitTarget.tsx',
-    );
-    const runtime = createControlledBrowserRuntime();
+  it.each([undefined, 0, 1, 12])(
+    'commits cold revision %s before acknowledging readiness',
+    async (revision) => {
+      const javascript = await buildControlledPreviewEntry(
+        [
+          'export function CommitTarget() {',
+          '  return <main data-state="committed">COMMIT_TARGET_MARKER</main>;',
+          '}',
+        ].join('\n'),
+        'CommitTarget.tsx',
+      );
+      const runtime = createControlledBrowserRuntime(revision);
 
-    runInContext(javascript, createContext(runtime.sandbox), { timeout: 10_000 });
-    await waitForSandboxFlag(runtime.sandbox, '__previewRenderScheduled');
-    await flushEventLoopTurns(3);
+      runInContext(javascript, createContext(runtime.sandbox), { timeout: 10_000 });
+      await waitForSandboxFlag(runtime.sandbox, '__previewRenderScheduled');
+      await flushEventLoopTurns(3);
 
-    expect(runtime.progressHost.hidden).toBe(false);
-    expect(runtime.mountNode.attributes.get('aria-busy')).toBe('true');
-    expect(runtime.mountNode.innerHTML).toBe('');
+      expect(runtime.progressHost.hidden).toBe(false);
+      expect(runtime.mountNode.attributes.get('aria-busy')).toBe('true');
+      expect(runtime.mountNode.innerHTML).toBe('');
+      expect(runtime.messages).toEqual([]);
 
-    readSandboxFunction(runtime.sandbox, '__commitPreview')();
+      readSandboxFunction(runtime.sandbox, '__commitPreview')();
 
-    expect(runtime.mountNode.innerHTML).toContain('COMMIT_TARGET_MARKER');
-    expect(runtime.progressHost.hidden).toBe(true);
-    expect(runtime.mountNode.attributes.get('aria-busy')).toBe('false');
-  });
+      expect(runtime.mountNode.innerHTML).toContain('COMMIT_TARGET_MARKER');
+      await expect.poll(() => runtime.progressHost.hidden).toBe(true);
+      expect(runtime.mountNode.attributes.get('aria-busy')).toBe('false');
+      expect(runtime.messages).toContainEqual({
+        pageApplicationPhase: 'page-applied',
+        revision: revision ?? 0,
+        ...(revision === undefined ? {} : { token: `cold:${revision.toString()}` }),
+        type: 'react-preview-runtime-ready',
+      });
+    },
+  );
 
   /**
    * Treats initial module evaluation failure as a completed preparation attempt: diagnostic markup
    * replaces the empty root and the overlay cannot remain permanently busy above that result.
    */
-  it('finishes initial progress when bootstrap fails before React can commit', async () => {
+  it.each([undefined, 1, 12])(
+    'reports a cold revision %s bootstrap failure without waiting for the watchdog',
+    async (revision) => {
+      const javascript = await buildControlledPreviewEntry(
+        [
+          'export function NeverRenderedTarget() { return null; }',
+          "throw new Error('INITIAL_BOOTSTRAP_FAILURE_MARKER');",
+        ].join('\n'),
+        'BootstrapFailureTarget.tsx',
+      );
+      const runtime = createControlledBrowserRuntime(revision);
+
+      runInContext(javascript, createContext(runtime.sandbox), { timeout: 10_000 });
+      await waitForRootMarkup(runtime.mountNode);
+
+      expect(runtime.mountNode.innerHTML).toContain('INITIAL_BOOTSTRAP_FAILURE_MARKER');
+      expect(runtime.progressHost.hidden).toBe(true);
+      expect(runtime.mountNode.attributes.get('aria-busy')).toBe('false');
+      expect(runtime.messages).toContainEqual({
+        pageApplicationPhase: 'page-failed',
+        revision: revision ?? 0,
+        ...(revision === undefined ? {} : { token: `cold:${revision.toString()}` }),
+        type: 'react-preview-runtime-failed',
+      });
+    },
+  );
+
+  /** Replacement imports only prepare; the coordinator alone activates and acknowledges them. */
+  it.each([0, 2, 13])('keeps hot revision %s behind explicit activation', async (revision) => {
     const javascript = await buildControlledPreviewEntry(
-      [
-        'export function NeverRenderedTarget() { return null; }',
-        "throw new Error('INITIAL_BOOTSTRAP_FAILURE_MARKER');",
-      ].join('\n'),
-      'BootstrapFailureTarget.tsx',
+      'export function HotTarget() { return <main>HOT_COMMIT_MARKER</main>; }',
+      'HotTarget.tsx',
     );
-    const runtime = createControlledBrowserRuntime();
-
+    const runtime = createControlledBrowserRuntime(1);
+    const hotRuntime = installControlledHotRuntime(runtime, revision);
+    runtime.mountNode.innerHTML = 'PREVIOUS_COMMITTED_MARKER';
     runInContext(javascript, createContext(runtime.sandbox), { timeout: 10_000 });
-    await waitForRootMarkup(runtime.mountNode);
+    const preparedEntry = hotRuntime.preparedEntry;
+    if (preparedEntry === undefined) throw new Error('The hot entry did not register preparation.');
+    await preparedEntry.preparationPromise;
 
-    expect(runtime.mountNode.innerHTML).toContain('INITIAL_BOOTSTRAP_FAILURE_MARKER');
+    expect(preparedEntry.revision).toBe(revision);
+    expect(runtime.sandbox.__previewRenderScheduled).toBeUndefined();
+    expect(runtime.mountNode.innerHTML).toBe('PREVIOUS_COMMITTED_MARKER');
+    expect(runtime.messages).toEqual([]);
+
+    const activation = preparedEntry.activate();
+    expect(preparedEntry.activate()).toBe(activation);
+    await waitForSandboxFlag(runtime.sandbox, '__previewRenderScheduled');
+    readSandboxFunction(runtime.sandbox, '__commitPreview')();
+    await expect(activation).resolves.toBe('ready');
+
+    expect(runtime.mountNode.innerHTML).toContain('HOT_COMMIT_MARKER');
     expect(runtime.progressHost.hidden).toBe(true);
-    expect(runtime.mountNode.attributes.get('aria-busy')).toBe('false');
+    expect(runtime.messages).not.toContainEqual(
+      expect.objectContaining({
+        type: 'react-preview-runtime-ready',
+      }),
+    );
+  });
+
+  /** A failed speculative import must preserve the mounted document and its host correlation. */
+  it('leaves hot preparation failures to the coordinator without reporting a cold failure', async () => {
+    const javascript = await buildControlledPreviewEntry(
+      "export function NeverRenderedTarget() { return null; }\nthrow new Error('HOT_PREPARATION_FAILURE');",
+      'HotFailureTarget.tsx',
+    );
+    const runtime = createControlledBrowserRuntime(1);
+    const hotRuntime = installControlledHotRuntime(runtime, 2);
+    runtime.mountNode.innerHTML = 'PREVIOUS_COMMITTED_MARKER';
+    runInContext(javascript, createContext(runtime.sandbox), { timeout: 10_000 });
+    await expect(hotRuntime.preparedEntry?.preparationPromise).rejects.toThrow(
+      'HOT_PREPARATION_FAILURE',
+    );
+    await flushEventLoopTurns(1);
+
+    expect(runtime.sandbox.__previewRenderScheduled).toBeUndefined();
+    expect(runtime.mountNode.innerHTML).toBe('PREVIOUS_COMMITTED_MARKER');
+    expect(runtime.messages).toEqual([]);
   });
 });
+
+/** Coordinator state populated by the actual generated entry during a speculative import. */
+interface ControlledHotRuntime {
+  /** Entry-local preparation captured without intercepting the generated bootstrap. */
+  preparedEntry?: {
+    readonly revision: number;
+    readonly preparationPromise: Promise<unknown>;
+    activate(): Promise<unknown>;
+  };
+}
+
+/** Installs the same explicit revision signal that the coordinator sets before a dynamic import. */
+function installControlledHotRuntime(
+  runtime: ControlledBrowserRuntime,
+  revision: number,
+): ControlledHotRuntime {
+  const hotRuntime: ControlledHotRuntime & Record<string, unknown> = {
+    activeReloadRevision: revision,
+    eventListeners: new Map(),
+    vscodeApi: { postMessage: (message: unknown) => runtime.messages.push(message) },
+  };
+  Reflect.set(runtime.sandbox, Symbol.for('newdlops.react-file-preview.hot-runtime'), hotRuntime);
+  return hotRuntime;
+}
 
 /** Runtime values returned by the standalone progress-protocol VM fixture. */
 interface ProgressProtocolFixture {
@@ -388,11 +491,13 @@ async function buildControlledPreviewEntry(sourceText: string, fileName: string)
       plugins: [
         createControlledDomClientPlugin(),
         createPreviewApolloBridgePlugin({ projectRoot }),
+        createPreviewDragDropBridgePlugin({ projectRoot }),
         createIdentityContextBridgePlugin(),
         createPreviewFormikBridgePlugin({ projectRoot }),
         createPreviewReduxBridgePlugin({ projectRoot }),
         createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
         createPreviewThemeBridgePlugin({ projectRoot }),
+        createPreviewYarnLibuiBridgePlugin({ projectRoot }),
         createPreviewSetupBridgePlugin({}),
         createPreviewTargetBridgePlugin({
           documentPath,
@@ -462,11 +567,17 @@ function createIdentityContextBridgePlugin(): Plugin {
 }
 
 /** Creates a browser VM with visible initial progress and a root that records accessibility state. */
-function createControlledBrowserRuntime(): ControlledBrowserRuntime {
+function createControlledBrowserRuntime(revision?: number): ControlledBrowserRuntime {
   const progressHost = createExistingProgressHost();
   const mountNode = createControlledMountNode();
+  if (revision !== undefined) {
+    mountNode.dataset.reactPreviewRuntimeRevision = revision.toString();
+    mountNode.dataset.reactPreviewRuntimeToken = `cold:${revision.toString()}`;
+  }
+  const messages: unknown[] = [];
   const listeners = new Map<string, unknown>();
   const sandbox: Record<string, unknown> = {
+    acquireVsCodeApi: () => ({ postMessage: (message: unknown) => messages.push(message) }),
     addEventListener(type: string, listener: unknown): void {
       listeners.set(type, listener);
     },
@@ -493,7 +604,7 @@ function createControlledBrowserRuntime(): ControlledBrowserRuntime {
     setTimeout,
   };
   sandbox.window = sandbox;
-  return { mountNode, progressHost, sandbox };
+  return { messages, mountNode, progressHost, sandbox };
 }
 
 /** Creates the retained progress host that is visible before the first browser entry loads. */
@@ -510,6 +621,7 @@ function createExistingProgressHost(): ProgressHost {
 function createControlledMountNode(): ControlledMountNode {
   return {
     attributes: new Map([['aria-busy', 'true']]),
+    dataset: {},
     innerHTML: '',
     replaceChildren(...children): void {
       this.innerHTML = children

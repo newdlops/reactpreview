@@ -7,6 +7,7 @@ import * as esbuild from 'esbuild';
 import { cp, mkdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { NODE_ESM_COMPATIBILITY_BANNER } from './preview-node-esm-compatibility.mjs';
+import { createPreviewTypeScriptInteropPlugin } from './preview-typescript-interop.mjs';
 
 const isProduction = process.argv.includes('--production');
 const shouldWatch = process.argv.includes('--watch');
@@ -38,6 +39,7 @@ const sharedBuildOptions = {
   logLevel: 'info',
   minify: isProduction,
   platform: 'node',
+  plugins: [createPreviewTypeScriptInteropPlugin()],
   sourcemap: isProduction ? false : 'external',
   target: 'node20',
 };

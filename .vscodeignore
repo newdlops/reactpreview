@@ -14,8 +14,10 @@ frozen-frontier-authentic-target-authority-*.md
 .vscode/**
 coverage/**
 docs/**
+**/AGENTS.md
 CHANGELOG.md
 CONTRIBUTING.md
+DESIGN.md
 SECURITY.md
 SUPPORT.md
 examples/**

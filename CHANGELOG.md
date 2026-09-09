@@ -1,16 +1,155 @@
 # 변경 기록
 
-## Unreleased
+## 0.1.1523 - 2026-09-09
 
+- 비슷한 이름의 다른 페이지·로딩·오류 화면을 같은 페이지 owner로 인정하지 않도록 문맥 검증 강화. 명시적인 memo·forwardRef·HOC 이름은 보존하고 실제 조상 신원을 한 번 색인해 반복 비교 비용을 제한
+- 페이지 학습 결과를 현재 descriptor·실행 후보·목표 소스·활성 상태·리비전에 연결해 이전 실행의 성공·실패가 새 페이지에 섞이지 않도록 차단. 일시정지와 교체된 provisional 결과도 보존 없이 중단
+- 미해결 블로커·목표 오류·분리된 DOM을 성공으로 학습하지 않고, 복구 중 오류와 관찰 불가 결과는 판단 보류. 확정된 출력 퇴행은 일부 DOM이 남아도 실패로 반영하며 학습 가중치·저장 기록·유한 재시도 경계 유지
+
+## 0.1.1522 - 2026-09-09
+
+- 권한 enum·설정 값이 페이지 주변 컴포넌트로 렌더링되던 회귀를 차단. 실제 JSX·컴포넌트 슬롯 근거만 허용하고 React Router의 다른 경로에 속한 화면을 분리하며, 데이터로도 쓰이는 의존성은 화면에 추가하지 않고 보존
+- 반복 탭으로 분석 한도에 도달하는 경우와 최상위 Fragment의 헤더·푸터 누락을 보완. 분리해서 그리는 주변 컴포넌트의 필수 props를 기존 타입·사용 근거로 생성하고 수동 값·fallback 끄기·실제 목표 출력 검증을 유지
+- 실패했던 CareGoalTable·CarePlanTable을 격리 Chromium으로 재검증하고 조밀한 라우트·권한 값·중첩 props 회귀 테스트 추가. 학습 모델·성공 기준을 완화하지 않고 잘못된 입력 구성 원인을 수정
+
+## 0.1.1521 - 2026-09-09
+
+- 페이지 내부 실행 재빌드의 실패 응답을 요청 ID·빌드 리비전과 연결해 무한 복구 대기를 해소. 응답 누락은 접수 5초·처리 150초 한도로 정리하고 진행 메시지가 대기 한도를 계속 늘리지 않도록 수정
+- 빌드 실패·사용 불가 후보는 렌더 실패로 학습하지 않고 미시도 전체 페이지 실행으로 진행. 같은 리비전 준비 실패 3회·후보 소진·취소·시간 초과에는 자동 반복과 무관한 조건 탐색을 중단
+- 실행 교체 중 수동 페이지 선택을 보존하고 호스트 완료 후 우선 적용. 오래된 응답·타이머·대상 변경을 검증하며 실제 실행 반영과 페이지 출력 검증 없이 성공 판정을 만들지 않음
+
+## 0.1.1520 - 2026-09-09
+
+- 생성 라우터만 제공하는 페이지에서도 정적으로 확인된 헤더·푸터·주변 영역을 보존. 실제 상위 route owner가 그리는 영역만 중복 제외하고 기존 순서·실행 허용 경계를 유지
+- 실행 페이지와 안쪽 컴포넌트의 이름을 혼용해 페이지 성공으로 인정하던 경로를 차단하고, 유지해야 하는 페이지 owner·layout의 실제 React 조상 확인을 성공 기준에 포함
+- 컴포넌트 출력과 오래된 완료 상태만으로 자동 복구를 멈추지 않도록 수정. 수동 컴포넌트 모드·일시정지·유한 재시도·기존 학습 기록을 보존하고 페이지 실행 계획을 책임별로 분리
+
+## 0.1.1519 - 2026-09-09
+
+- 전체 호환성 변환이 필요한 모듈의 중복 사전 검사를 생략하고, 정확히 같은 경로·소스의 런타임 검사 결과를 최대 128개·문자열 1MiB 한도에서 재사용. 편집·파서 오류·효과 격리·조건 계측은 그대로 검증
+- 자동 페이지 선택의 빌드 실패와 사용 불가 응답을 렌더 실패 학습과 분리하고, 현재 리비전에서 해당 후보를 제외해 다음 허용 후보로 진행. 준비 실패 3회·취소·시간 초과에는 자동 반복하지 않고 새 리비전·수동 선택은 재시도 허용
+- 호스트 응답의 후보와 요청 ID를 함께 검증하고, 수동 선택·일시정지·소스/대상 변경 후 오래된 자동 재시도를 차단. 성공 판정·사전학습 가중치·기존 설정과 학습 기록 유지
+
+## 0.1.1518 - 2026-09-08
+
+- 실제 빌드로 확인된 라우터 소유권을 넓은 초기 경로 추정과 분리해, 재준비할 때 같은 자동 라우터 보정 빌드를 반복하는 문제를 수정. 현재 편집 내용과 최종 모듈 그래프의 재검증은 유지
+- 동일 파서 트리의 로컬 helper 색인을 약한 참조로 재사용하고, 컴파일 요청 안의 정확한 import 경로 조회를 제한된 캐시에 보관. 새 요청·다른 importer·편집된 소스의 분석을 분리
+- 일반 패키지 import에서 불필요한 Yarn PnP companion 경로 조회를 생략. 실제 프로젝트의 컴파일 프로파일과 재준비 회귀로 병목을 검증하고 분석 깊이·실행 경계·기존 학습 기록을 보존
+
+## 0.1.1517 - 2026-09-08
+
+- 확장 소유 TypeScript 기본 import의 CommonJS 변환을 공통 경로로 모아 워커 시작 시 반복되는 API 열거·복사를 제거. 실제 TypeScript API, 외부 패키지와 프로젝트 모듈의 로딩 경계는 유지
+- 프리뷰와 공유 패키지 산출물의 공백만 축소하고 함수명·개발 진단·JSX 소스 위치·setup 초기화 순서·기존 신경망 학습 기록을 보존. 이전 vendor 캐시와 구분하도록 빌드 스키마 갱신
+- 배포용 워커와 격리 Chromium을 사용하는 재현 벤치마크 추가. 자체 페이지 7회 중앙값에서 첫 준비 1.78→1.00초, 편집 후 준비 494→384ms, 첫 DOM 반영 346→295ms; 실제 프로젝트 전체 완료 시간과 구분해 측정 범위와 제한을 기록
+
+## 0.1.1516 - 2026-09-07
+
+- 사전학습 v2에 수신 타입 요구·라우터 구조·검증된 실패 이력을 분리 입력하고, 실패 후보를 제외한 미시도 대안의 학습 순위를 유지. 기존 버전 4 저장 기록·성공 판정·수동 제어는 보존
+- 격리된 Chromium의 비동기 효과·Lazy/Suspense·출력 재발 사례와 재시도 상태를 포함해 재학습. 비용 가중 학습·후보 간 비교·제한된 구조 비용을 적용하고 53,633개 파라미터 모델을 검증 성적으로 채택
+- 동일한 저장소 소유 평가 상태 10,737개에서 v1 대비 콜드 첫 시도 성공 9,745→10,212건. 실제 프로젝트 해결률이나 전체 렌더 시간 개선을 뜻하지 않으며 상세 수치·제한은 사전학습 v2 문서에 기록
+
+## 0.1.1515 - 2026-09-07
+
+- 예외·컬렉션·참조값·페이지 경로·페이지 실행·UI 상태 전환에 131,841개 파라미터의 사전학습 복구 모델을 추가. 허용된 후보의 시도 순서만 조정하고 실제 성공 판정·수동 제어·기존 버전 4 학습 기록을 보존
+- 저장소 소유 실행 사례 36,000건의 후보 결과 111,313개로 3개 용량을 비교 학습. 분리된 합성 SSR 평가 9,000건에서 첫 시도 성공 84.0%→93.3%; 실제 프로젝트 해결률과 구분해 학습·검증 절차와 한계를 문서화
+- 가중치를 int8로 양자화하고 지연 로딩·64개 익명 벡터 캐시·학습 범위 밖 판단 보류를 적용. 동일 문맥의 검증 결과를 우선하고 외부 모델 서버나 새 런타임 의존성 없이 실행
+
+## 0.1.1514 - 2026-09-07
+
+- 경로 탐색기에서 `/`를 눌러도 하위 폴더가 남던 문제를 수정. 같은 라우터와 중첩 라우터에서 모두 최상위 경로 목록으로 복귀
+- 탐색 버튼을 `/ All routes`로 명시해 실제 `/` 페이지 선택과 구분. 목록 복귀만으로 페이지를 변경하지 않고 기존 선택·준비 중·실패 재시도 상태를 보존
+
+## 0.1.1513 - 2026-09-07
+
+- `Review choice` 대신 실제 선택 대상과 옵션 이름·남은 옵션 수를 표시. 선택지가 없는 경우는 상세 검사, 페이지 경로 선택은 경로 비교로 구분
+- 선택지 열기는 값을 고르거나 적용하지 않고 옵션 목록으로 이동. 별도 Inspector 탭에도 동일한 포커스·스크롤 동작을 전달하고 기존 수동 선택과 추천 배지를 유지
+
+## 0.1.1512 - 2026-09-07
+
+- 실제 신경망 추천 경로와 일치하는 옵션에 `Neural choice` 배지·테두리·배경 강조를 추가. 원래 페이지 옵션의 출처와 직접 선택·적용·출력 검증 상태는 별도로 유지
+- 추천이 없거나 문맥·후보가 바뀌고 실패·한도 초과로 근거가 사라지면 추천 표시를 보류. 별도 추론·학습·페이지 변경 없이 기존 추천 결과만 표시
+
+## 0.1.1511 - 2026-09-07
+
+- Choice의 각 옵션에 원래 페이지 컨트롤·코드 정의 값/분기·Inspector 복구/초기화·출처 미확인을 표시. Inspector가 조합한 다음 단계는 원래 페이지 옵션과 별도로 안내
+- 현재 페이지/프리뷰 값과 Inspector에서 고른 값을 함께 유지하고 출처를 접근성 이름에도 반영. 선택만으로 적용하지 않는 기존 동작과 페이지 컨트롤 재검증·수동 제어·학습 기록을 보존
+
+## 0.1.1510 - 2026-09-07
+
+- 목표가 보이지 않을 때 페이지 경로 근거와 실행된 렌더 조건을 분리 표시. 현재 목표를 막는 관찰된 조건에는 현재 값·목표 분기·소스 위치와 해당 조건으로 이동하는 버튼을 제공
+- 컴포넌트만 복원된 문맥·미호출 콜백·빈 출력·렌더 오류를 구분하고, 근거가 부족하면 경로 오예측으로 단정하지 않음. 오래된 경로의 조건 안내를 차단하며 기존 수동 값·복구 정책·학습 기록을 유지
+
+## 0.1.1509 - 2026-09-07
+
+- 일부 화면 출력이 있어도 필수 선택·데이터·오류가 남으면 미해결 상태로 표시하고 성공 체크포인트·성공 학습·자동 복구 종료를 보류. 남은 항목이 해소되면 기존 연속 출력 검증을 다시 수행
+- 일반 조건 분기는 `◇`, 필수 선택은 `?`로 구분하고 출력이 보이는 미해결 화면에서도 선택 컨트롤을 유지. 모델 갱신 횟수를 페이지 완성으로 오해하지 않도록 상태 안내를 일치시킴
+
+## 0.1.1508 - 2026-09-07
+
+- Inspector 선택 항목에 대상 필드·컴포넌트·변경 효과와 구체적인 적용 버튼을 표시하고 첫 수동 선택을 펼쳐 노출. 후보가 없는 상태에는 상세 확인·조건 검사·페이지 경로 이동을 남기며 페이지 경로의 중첩 접기도 함께 해제
+- 조건의 WAIT/Waiting은 미실행 원인, QUEUED ON/OFF는 선택 값과 미적용 이유로 구분. 페이지 경로 예약도 현재 빌드 완료 후 적용됨을 설명하고 기존 수동 제어·검증·학습 갱신 분리는 유지
+
+## 0.1.1507 - 2026-09-07
+
+- 첫 신경망 점수 조회는 미학습 헤드의 불필요한 투영을 생략하고 학습된 추론은 고정 가중치를 지연 재사용. 기존 점수·SGD·저장 모델의 수치와 검증 경계를 유지하며 렌더 대기 프레임의 전체 블로커 재분석을 제거
+- 반복 실패한 후보는 과거 성공 점수가 높아도 덜 실패한 허용 후보 뒤로 배치. 복구 준비·적용 사이의 페이지·대상·수동 제어·오류 필드·유한 선택 도메인 변경을 재확인하고, 오래된 전략 대신 기존 예산 안에서 새 근거로 재계획
+
+## 0.1.1506 - 2026-09-07
+
+- Inspector의 페이지 선택·자동 복구·표시 설정을 구분하고 현재 페이지 상태를 경로 근거보다 먼저 표시. 보조 도구·경로 설정·트리 기호는 접어서 보존하며 짧은 탭 이름과 검사 영역의 최소 높이로 좁은 창의 탐색성을 개선
+- 별도 Inspector 탭에서 제거되던 표·선택 그룹 구조와 제한된 상태 표시 속성을 보존하고, 접기 키보드 조작·연속 탭 포커스·추론 근거 자동 펼치기를 수정. 스크립트·리소스 속성 차단과 기존 수동 제어·학습 갱신 분리는 유지
+
+## 0.1.1505 - 2026-09-07
+
+- 런타임 목표 경로의 조건을 소스·수동 값·현재 상태로 먼저 선별하고 모델 검증은 조회당 한 번, 추론은 허용 후보당 한 번만 수행. 전체 정렬 대신 다음 조건을 선형 선택하며 같은 평가의 소유자 근거를 공유
+- 조건별 소스·분기 방향과 실제 페이지 문맥에 실패 기억을 연결해 발견 순서가 달라져도 같은 실패를 우선 반복하지 않도록 개선. 무관한 후보로 탐색 범위를 넓히지 않으며 기존 예산·rollback·출력 검증은 유지
+- 중첩 JSX 라벨의 컴포넌트 경계를 보존하고 경로별 이름 점수를 색인 조회하며, 상태 근거를 읽을 때 getter 실행을 차단. 큰 도달성 런타임을 책임별로 분리하고 탐색 성능·품질 회귀 및 재현 벤치마크 추가
+
+## 0.1.1504 - 2026-09-07
+
+- 실제 페이지 경로·선택 컴포넌트·조건 분기·오류 필드를 신경망 선택 문맥에 연결하고, 관련 없는 값의 곱집합 대신 소스 근거가 있는 단일 변경 제안을 생성
+- 제안의 이유와 출력 검증 여부를 표시하고 앞의 3개를 우선 노출. 나머지 문맥 제안과 모든 수동 편집을 접힌 영역에 보존하며 근거 없는 초기 추천은 보류
+- 적용 직전 페이지 상태·후보 신원을 재확인하고 다른 prop 값은 유지. 선택과 학습의 문맥을 일치시키고 새 실패가 있으면 과거 검증 추천을 철회
+
+## 0.1.1503 - 2026-09-07
+
+- 명시적 iterable·Safari/Firefox 속성 오류와 최대 8단계 `cause`를 복구 근거로 읽고, 메시지 탐색량·경로 수를 제한하며 getter·문자열 변환·순환 참조로 인한 복구 중 재예외를 방지
+- 자동 prop 복구의 최종 타입 확인에서 `props.`/`this.props.` 경로를 정규화하고, 배열·문자열의 `length` 요구를 확인된 타입으로 복구. 사용자 값·소유 컴포넌트·소스 경계와 모호한 근거 거부는 유지
+- 변화 없는 복구의 표시용 600ms 대기를 제거하고 다음 시도 중 잘못된 중단 표시를 수정. 부분 변경 후 예외와 미종료 렌더는 계속 잠그며 기존 시도 예산·출력 검증·수동 중단을 보존
+
+## 0.1.1502 - 2026-09-06
+
+- 자동 페이지 복구의 가능 여부 조회에서 모델 추론과 중복 선택지 읽기를 제거하고, 같은 유한 상태의 조합을 진행 표시마다 재열거하지 않도록 변경
+- 실제 실행할 때 미시도·비기본값 경로만 최신 모델로 배치 평가해 저장 당시 점수에 머무르지 않도록 하고, 최근 실패 이력을 우선하면서 기존 hot-retained 결정도 재검증
+- 상태가 추가될 때 자동 복구 frontier가 96개 한도를 넘던 오류를 수정하고, 대기 중 관찰·수동 중단·전체 조합 보존 회귀와 가능 여부/선택 비용 벤치마크 추가
+
+## 0.1.1501 - 2026-09-06
+
+- 후보 평가·오류 블로커 선별·선택 경로 정렬의 반복 모델 검증과 재추론을 배치당 1회 검증·허용 후보당 1회 추론으로 줄임. 오류 관련 집합 안에서 실패 제외와 최신 학습 이력을 우선하고 경로 간선을 탐색별 색인으로 조회. 학습 진행 표시를 독립 구독으로 분리해 대상 페이지·Inspector 트리의 불필요한 재렌더링을 방지
+- 종료 전 탐색 재개를 차단하고 진전 없는 분기의 rollback을 실패 학습·재탐색·진단 결과에 일치시킴. 관찰되지 않은 superseded 시도는 되돌리거나 학습하지 않으며, 관련 대형 runtime·테스트 파일을 책임별로 분리하고 기존 회귀 실패 5건을 해결
+- 최초 mount의 모델 동기화 revision을 호스트와 일치시키고, cold/hot 시작 구분을 revision 숫자에서 분리해 첫 렌더와 시작 완료 신호가 누락되는 회귀를 수정. 긴 문맥에서도 후보·전략 특징을 보존하며 개수 특징의 포화 및 정렬 순서 변경에 따른 실패 기억 단절을 수정
+- hook fallback의 데이터 통과·identity 자체 라벨 반복 학습을 제거하고 실제 렌더 시도로 통합. 미사용 predicate는 학습을 보류하고, 후보 변경·시도 시작 시점의 수동 제어·fatal error를 정확히 귀속
+- 신경망 선택·학습·보정·페이지 실행 검증 로그를 호스트의 제한된 프로토콜에 연결하고 콜드 모델 복원 및 실제 fallback→trace→렌더 검증 회귀 테스트 추가
 - Page Execution 후보가 호스트에 반영된 뒤 deferred activation이 revision 경쟁에서 빠져도 현재 descriptor를 승인 신호로 재조정해, Inspector가 `RESTORING FULL PAGE CONTEXT`와 자동 선택 상태에 영구히 머물지 않도록 수정
 - 동적 라우트 정규식을 포함한 compiler candidate ID를 WebView 재시도 프로토콜이 정상 수용하되 절대 경로·URL·제어 문자는 계속 거부하도록 검증 규칙을 실제 후보 형식과 일치시킴
 - artifact마다 달라지는 도달성·탭 키를 Page Execution 복구 기록에서 제외하고 페이지 후보·대상 소스·export의 안정된 신원을 사용해, `page-authentic`과 `page-sliced`가 새 후보로 초기화되며 교대하던 재빌드 루프를 유한 탐색으로 고정
-
 - Page Inspector automatic fast/corridor build가 app entry·route registry·loader/action을 실행하지 않고 선택 route/page의 검증된 Page Execution slice와 Frontier v2만 bundle하도록 변경. 중첩 route owner는 실제 첫 page leaf까지 폴더 계층으로 탐색하고 JSX·route factory의 layout wrapper만 leaf 실행 surface에 복원하며, selected-export/local-HOC slice, Next layout 및 Pages Router `_app → Component` 조합을 frozen execution plan에 연결. authored Router root에는 generated MemoryRouter를 중첩하지 않고 detached leaf에는 정확히 하나의 Router만 제공하며, 동적 `:param`의 제약·이름에서 URL 값을 생성해 leaf pattern과 query를 실제 MemoryRouter 경로에 적용. 고정 graph/module/source/native-bundling 시간 budget 없이 target-only보다 높은 page fidelity를 우선 선택하고, selected corridor에서 중복 workspace-wide large-package barrel optimizer를 실행하지 않으며, retained fast preview의 enrichment가 실패해도 route `Preparing…` 상태를 terminal ready로 정리
 - Frontier가 authored runtime static import 및 re-export closure를 모두 admission하여 esbuild가 평가하는 side-effect 모듈을 누락하지 않도록 수정
 - target package가 소유한 styled-components v5/v6 runtime을 preview revision 사이 단일 shared chunk로 재사용하고, automatic ThemeProvider·GlobalStyle·StyleSheetManager 경계를 추가
 - 선택된 Page Inspector outer corridor의 안전하게 증명된 StyleSheetManager props와 setup의 `styledComponentsPreview` override를 지원하며, revision-owned detached style target을 hot replacement에 맞춰 activate/commit/dispose
 - `styled-components/native`, SSR stylesheet 추출, `target`/`sheet`/`nonce` setup props는 지원하지 않아 browser preview 경계를 유지
+
+## 0.1.1500 - 2026-09-06
+
+- 신경망의 렌더 성공 학습을 같은 대상의 실제 출력 3회 연속 검증으로 제한하고, 캐시된 도달 상태·잠깐 나타난 출력·데이터 통과만으로 성공 점수를 주던 경로를 보강
+- 지연된 학습을 페이지·대상·소스·수동 제어·시도 신원에 묶어 다른 렌더 결과가 이전 후보에 섞이지 않도록 하고, 같은 시도의 rollback·fatal error는 중복 없이 실패로 반영
+- hook 목록이 `filter`·`slice`·불변 별칭을 거쳐 helper에 전달될 때 callback의 중첩 필드 요구를 보존하고, 같은 목록의 여러 reader가 필요한 필드를 합쳐 불완전한 생성 데이터의 반복 렌더 오류를 방지
+- Context 전용 fallback에도 같은 imported helper 근거를 연결해, 전체 소스 변환에서 불완전한 Context 값이 우선 적용되던 경로를 수정
+
+## 0.1.1499 - 2026-09-06
+
+- 신경망의 페이지 선택지를 현재 조건과 소스·소유 컴포넌트·상태 변수가 연결된 실제 제어로 제한하고, 근거 없는 초기 추천과 앞부분만 잘라 만든 조합 추천을 보류
+- 자동 탐색 중 수동 선택을 유지하고 Pause automatic / Resume automatic을 추가해, 직접 선택 후 대기 중인 자동 재시도가 개입하지 않도록 변경
 
 ## 0.1.1498 - 2026-09-05
 
@@ -842,143 +981,5 @@
 - direct artifact, 선택 export, page candidate, hot revision 사이에서 hook/effect 자동 상태를 격리하고 실제 activate된
   hot entry만 scope를 교체하며, 후보 전환 시 바깥 Provider tree도 remount해 app Router 결과와 새 후보를 이전
   후보의 provider 값이나 늦은 async effect가 오염하지 않도록 개선
-
-## 0.1.1091 - 2026-07-20
-
-- Page Component Tree에서 mounted component 행을 선택하면 남아 있던 Pick hover 후보를 해제하고
-  `Highlight`를 자동으로 켜, 실제 페이지에 연결된 해당 React host root를 즉시 노란 outline으로 표시
-- export 전환·hot refresh로 Fiber 구조 ID가 바뀐 경우 export identity로 최신 트리 노드를 한 번 더 찾아
-  오래된 행 ID가 다른 component를 강조하거나 선택 표시만 남기는 문제를 방지
-- `PAGE PATH`, blocker, unmounted inventory처럼 실제 host가 없는 행은 존재하지 않는 영역을 강조하지 않고
-  이전 Pick outline만 정리하며, authored inline outline과 priority가 highlight 해제 시 정확히 복원되도록 검증
-
-## 0.1.1090 - 2026-07-20
-
-- 별도 Inspector 탭이 스냅샷마다 트리 DOM을 교체해도 문서와 Component Tree의 가로·세로 스크롤을
-  보존하고, 일반 행 선택과 Pick·Wireframe·Current file의 명시적 reveal을 분리해 불필요한 최상단 점프를 제거
-- Pick on page로 고른 실제 DOM host를 가장 가까운 React 컴포넌트 트리 행과 연결하고, 선택 경로를 자동으로
-  펼쳐 해당 행만 트리 viewport 안으로 이동하도록 해 페이지와 컴포넌트 계층의 위치를 즉시 대응
-- 선택한 정확한 host를 React mount·이벤트·Fiber를 건드리지 않고 하나씩 숨기는 `Hide picked`와 최근/전체 복원을
-  추가하고, 트리별 숨김 수·bounded locator·hot-reload 재연결 검증으로 가역성과 오선택 방지를 강화
-
-## 0.1.1089 - 2026-07-20
-
-- Redux 대괄호 selector, Reselect 중간 객체, 중첩 destructure·collection 오류, 같은 파일의
-  `styled`·`memo`·`forwardRef` HOC를 정적으로 연결하고 default export의 실제 함수명까지 추적해 전체 데이터 경로와
-  export props를 복구하되, hook/local receiver는 target props에 잘못 투영하지 않도록 제한
-- Next.js App Router의 root-to-leaf `layout` 체인과 파일시스템 route를 페이지 shell로 합성하고, 관련 route source를
-  hot reload 의존성에 포함하며 동적 `params`·`searchParams`를 동기/Promise 양쪽에서 읽을 수 있게 제공해 선택
-  컴포넌트뿐 아니라 헤더·사이드바를 포함한 실제 페이지 맥락을 우선 렌더링
-- 분리된 모듈의 ReactDOM portal host와 exact ID selector, 패키지 CSS `style` export를 정적으로 발견하고 Tailwind
-  package import와 overlay root를 webview 시작 전에 준비하며, hot revision에서 확장 소유의 오래된 host만 정리
-- root-to-target 경로에 속한 hook/API만 작은 frontier로 순차 자동 생성하고 Auto payload cache를 모드별로 분리해,
-  형제 컴포넌트의 과잉 데이터 생성과 반복 렌더를 줄이면서 unknown list는 Smart 단계에서 최소 항목으로 확장
-- 자동 Blocker 수정은 결과가 3개 snapshot과 320ms 동안 안정화된 뒤 원래 시도에 귀속하고 최대 960ms 내에 종료하며,
-  동일 Smart 재시도·새 시도의 대체·오류 재발까지 기록해 잘못된 성공 판정과 후속 오류 인과관계 손실을 제거
-
-## 0.1.1088 - 2026-07-20
-
-- 실패한 selector 결과가 `?.`로만 읽히더라도 실제 nullish 반환은 그대로 보존하면서 예외가 난 경우에는
-  optional 경로의 최소 구조를 생성해, 하위 helper의 기본 sentinel이 또 다른 런타임 오류를 만드는 연쇄를 차단
-- `timeSeconds`·`milliseconds`·`durationMs` 같은 시간 수치 키를 0으로 추론해 음수 기본값 검증을 통과시키고,
-  비교 전용 selector는 enum 비교를 무조건 참으로 만들지 않아 Loading·Error·Overlay가 잘못 활성화되지 않도록 수정
-- 반환값을 사용하지 않는 analytics·effect-once·scroll-lock 류 훅 실패는 정확한 소스와 오류를 Console에 유지하되
-  Page Component Tree의 사용자 해결 대상과 blocker trace 자동 선택에서 제외해 실제 렌더 중단 원인을 선명하게 표시
-- optional 실패 구조는 루트 selector/data hook에만 적용하고 Context의 중첩 optional destructure는 기존 단락을 유지해,
-  권한·파트너 같은 선택 데이터가 자동 생성 때문에 오히려 보호 분기를 활성화하는 회귀를 방지
-
-## 0.1.1087 - 2026-07-20
-
-- Page Component Tree 행의 pointer/keyboard 선택 직전에 트리와 미리보기 문서의 유한한 scroll 좌표를 hot session에
-  캡처하고, export 선택으로 Inspector shell이 remount되어도 layout commit과 다음 animation frame에서 복원
-- remount된 Components pane이 깊은 선택 행의 조상을 접은 채 먼저 렌더링해 브라우저가 저장 좌표를 0으로 clamp하지
-  않도록 초기 state부터 선택 경로를 펼치고, 이후 외부 선택도 paint 이전 layout effect에서 조상 경로를 확장
-- 일반 사용자 스크롤은 최신 안정 좌표로 계속 기억하되 pending row-click 복구 중 발생하는 임시 scroll event는
-  저장값을 덮지 않도록 tree scroll 수명주기를 독립 런타임 모듈과 회귀 테스트로 분리
-
-## 0.1.1086 - 2026-07-20
-
-- Page Component Tree의 모든 선택 변경에서 행 reveal을 실행하던 동작을 명시적인 Wireframe/Current file 이동의
-  one-shot 요청으로 제한해, 사용자가 이미 보고 있는 깊은 행을 클릭할 때 트리 스크롤이 최상위로 돌아가지 않도록 수정
-- Modal·Dialog·Drawer·Portal의 visibility prop, 내부 null guard, `condition && <Modal />`을 동일한 overlay gate로
-  분류하고, 양쪽 라벨에 같은 Modal 이름이 있어 target 점수가 동점이어도 visible 분기가 현재 파일에 필요하면 자동 활성화
-- 선택 파일 자체가 평소 숨겨진 overlay인 빠른 직접 프리뷰에서도 compiler-proven owner가 일치하면 기본 visible 상태로
-  렌더링하고, 수동 분기 값이 이를 다시 숨기면 해당 조건을 Page Component Tree의 current-file blocker로 표시
-
-## 0.1.1085 - 2026-07-20
-
-- `styled(...)`, `memo(...)` 같은 HOC/factory 안의 PascalCase render owner를 복구하고 `if/else` 양쪽이 서로
-  다른 컴포넌트를 반환하는 조건도 blocker로 기록해, 선택 파일로 이어지는 component 이름과 일치하는 true/false
-  분기를 target-guided DFS가 자동으로 선택하도록 개선
-- 상대 `Route path`가 `createAppModule('/base', ...)` 형태의 앱 모듈 안에 선언되면 factory의 절대 base를 함께
-  합성해, `/contract-upload-preview` 대신 실제 중첩 페이지 경로를 초기 webview location으로 복원
-- 역할 boolean은 전체 후보 이름의 우연한 단어 일치가 아니라 `App`·`Layout`·`Provider` 같은 identity container의
-  모든 복합 역할 토큰이 일치할 때만 활성화해, owner 페이지에서 `LegalPartnerSelectPage`라는 자식 이름 때문에
-  partner-staff 상태가 켜지는 잘못된 Smart Fill을 방지
-- `legalPartnersForCompanyCreate`처럼 복수 명사가 `for`/`by`/`of` 수식어 앞에 놓인 GraphQL 필드도 collection으로
-  추론하고, no-network XHR adapter를 독립 런타임 모듈로 분리해 자동 payload의 `.map()` 오류와 모듈 비대화를 해소
-
-## 0.1.1084 - 2026-07-20
-
-- Reselect `createSelector`의 로컬 input selector를 역추적해 projector가 객체로 사용하는 중간 Redux 경로까지
-  정적 상태에 생성하고, 목표 페이지 경로를 근거로 인증·역할 boolean의 최소 통과값만 선택해 데이터는 준비됐지만
-  로그인/권한 분기에서 멈추던 페이지 탐색을 개선
-- `condition && { path, element: <Page /> }` 형태의 조건부 React route entry를 일반 객체 계산과 구분해 Inspector
-  blocker로 기록하고, 선택 파일로 이어지는 페이지 element 이름이 증명되면 해당 route만 자동으로 활성화
-- Emotion styled component selector에 안정적인 compiler target을 주입하고 Next dynamic의 CommonJS 이중 default
-  결과를 정규화해, Babel 전용 selector 오류와 `React.lazy`가 컴포넌트 대신 module object를 받은 실패를 방지
-- 일반 `console.error`와 React 개발 경고를 실제 render failure chain에서 분리하되 Inspector Console에는 유지해,
-  native bridge 안내나 설정 경고 때문에 성공한 렌더 revision이 실패로 판정되는 현상을 제거
-- 빠른 첫 revision이 앱 소유 `RouterProvider`를 만나 중첩 Router 오류가 나면 선택 컴포넌트 boundary가 이를
-  placeholder로 확정하지 않고 바깥 candidate boundary가 추론한 MemoryRouter만 제거해 즉시 재시도하며, 복구 중
-  발생하는 개발용 browser error event도 실패 revision으로 기록하지 않도록 수정
-
-## 0.1.1081 - 2026-07-20
-
-- PnP virtual workspace source의 상대 import를 물리 파일로 읽은 뒤에도 consumer별 virtual module identity를
-  자식 경로에 유지해, 앱이 제공한 `peerDependencies`가 `UNDECLARED_DEPENDENCY`로 잘못 끊기지 않도록 수정
-- 소스 제어에서 제외되고 앱의 codegen 단계가 만드는 `generated`/`__generated__`/`*.generated.ts` 모듈이
-  아직 없으면 일반 누락 컴포넌트와 구분해 재귀적으로 안전한 render-only contract 값으로 대체하고, generated-only
-  export barrel의 임의 named DTO import까지 유지하면서 생성 디렉터리를 감시해 실제 산출물이 생기면 hot reload
-
-## 0.1.1080 - 2026-07-20
-
-- Yarn Plug'n'Play가 peer dependency별 workspace package를 `.yarn/__virtual__` 가상 경로로 반환해도
-  `.pnp.cjs`를 실행하지 않고 Yarn의 depth 규칙으로 실제 monorepo source를 복원해, 존재하지 않는 가상 파일을
-  직접 읽다가 발생하던 `ENOENT` preview build 실패를 제거하고 정적 import graph도 같은 물리 경로를 사용
-- Inspector component tree의 선택 행 reveal에서 문서 전체를 움직이는 `scrollIntoView`를 제거하고 tree viewport의
-  `scrollTop`/`scrollLeft`만 필요한 만큼 조정해, 깊은 노드를 클릭할 때 Inspector나 preview가 맨 위로 점프하지
-  않도록 수정
-
-## 0.1.1079 - 2026-07-19
-
-- 이미 Auto 값이 적용된 hook/API 관찰 항목을 미해결 blocker 집계에서 제외하고, 같은 렌더 스택의 자동 결정과
-  tree discovery/update를 bounded batch로 기록해 대형 페이지마다 수백 번 발생하던 webview 메시지·소스 재읽기·
-  pretty JSON 출력을 줄이면서 실제 remount 결정과 후속 오류의 trace ID 인과관계는 유지
-- 자동 Storybook preview entry의 직접 runtime import를 전체 번들 전에 AST로 검사해 누락된 로컬 모듈이 명확한
-  경우 실패가 예정된 첫 esbuild를 생략하고 setup-free build를 바로 시작하며, 누락 후보와 상위 디렉터리를 감시해
-  파일 생성 또는 setup 수정 시 자동으로 원래 설정을 재시도
-- lazy root의 첫 로딩 여유는 보존하되 이후 page-path DFS probe를 260ms 고정 대기에서 48ms continuation으로 바꿔
-  16패스 최대 순수 대기 예산을 약 4.2초에서 0.9초로 줄이고, 비치명 React/AG Grid 설정 경고가 자동 해결 실패
-  chain을 시작하지 않도록 분리
-- `meetingList { objectList { ... } }`처럼 pageInfo를 생략한 GraphQL collection wrapper를 외부 배열로 오인하던
-  shape 추론을 수정하고, 한 객체 안에서 부모 데이터 명사와 연결된 비파괴적 역할 boolean이 여러 개면 첫 분기만
-  활성화해 `undefined.length`와 all-false exhaustive dispatcher의 `Error: never`를 자동 데이터 단계에서 차단
-
-## 0.1.1078 - 2026-07-19
-
-- Auto/Smart backend payload와 hook/blocker fallback의 일반 문자열을 긴 임의 문장 대신 실제 leaf key로 생성해
-  `name`, `description`, `employeeName`처럼 출처를 바로 알 수 있는 짧은 값으로 렌더링하고, 32자를 넘는 key는
-  말줄임 처리해 콘텐츠 때문에 컴포넌트 폭이 비정상적으로 확장되지 않도록 개선
-- 명시적으로 선택한 Lorem 모드는 문장형 fixture를 유지하고, ID·이메일·전화번호·날짜·URL처럼 런타임 형식이
-  필요한 필드는 유효한 전용 값을 보존해 compact Auto 값이 프로젝트 로직의 새 오류를 만들지 않도록 구분
-- `.filter()`·`.map()` 같은 Array prototype 호출을 callback property가 아니라 collection receiver 증거로 해석해
-  `legalPartnersForCompanyCreate.filter is not a function`처럼 Auto payload가 스스로 만드는 타입 오류를 방지
-- 동일한 GraphQL/REST 응답과 수동 hook override의 객체·callback identity를 세션 동안 유지하고, 짧은 시간에 같은
-  effect가 24회 넘게 재실행되면 해당 source site만 render-only 경고로 격리해 update-depth 무한 루프를 차단
-- Page Inspector가 전체 저장소를 다시 스캔하지 않고 package root와 `src`의 `index`·`main`·`bootstrap`,
-  `global.d.ts` convention만 추가 확인해 앱 엔트리가 설치하는 `Buffer`·`decimal` 전역을 정확히 복원
-- 자동 관찰 로그와 실제 remount를 일으킨 Auto/Smart 조작을 분리하고 `findDOMNode` 같은 비치명 React 개발 경고를
-  subsequent error로 연결하지 않아 blocker trace가 실제 실패 원인만 보여주도록 정리
 
 초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.

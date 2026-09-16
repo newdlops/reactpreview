@@ -3,20 +3,31 @@
  *
  * The selected id is deliberately kept in the extension host rather than only in webview state:
  * changing it must cause a new narrow esbuild graph, while a failed rebuild leaves the previous
- * rendered page available.
+ * rendered page available. Automatic execution attempts also belong here: an import-map change
+ * replaces the entire webview, losing its finite-search history but not advancing the source input.
  */
 import type { ResolvedPreviewTarget } from './activePreviewTarget';
 
-/** Session-local value object for the one executable Page Inspector candidate. */
+/** Caps automatic compiler work and retained identities even if a runtime keeps proposing new ids. */
+const MAXIMUM_AUTOMATIC_EXECUTION_ATTEMPTS = 12;
+
+/** Session-local candidate transaction and non-evicting automatic execution frontier. */
 export class PreviewPanelPageCandidateSelection {
   private candidateId: string | undefined;
   private executionCandidateId: string | undefined;
   private pendingCandidateId: string | undefined;
   private pendingExecutionCandidateId: string | undefined;
   private hasPendingSelection = false;
+  private readonly attemptedExecutionCandidates = new Set<string>();
 
-  /** Adds the current caller-path selection to a newly resolved build request. */
+  /**
+   * Prepares a newly resolved foreground build with its current caller-path selection.
+   * With no pending Inspector transaction, this is a source/configuration/manual refresh and starts
+   * a fresh recovery frontier. Selection rebuilds keep their attempts across requests, artifacts,
+   * runtime revisions and commits. Call only to prepare a build; use current() to inspect state.
+   */
   public applyTo(target: ResolvedPreviewTarget): ResolvedPreviewTarget {
+    if (!this.hasPendingSelection) this.attemptedExecutionCandidates.clear();
     const candidateId = this.hasPendingSelection ? this.pendingCandidateId : this.candidateId;
     const executionCandidateId = this.hasPendingSelection
       ? this.pendingExecutionCandidateId
@@ -44,7 +55,11 @@ export class PreviewPanelPageCandidateSelection {
     return true;
   }
 
-  /** Starts one host-owned inner-fidelity retry without changing the visible browser candidate. */
+  /**
+   * Admits one untried inner-fidelity execution without changing the visible browser candidate.
+   * Records admission before compilation: failed or unapplied builds consume the same finite
+   * frontier as committed builds. Rejection leaves the selected and pending requests unchanged.
+   */
   public beginExecutionCandidate(
     executionCandidateId: string,
     candidateId = this.candidateId,
@@ -62,6 +77,14 @@ export class PreviewPanelPageCandidateSelection {
     ) {
       return false;
     }
+    const attemptKey = `${candidateId}\0${executionCandidateId}`;
+    if (
+      this.attemptedExecutionCandidates.has(attemptKey) ||
+      this.attemptedExecutionCandidates.size >= MAXIMUM_AUTOMATIC_EXECUTION_ATTEMPTS
+    ) {
+      return false;
+    }
+    this.attemptedExecutionCandidates.add(attemptKey);
     this.pendingCandidateId = selectedCandidateId ?? candidateId;
     this.pendingExecutionCandidateId = executionCandidateId;
     this.hasPendingSelection = true;
@@ -78,7 +101,7 @@ export class PreviewPanelPageCandidateSelection {
     this.hasPendingSelection = false;
   }
 
-  /** Keeps the existing candidate when the requested replacement cannot be applied. */
+  /** Keeps the existing candidate and spent attempts when a replacement cannot be applied. */
   public rollback(): void {
     this.pendingCandidateId = undefined;
     this.pendingExecutionCandidateId = undefined;
@@ -95,8 +118,9 @@ export class PreviewPanelPageCandidateSelection {
     return this.executionCandidateId;
   }
 
-  /** Removes the durable and in-flight page-candidate choice after a route commit. */
+  /** Removes page choices and old execution attempts after a different route is committed. */
   public clear(): void {
+    this.attemptedExecutionCandidates.clear();
     this.candidateId = undefined;
     this.executionCandidateId = undefined;
     this.pendingCandidateId = undefined;

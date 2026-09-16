@@ -158,6 +158,7 @@ describe('page execution preparation recovery', () => {
     ['failed', 'runtime-timeout'],
     ['failed', 'hot-reload-timeout'],
     ['failed', 'artifact-unchanged'],
+    ['failed', 'already-active'],
   ])('does not auto-loop or train after %s / %s', async (state, reason) => {
     expect(
       await scenario(`

@@ -50,4 +50,91 @@ describe('PreviewPanelPageCandidateSelection', () => {
     });
     expect(selection.currentExecutionCandidate()).toBeUndefined();
   });
+
+  it('rejects an A-to-B-to-A cycle after browser replacement and selection commits', () => {
+    const selection = new PreviewPanelPageCandidateSelection();
+    const target = { request: { documentPath: '/workspace/Target.tsx' } } as never;
+    for (const executionId of ['execution-a', 'execution-b']) {
+      expect(selection.beginExecutionCandidate(executionId, 'page-auto')).toBe(true);
+      // A selection rebuild resolves a fresh request before replacing the webview document.
+      selection.applyTo(target);
+      selection.applyTo(target);
+      selection.commit();
+    }
+
+    expect(selection.beginExecutionCandidate('execution-a', 'page-auto')).toBe(false);
+    expect(selection.currentExecutionCandidate()).toBe('execution-b');
+  });
+
+  it('remembers failed preparations without preventing an untried alternative', () => {
+    const selection = new PreviewPanelPageCandidateSelection();
+    expect(selection.beginExecutionCandidate('execution-a', 'page-auto')).toBe(true);
+    selection.rollback();
+
+    expect(selection.beginExecutionCandidate('execution-a', 'page-auto')).toBe(false);
+    expect(selection.beginExecutionCandidate('execution-b', 'page-auto')).toBe(true);
+  });
+
+  it('starts a fresh recovery frontier for an ordinary source or manual refresh', () => {
+    const selection = new PreviewPanelPageCandidateSelection();
+    const target = { request: { documentPath: '/workspace/Target.tsx' } } as never;
+    for (const executionId of ['execution-a', 'execution-b']) {
+      selection.beginExecutionCandidate(executionId, 'page-auto');
+      selection.applyTo(target);
+      selection.commit();
+    }
+    expect(selection.beginExecutionCandidate('execution-a', 'page-auto')).toBe(false);
+
+    // No Inspector transaction is pending when the host prepares a normal input refresh.
+    expect(selection.applyTo(target).request.inspectorPageExecutionCandidateId).toBe('execution-b');
+    expect(selection.beginExecutionCandidate('execution-a', 'page-auto')).toBe(true);
+  });
+
+  it('keeps per-page identities without forgetting attempts when public candidates change', () => {
+    const selection = new PreviewPanelPageCandidateSelection();
+    const target = { request: { documentPath: '/workspace/Target.tsx' } } as never;
+    for (const candidateId of ['page-a', 'page-b']) {
+      expect(selection.begin(candidateId)).toBe(true);
+      selection.applyTo(target);
+      selection.commit();
+      expect(selection.beginExecutionCandidate('execution', candidateId)).toBe(true);
+      selection.applyTo(target);
+      selection.commit();
+    }
+    expect(selection.begin('page-a')).toBe(true);
+    selection.applyTo(target);
+    selection.commit();
+    expect(selection.beginExecutionCandidate('execution', 'page-a')).toBe(false);
+  });
+
+  it('bounds novel identities without eviction or blocking manual page changes', () => {
+    const selection = new PreviewPanelPageCandidateSelection();
+    const target = { request: { documentPath: '/workspace/Target.tsx' } } as never;
+    for (let index = 0; index < 12; index += 1) {
+      expect(selection.beginExecutionCandidate(`execution-${String(index)}`, 'page-auto')).toBe(
+        true,
+      );
+      selection.applyTo(target);
+      selection.commit();
+    }
+
+    expect(selection.beginExecutionCandidate('execution-12', 'page-auto')).toBe(false);
+    expect(selection.beginExecutionCandidate('execution-0', 'page-auto')).toBe(false);
+    expect(selection.begin('page-manual')).toBe(true);
+    selection.applyTo(target);
+    selection.commit();
+    expect(selection.beginExecutionCandidate('execution-new', 'page-manual')).toBe(false);
+
+    selection.clear();
+    expect(selection.beginExecutionCandidate('execution-0', 'page-auto')).toBe(true);
+  });
+
+  it('does not share attempts across independent preview panels', () => {
+    const first = new PreviewPanelPageCandidateSelection();
+    const second = new PreviewPanelPageCandidateSelection();
+    expect(first.beginExecutionCandidate('execution-a', 'page-auto')).toBe(true);
+    first.rollback();
+    expect(second.beginExecutionCandidate('execution-a', 'page-auto')).toBe(true);
+    expect(first.beginExecutionCandidate('execution-a', 'page-auto')).toBe(false);
+  });
 });

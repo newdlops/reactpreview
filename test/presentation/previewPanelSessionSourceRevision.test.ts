@@ -191,6 +191,116 @@ afterEach(() => {
 });
 
 describe('PreviewPanelSession displayed Inspector revision', () => {
+  it('retains failed execution admissions while allowing an untried replacement', async () => {
+    const execute = vi
+      .fn<PreviewBuildService['execute']>()
+      .mockResolvedValueOnce(createExecutionPreparedPreview(1, 'cold'))
+      .mockRejectedValueOnce(new Error('Execution preparation failed'))
+      .mockResolvedValueOnce(createExecutionPreparedPreview(3, 'cold'));
+    const fixture = createFixture(execute);
+    try {
+      await startReadyInitialRuntime(fixture, 'execution-1');
+      const retainedHtml = fixture.panel.webview.html;
+      fixture.panel.emitMessage(createExecutionRetryMessage(1, 'slice-b'));
+      await settleAsyncWork();
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(fixture.panel.webview.html).toBe(retainedHtml);
+
+      fixture.panel.emitMessage({
+        ...createExecutionRetryMessage(1, 'slice-b'),
+        interactionId: 'execution:1:2',
+      });
+      await settleAsyncWork();
+      expect(execute).toHaveBeenCalledTimes(2);
+      fixture.panel.emitMessage({
+        ...createExecutionRetryMessage(1, 'slice-c'),
+        interactionId: 'execution:1:3',
+      });
+      await settleAsyncWork();
+      expect(execute).toHaveBeenCalledTimes(3);
+      expect(execute.mock.calls[2]?.[0].inspectorPageExecutionCandidateId).toBe('slice-c');
+    } finally {
+      fixture.session.dispose();
+    }
+  });
+
+  it.each(['cold', 'hot'] as const)(
+    'stops repeated execution requests across %s browser replacements',
+    async (mode) => {
+      let buildCount = 0;
+      const execute = vi.fn<PreviewBuildService['execute']>(() =>
+        Promise.resolve(createExecutionPreparedPreview(++buildCount, mode)),
+      );
+      const fixture = createFixture(execute);
+      try {
+        await startReadyInitialRuntime(fixture, 'execution-1');
+        const initialHtml = fixture.panel.webview.html;
+        for (const [index, executionCandidateId] of ['slice-b', 'slice-a'].entries()) {
+          fixture.panel.emitMessage(createExecutionRetryMessage(index + 1, executionCandidateId));
+          await settleAsyncWork();
+          acknowledgeExecutionRuntime(fixture.panel, index + 2, mode);
+        }
+        expect(execute).toHaveBeenCalledTimes(3);
+        expect(fixture.panel.hotReloadMessages).toHaveLength(mode === 'cold' ? 0 : 2);
+        expect(fixture.panel.webview.html === initialHtml).toBe(mode === 'hot');
+
+        // Each new webview can forget its entire browser ledger and emit fresh interaction ids.
+        for (let sequence = 0; sequence < 10; sequence += 1) {
+          fixture.panel.emitMessage({
+            ...createExecutionRetryMessage(3, 'slice-b'),
+            interactionId: `execution:3:${String(sequence + 10)}`,
+          });
+          await settleAsyncWork();
+        }
+        expect(execute).toHaveBeenCalledTimes(3);
+        expect(fixture.panel.webview.postMessage).toHaveBeenLastCalledWith(
+          expect.objectContaining({ status: 'failed', reason: 'already-active' }),
+        );
+      } finally {
+        fixture.session.dispose();
+      }
+    },
+  );
+
+  it.each(['manual', 'document', 'configuration'] as const)(
+    'permits recovery again after a %s refresh, not an automatic execution build',
+    async (refresh) => {
+      vi.useFakeTimers();
+      let buildCount = 0;
+      const execute = vi.fn<PreviewBuildService['execute']>(() =>
+        Promise.resolve(createExecutionPreparedPreview(++buildCount, 'cold')),
+      );
+      const fixture = createFixture(execute);
+      try {
+        await startReadyInitialRuntime(fixture, 'execution-1');
+        for (const [index, executionCandidateId] of ['slice-b', 'slice-a'].entries()) {
+          fixture.panel.emitMessage(createExecutionRetryMessage(index + 1, executionCandidateId));
+          await settleAsyncWork();
+          acknowledgeExecutionRuntime(fixture.panel, index + 2, 'cold');
+        }
+        fixture.panel.emitMessage(createExecutionRetryMessage(3, 'slice-b'));
+        await settleAsyncWork();
+        expect(execute).toHaveBeenCalledTimes(3);
+
+        if (refresh === 'manual') fixture.session.refresh();
+        else if (refresh === 'document')
+          expect(fixture.session.refreshForDocument('/workspace/src/SelectedCard.tsx')).toBe(true);
+        else fixture.session.refreshForConfiguration();
+        await vi.advanceTimersByTimeAsync(300);
+        await settleAsyncWork();
+        acknowledgeExecutionRuntime(fixture.panel, 4, 'cold');
+        fixture.panel.emitMessage(createExecutionRetryMessage(4, 'slice-b'));
+        await settleAsyncWork();
+
+        expect(execute).toHaveBeenCalledTimes(5);
+        expect(execute.mock.calls[4]?.[0].inspectorPageExecutionCandidateId).toBe('slice-b');
+      } finally {
+        fixture.session.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   /** Initial document ownership is available immediately to selections from its embedded runtime. */
   it('accepts the initial displayed revision', async () => {
     const fixture = createFixture(vi.fn(() => Promise.resolve(createPreparedPreview('initial'))));
@@ -408,6 +518,60 @@ function createPreparedPreview(contentHash: string): PreparedPreview {
     diagnostics: [],
     watchDirectories: [],
   };
+}
+
+/** Forces a real document navigation when an execution changes its browser import map. */
+function createExecutionPreparedPreview(revision: number, mode: 'cold' | 'hot'): PreparedPreview {
+  const prepared = createPreparedPreview(`execution-${String(revision)}`);
+  return mode === 'hot'
+    ? prepared
+    : {
+        ...prepared,
+        artifact: {
+          ...prepared.artifact,
+          moduleImports: [
+            { specifier: 'react', scriptLocation: `file:///react-${String(revision)}.js` },
+          ],
+        },
+      };
+}
+
+/** Simulates a fresh runtime that requests an alternative with no previous browser history. */
+function createExecutionRetryMessage(
+  runtimeRevision: number,
+  executionCandidateId: string,
+): Record<string, unknown> {
+  return {
+    candidateId: 'page-auto',
+    executionCandidateId,
+    interactionId: `execution:${String(runtimeRevision)}:1`,
+    runtimeRevision,
+    type: 'react-preview-inspector-page-execution-retry',
+  };
+}
+
+/** Settles the exact application handle owned by a cold document or hot module replacement. */
+function acknowledgeExecutionRuntime(
+  panel: RevisionPanel,
+  revision: number,
+  mode: 'cold' | 'hot',
+): void {
+  const pending = panel.hotReloadMessages.at(-1);
+  panel.emitMessage(
+    mode === 'cold'
+      ? {
+          revision,
+          token: `${String(revision)}:execution-${String(revision)}`,
+          type: 'react-preview-runtime-ready',
+        }
+      : {
+          applied: true,
+          retainedPrevious: false,
+          revision: pending?.revision,
+          token: pending?.token,
+          type: 'react-preview-hot-reload-ready',
+        },
+  );
 }
 
 /** Creates a syntactically valid component-tree selection for one browser runtime revision. */

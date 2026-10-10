@@ -109,7 +109,7 @@ describe('Preview Inspector Smart props runtime source', () => {
 
     expect(runtime.draft.requiredPaths).toEqual(['field.value.address']);
     expect(runtime.draft.value.field).toEqual({
-      value: { address: 'address' },
+      value: { address: 'Address' },
     });
     expect(runtime.draft.value.fromParent).toBe('observed');
   });
@@ -123,7 +123,7 @@ describe('Preview Inspector Smart props runtime source', () => {
 
     expect(runtime.draft.requiredPaths).toEqual(['field.value.address']);
     expect(runtime.draft.value.field).toEqual({
-      value: { address: 'address' },
+      value: { address: 'Address' },
     });
   });
 

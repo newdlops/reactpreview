@@ -92,7 +92,8 @@ interface BindingRegistryBuilder {
 /**
  * Collects every import-backed ReactDOM mount whose rendered value is syntactically JSX.
  *
- * Alias imports, namespace imports, default `react-dom` imports, direct create-root chains, and
+ * Alias imports, namespace imports, default `react-dom` and `react-dom/client` imports, direct
+ * create-root chains, and
  * `const root = createRoot(...); root.render(...)` are supported. Mutable roots, shadowed imports,
  * computed member access, non-JSX render values, and lookalike local functions fail closed.
  *
@@ -252,6 +253,9 @@ function collectImportBindings(
     const record = addBinding(clause.name, scope, builder);
     if (moduleSpecifier === 'react-dom') {
       record.reactDomKind = 'legacy-namespace';
+    } else if (moduleSpecifier === 'react-dom/client') {
+      // The Vite React template writes `import ReactDOM from 'react-dom/client'`.
+      record.reactDomKind = 'client-namespace';
     }
   }
   const bindings = clause.namedBindings;

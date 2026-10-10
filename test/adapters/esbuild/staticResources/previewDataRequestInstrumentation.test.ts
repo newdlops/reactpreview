@@ -30,6 +30,29 @@ describe('instrumentPreviewDataRequests', () => {
     expect(transformed).toContain('"responseBodyKind":"json"');
   });
 
+  /** A declared-type resolver replaces the local syntax shape for imported response types. */
+  it('prefers declared response shapes from the type oracle', () => {
+    const source = [
+      "import axios from 'axios';",
+      "import type { Summary } from './types';",
+      "export const loadSummary = () => axios.get<Summary>('/api/summary');",
+    ].join('\n');
+    const typeTexts: string[] = [];
+
+    const transformed = instrumentPreviewDataRequests(
+      '/workspace/summary.ts',
+      source,
+      (typeNode, sourceFile) => {
+        typeTexts.push(typeNode.getText(sourceFile));
+        return { fields: { grade: { kind: 'literal', value: 'S' } }, kind: 'object' };
+      },
+    );
+
+    expect(typeTexts).toEqual(['Summary']);
+    expect(transformed).toContain('"evidence":"Declared TypeScript type: Summary"');
+    expect(transformed).toContain('"grade":{"kind":"literal","value":"S"}');
+  });
+
   /** Marks promise-chain text consumers so document viewers receive a renderable body, not JSON. */
   it('records compiler-proven fetch text consumption', () => {
     const source = [

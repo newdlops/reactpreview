@@ -53,6 +53,27 @@ describe('collectPreviewEntryPointEvidence', () => {
     ]);
   });
 
+  /** The Vite React template mounts through a default `react-dom/client` import. */
+  it('collects createRoot through a default react-dom/client import', () => {
+    const sourceText = [
+      "import ReactDOM from 'react-dom/client';",
+      "import App from './App';",
+      "ReactDOM.createRoot(document.getElementById('root')!).render(",
+      '  <React.StrictMode><BrowserRouter><App /></BrowserRouter></React.StrictMode>,',
+      ');',
+    ].join('\n');
+
+    expect(collect(sourceText)).toEqual([
+      {
+        kind: 'create-root',
+        occurrenceStart: sourceText.indexOf('ReactDOM.createRoot'),
+        referencedLocalNames: ['React', 'BrowserRouter', 'App'],
+        sourcePath: SOURCE_PATH,
+        wrapperNames: ['React.StrictMode', 'BrowserRouter', 'App'],
+      },
+    ]);
+  });
+
   /** Modern hydrateRoot receives JSX in its second argument and may be locally aliased. */
   it('collects direct hydrateRoot evidence and its second-argument JSX', () => {
     const sourceText = [

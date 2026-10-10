@@ -7,6 +7,7 @@
  * evidence separate from evaluated conditions so target-guided runtime traversal still reasons only
  * about values the application actually read, while the user can queue an explicit branch choice.
  */
+import { createPreviewInspectorConditionScalarCoherenceRuntimeSource } from './previewInspectorConditionScalarCoherenceRuntimeSource';
 
 /**
  * Creates browser source for registering and reading compiler-proven condition definitions.
@@ -19,6 +20,7 @@
  */
 export function createPreviewInspectorConditionDefinitionRuntimeSource(): string {
   return String.raw`
+${createPreviewInspectorConditionScalarCoherenceRuntimeSource()}
 const PREVIEW_INSPECTOR_RENDER_CONDITION_DEFINITION_LIMIT = 512;
 
 /** Lazily creates the metadata-only registry on new and hot-retained Inspector sessions. */
@@ -235,9 +237,52 @@ function readPreviewInspectorApplicableConditionOverrides(
 /** Allows target-guided true only for Boolean or compiler-proven overlay visibility conditions. */
 function canPreviewInspectorTargetGuideCondition(record, enabled) {
   return record?.requiresAuthoredState !== true &&
+    !isPreviewInspectorOutputHidingEmptinessContinuation(record, enabled) &&
     (enabled !== true || record?.authoredEnabled !== false ||
     record?.authoredValueKind === 'boolean' || record?.kind === 'overlay-visibility' ||
     record?.role === 'overlay');
+}
+
+/** One collection length read such as "orders.length", "data?.items?.length", or "rows[0].length". */
+const PREVIEW_INSPECTOR_EMPTINESS_LENGTH =
+  '[A-Za-z_$][\\w$]*(?:\\??\\.[A-Za-z_$][\\w$]*|(?:\\?\\.)?\\[[^\\]]*\\])*\\??\\.length';
+const PREVIEW_INSPECTOR_EMPTY_WHEN_TRUE_PATTERNS = [
+  '^LEN(?:===|==)0$', '^LEN<1$', '^LEN<=0$', '^0(?:===|==)LEN$', '^!\\(?LEN\\)?$',
+].map((pattern) =>
+  new RegExp(pattern.replaceAll('LEN', () => PREVIEW_INSPECTOR_EMPTINESS_LENGTH), 'u'));
+const PREVIEW_INSPECTOR_FILLED_WHEN_TRUE_PATTERNS = [
+  '^LEN(?:>0|!==0|!=0|>=1)$', '^0<LEN$', '^LEN$', '^!!\\(?LEN\\)?$',
+].map((pattern) =>
+  new RegExp(pattern.replaceAll('LEN', () => PREVIEW_INSPECTOR_EMPTINESS_LENGTH), 'u'));
+
+/** Reads whether a whole authored condition is true for an empty collection (undefined: not one). */
+function readPreviewInspectorEmptinessGuardPolarity(expression) {
+  if (typeof expression !== 'string' || expression.length > 240) return undefined;
+  let text = expression.replace(/\s+/gu, '');
+  while (text.startsWith('(') && text.endsWith(')')) text = text.slice(1, -1);
+  if (PREVIEW_INSPECTOR_EMPTY_WHEN_TRUE_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  if (PREVIEW_INSPECTOR_FILLED_WHEN_TRUE_PATTERNS.some((pattern) => pattern.test(text))) return false;
+  return undefined;
+}
+
+/**
+ * Refuses to push the target's own collection-emptiness guard ("orders.length === 0") onto its
+ * non-empty branch while the target already shows output. Forcing it adds no rows; it swaps the
+ * visible empty state for an empty list, so the corridor loses its output and stalls. Rows must come
+ * from data instead (requirement search, or the REST row fill once the target is reached).
+ */
+function isPreviewInspectorOutputHidingEmptinessContinuation(record, enabled) {
+  if (typeof enabled !== 'boolean') return false;
+  const emptyWhenTrue = readPreviewInspectorEmptinessGuardPolarity(record?.authoredExpression);
+  if (emptyWhenTrue === undefined) return false;
+  const emptyWhenEnabled = record.authoredExpressionNegated === true ? !emptyWhenTrue : emptyWhenTrue;
+  if (enabled === emptyWhenEnabled) return false;
+  const key = typeof record.reachabilityKey === 'string'
+    ? record.reachabilityKey
+    : previewInspectorSession.activeTargetReachabilityKey;
+  const state = previewInspectorSession.targetReachabilityByKey?.get?.(key);
+  return state?.targetHasOutput === true &&
+    matchesPreviewInspectorConditionDefinitionPath(record.sourcePath, state.targetSourcePath);
 }
 `;
 }

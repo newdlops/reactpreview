@@ -98,6 +98,8 @@ export interface PreviewInspectorRouteExecutionMount {
 
 /** Browser-safe selected-route input consumed by a generated mini route tree. */
 export interface PreviewInspectorRouteExecutionRecipe {
+  /** The rendered content root declares the selected route in its own `<Routes>` (an App root). */
+  readonly contentRootOwnsRoutes?: true;
   readonly kind: PreviewInspectorRouteRuntimeKind;
   readonly loaderPolicy: 'never-execute';
   readonly mounts: readonly PreviewInspectorRouteExecutionMount[];

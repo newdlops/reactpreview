@@ -19,7 +19,14 @@ const PREVIEW_INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector
 export type PreviewDataShape =
   | { readonly kind: 'array'; readonly items: PreviewDataShape }
   | { readonly fields: Readonly<Record<string, PreviewDataShape>>; readonly kind: 'object' }
+  | { readonly kind: 'literal'; readonly value: string }
   | { readonly kind: 'boolean' | 'null' | 'number' | 'string' | 'unknown' };
+
+/** Resolves a response type node through the build's declared-type oracle, when available. */
+export type PreviewDataTypedShapeResolver = (
+  typeNode: ts.TypeNode,
+  sourceFile: ts.SourceFile,
+) => PreviewDataShape | undefined;
 
 /** One source edit replacing a proven backend request with the no-network Inspector adapter. */
 interface PreviewDataRequestReplacement {
@@ -71,6 +78,8 @@ interface PreviewDataSourceInventory {
   readonly fetchIsShadowed: boolean;
   /** Local interfaces and aliases addressable without a TypeScript program. */
   readonly typeDeclarations: ReadonlyMap<string, ts.InterfaceDeclaration | ts.TypeAliasDeclaration>;
+  /** Cross-file declared response types; preferred over the local syntax shape when known. */
+  readonly resolveTypedShape?: (typeNode: ts.TypeNode) => PreviewDataShape | undefined;
 }
 
 /**
@@ -78,9 +87,14 @@ interface PreviewDataSourceInventory {
  *
  * @param sourcePath Absolute workspace path used for diagnostics and stable identities.
  * @param sourceText Syntax-valid source after resource compatibility rewrites.
+ * @param resolveTypedShape Optional declared-type resolver for imported response types.
  * @returns Instrumented source, or the exact input when no supported request is reached.
  */
-export function instrumentPreviewDataRequests(sourcePath: string, sourceText: string): string {
+export function instrumentPreviewDataRequests(
+  sourcePath: string,
+  sourceText: string,
+  resolveTypedShape?: PreviewDataTypedShapeResolver,
+): string {
   if (!isJavaScriptLikeSource(sourcePath) || !mayContainBackendRequest(sourceText)) {
     return sourceText;
   }
@@ -95,7 +109,12 @@ export function instrumentPreviewDataRequests(sourcePath: string, sourceText: st
     return sourceText;
   }
 
-  const inventory = collectPreviewDataSourceInventory(sourceFile);
+  const inventory: PreviewDataSourceInventory = {
+    ...collectPreviewDataSourceInventory(sourceFile),
+    ...(resolveTypedShape === undefined
+      ? {}
+      : { resolveTypedShape: (typeNode: ts.TypeNode) => resolveTypedShape(typeNode, sourceFile) }),
+  };
   const replacements: PreviewDataRequestReplacement[] = [];
   /** Visits calls in source order and stops at the per-module instrumentation bound. */
   function visit(node: ts.Node): void {
@@ -278,8 +297,11 @@ function createRequestMetadata(
 ): PreviewDataRequestMetadata {
   const location = sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile));
   const url = endpoint === undefined ? undefined : readStaticEndpoint(endpoint);
+  const typedShape =
+    responseType === undefined ? undefined : inventory.resolveTypedShape?.(responseType);
   const shape =
-    responseType === undefined
+    typedShape ??
+    (responseType === undefined
       ? ({ kind: 'unknown' } as const)
       : createPreviewDataShape(
           responseType,
@@ -287,11 +309,11 @@ function createRequestMetadata(
           { fields: 0 },
           0,
           new Set(),
-        );
+        ));
   const evidence =
     responseType === undefined
       ? 'endpoint and field-name inference'
-      : `TypeScript: ${boundEvidenceText(responseType.getText(sourceFile))}`;
+      : `${typedShape === undefined ? 'TypeScript' : 'Declared TypeScript type'}: ${boundEvidenceText(responseType.getText(sourceFile))}`;
   const ownerName = readPreviewDataRequestOwnerName(call);
   return {
     column: location.character + 1,

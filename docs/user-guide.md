@@ -50,7 +50,7 @@ code --install-extension newdlops.react-file-preview
 - Header, Sidebar, Form, Table 같은 부모와 형제 UI
 - route, layout과 조건부 렌더링 안의 실제 배치
 - 프로젝트 CSS와 styled-components theme가 적용된 결과
-- Context, Router, Redux, Formik, Apollo 같은 런타임 경계
+- Context, Router, Redux, Formik, Apollo, TanStack/React Query 같은 런타임 경계
 - 현재 파일이 페이지 흐름에 실제로 포함되는지 여부
 
 여러 페이지가 같은 컴포넌트를 사용하면 `PAGE PATH`에서 후보를 바꿀 수 있습니다. 선택한 경로 하나만
@@ -107,6 +107,8 @@ Components 트리는 HTML tag보다 source-backed React 컴포넌트를 중심�
 - `Pick on page`는 화면 요소에서 가장 가까운 React 컴포넌트를 찾아 트리에서 선택합니다.
 - `Wireframe`은 페이지 frame, 컴포넌트 영역과 렌더되지 못한 대상 위치를 겹쳐 보여줍니다.
 - `Open source`는 마지막 정상 번들에 포함됐다고 확인된 workspace source만 엽니다.
+- 현재 파일이 렌더됐지만 화면 높이를 채우는 앱 셸 아래에 있어 전혀 보이지 않으면, 아직 스크롤하지 않은
+  경우에 한해 대상 위치로 한 번 스크롤합니다. 직접 스크롤하면 이후에는 위치를 바꾸지 않습니다.
 
 ## 페이지 경로와 현재 파일 찾기
 
@@ -118,7 +120,19 @@ Components 트리는 HTML tag보다 source-backed React 컴포넌트를 중심�
 4. `Auto-find missing values`가 제공되면 현재 경로에 필요한 최소 hook/payload 값을 다시 탐색합니다.
 5. 페이지 경로와 무관한 컴포넌트인지 확인하려면 `Show file by itself` 또는 Export Gallery를 사용합니다.
 
-`Show file by itself` 결과는 페이지 성공으로 계산되지 않습니다. `Return to page`로 원래 작성 문맥에
+`if (!user) return …`이나 `if (points.length === 0) return …`처럼 뒤에서 `user.name`·`points[0].date`를
+읽는 early return은 강제로 넘겨도 값이 생기지 않고 그 접근에서 오류만 나므로, 자동 탐색과 페이지 셸 부트스트랩은
+이 조건을 열지 않습니다. 이런 조건은 Boolean 스위치가 아니라 값이 필요한 조건으로 표시되며, `Auto-find missing
+values`나 행 채우기가 실제 값을 넣어야 넘어갑니다.
+
+`const isOpen = useAtomValue(popupAtom); if (!isOpen) return null`처럼 hook이 준 Boolean이 화면을 막을 때 자동값이
+그 조건을 넘기는 것은 대상과 대상까지 이어지는 페이지 경로의 컴포넌트에서만입니다. 앱 셸이 모든 페이지에 붙이는
+전역 팝업처럼 경로 밖 컴포넌트에서 hook이 실제로 준 값(`false`, 숫자, 문자열)은 그대로 둡니다. 확장이 아직 값을 모르는
+store 경로에 넣어 둔 자리표시는 실제 값이 아니므로 경로 밖에서도 계속 바꿉니다. 그런 팝업을 보려면 해당 파일을 대상으로
+열거나 `CONDITION` 행을 직접 바꿉니다.
+
+로그인 화면처럼 `if (!token) return …` 같은 early return 분기 안에서만 렌더되는 파일은 그 분기를 선택해
+앱 셸 없이 표시합니다. `Show file by itself` 결과는 페이지 성공으로 계산되지 않습니다. `Return to page`로 원래 작성 문맥에
 돌아갈 수 있습니다.
 
 ## 블로커 해결
@@ -185,14 +199,17 @@ array와 plain object만 보존되며 함수, symbol과 순환 객체는 편집 
 | `reactPreview.tsconfig`            | `""`   | 비표준 alias에 사용할 workspace-relative tsconfig/jsconfig |
 | `reactPreview.setupFile`           | `""`   | 자동 setup보다 우선하는 명시적 프로젝트 setup 모듈         |
 | `reactPreview.useStorybookPreview` | `true` | setup이 없을 때 가까운 Storybook preview decorator 재사용  |
+| `reactPreview.remoteStylesheets`   | `true` | 프로젝트가 링크한 HTTPS stylesheet(웹 폰트 등) 로드        |
 
 Provider별 설정과 setup export 형식은 [프로젝트 setup 가이드](project-setup.md)를 참고하세요.
 
 ## 신뢰와 개인정보
 
 프리뷰는 프로젝트 source와 도달한 package를 브라우저 코드로 실행하므로 Workspace Trust가 필요합니다.
-웹뷰는 외부 네트워크, frame, worker, form, inline script와 `eval`을 차단합니다. 확장은 텔레메트리와 workspace
-source 또는 preview payload를 전송하지 않습니다.
+웹뷰는 fetch·WebSocket 같은 외부 연결, frame, worker, form, inline script와 `eval`을 차단합니다. 프로젝트가
+쓰는 HTTPS 이미지·폰트와 HTTPS stylesheet(Google Fonts, Pretendard 등)는 받으며, stylesheet는
+`reactPreview.remoteStylesheets`를 끄면 받지 않습니다. 확장은 텔레메트리와 workspace source 또는 preview
+payload를 전송하지 않습니다.
 
 지원되는 lockfile이 정확한 public package와 integrity를 증명하고 local package가 없을 때는 확장 worker가
 해당 public package를 관리 저장소에 준비할 수 있습니다. 자세한 경계와 취약점 제보 방법은

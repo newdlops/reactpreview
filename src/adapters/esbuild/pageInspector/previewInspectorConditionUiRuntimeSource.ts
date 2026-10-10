@@ -85,6 +85,17 @@ function doesPreviewInspectorConditionBlockCurrentTarget(condition) {
     typeof requiredValue === 'boolean' && requiredValue !== condition.effectiveEnabled;
 }
 
+/**
+ * Names the chosen branches whose fixed value decides this condition ('tab === "overview"' is off
+ * because 'tab === "members"' was turned on), or undefined when it follows its own value.
+ */
+function readPreviewInspectorConditionFixedBy(condition) {
+  const sources = typeof readPreviewInspectorScalarCoherenceSources === 'function'
+    ? readPreviewInspectorScalarCoherenceSources(condition)
+    : [];
+  return sources.length > 0 ? sources.join(', ') : undefined;
+}
+
 /** Creates one serializable pseudo-component node representing an authored render condition. */
 function createPreviewInspectorConditionTreeNode(condition) {
   const reached = condition.reached !== false && typeof condition.id === 'string';
@@ -94,6 +105,7 @@ function createPreviewInspectorConditionTreeNode(condition) {
     : 'Not reached yet';
   const forced = typeof condition.override === 'boolean';
   const targetGuided = typeof condition.autoOverride === 'boolean';
+  const fixedBy = readPreviewInspectorConditionFixedBy(condition);
   const requiresAuthoredState = condition.requiresAuthoredState === true;
   const fallbackActive = condition.fallbackBranch === (enabled ? 'truthy' : 'falsy');
   const overlay = condition.role === 'overlay';
@@ -116,9 +128,10 @@ function createPreviewInspectorConditionTreeNode(condition) {
       control: booleanSwitch ? 'boolean-switch' : 'branch',
       effective: enabled,
       fallbackActive,
+      ...(fixedBy === undefined ? {} : { fixedBy }),
       mode: requiresAuthoredState
         ? 'authored-state'
-        : forced ? 'forced' : targetGuided ? 'target-guided' : 'authored',
+        : forced ? 'forced' : fixedBy !== undefined ? 'value-fixed' : targetGuided ? 'target-guided' : 'authored',
       reached,
     },
     role: overlay ? 'overlay' : undefined,
@@ -344,6 +357,7 @@ function PreviewInspectorConditionDetail({ node }) {
   const enabled = condition.effectiveEnabled === true;
   const forced = typeof condition.override === 'boolean';
   const targetGuided = typeof condition.autoOverride === 'boolean';
+  const fixedBy = readPreviewInspectorConditionFixedBy(condition);
   const activeBranch = reached
     ? enabled ? condition.truthyLabel : condition.falsyLabel
     : 'not evaluated';
@@ -366,9 +380,11 @@ function PreviewInspectorConditionDetail({ node }) {
           ? 'JSX boolean switch'
         : forced
           ? 'Forced branch'
-          : targetGuided
-            ? 'Target-guided DFS branch'
-            : 'Authored runtime branch') + ' · ' +
+          : fixedBy !== undefined
+            ? 'Follows a chosen branch'
+            : targetGuided
+              ? 'Target-guided DFS branch'
+              : 'Authored runtime branch') + ' · ' +
         (overlay && (forced || targetGuided)
           ? (targetGuided ? 'target-guided · ' : 'forced · ')
           : '') +
@@ -381,6 +397,14 @@ function PreviewInspectorConditionDetail({ node }) {
       'Visible branch: ' + activeBranch + (fallbackActive ? ' · authored fallback' : '') +
         (node.blocksCurrentTarget === true ? ' · blocks current file while hidden' : ''),
     ),
+    fixedBy === undefined
+      ? null
+      : React.createElement(
+          'div',
+          { className: 'rpi-note' },
+          'Value fixed by ' + fixedBy + ': it reads the same value, so it follows that branch. ' +
+            'Switch this condition to override it.',
+        ),
     React.createElement(
       'div',
       { className: 'rpi-actions' },

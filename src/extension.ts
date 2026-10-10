@@ -4,8 +4,10 @@
  * and registers commands; all preview behavior belongs to the imported architectural layers.
  */
 import * as vscode from 'vscode';
+import { PreviewNeuralModelImportFiles } from './adapters/node/previewNeuralModelImportFiles';
 import { GlobalStoragePreviewArtifactStore } from './adapters/vscode/globalStoragePreviewArtifactStore';
 import { PreviewCompilerWorkerClient } from './adapters/worker/previewCompilerWorkerClient';
+import { PREVIEW_INTERACTIVE_WORKER_OLD_GENERATION_LIMIT_MB } from './adapters/worker/previewCompilerWorkerIsolation';
 import { BuildPreview } from './application/buildPreview';
 import { registerPreviewCommands } from './presentation/previewCommandRegistration';
 import { PreviewController } from './presentation/previewController';
@@ -77,7 +79,10 @@ function getOrCreateResources(state: ActiveExtensionState): ActiveExtensionResou
   const compiler = new PreviewCompilerWorkerClient(
     state.context.asAbsolutePath('dist/previewCompilerWorker.js'),
     {
+      adapterLearningRoot: vscode.Uri.joinPath(state.context.globalStorageUri, 'adapter-learning')
+        .fsPath,
       bundledNodeModulesPath: state.context.asAbsolutePath('node_modules'),
+      maxOldGenerationSizeMb: PREVIEW_INTERACTIVE_WORKER_OLD_GENERATION_LIMIT_MB,
       managedDependencyStoreRoot: vscode.Uri.joinPath(
         state.context.globalStorageUri,
         'dependency-store',
@@ -87,6 +92,10 @@ function getOrCreateResources(state: ActiveExtensionState): ActiveExtensionResou
          */
         'v4',
       ).fsPath,
+      // Package downloads run in a worker thread that VS Code's certificate patching misses.
+      trustSystemCertificates: vscode.workspace
+        .getConfiguration('http')
+        .get<boolean>('systemCertificates', true),
     },
   );
   const artifactStore = new GlobalStoragePreviewArtifactStore(
@@ -100,6 +109,7 @@ function getOrCreateResources(state: ActiveExtensionState): ActiveExtensionResou
     state.log,
     state.context.workspaceState,
     state.context.globalState,
+    new PreviewNeuralModelImportFiles(state.context.globalStorageUri.fsPath),
   );
   const resources = { artifactStore, compiler, controller };
   state.resources = resources;

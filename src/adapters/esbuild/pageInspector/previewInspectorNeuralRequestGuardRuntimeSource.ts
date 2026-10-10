@@ -79,5 +79,36 @@ function isPreviewInspectorNeuralAssistancePlanCurrent(node, exploration) {
   }
   return true;
 }
+/**
+ * The automatic request reads blockers at its start (while reachability still probes) and again
+ * one and two frames later. When the target is reached in between, its own UI-state branches
+ * ('tab === "members"') leave the list by timing alone and the request applied nothing in some
+ * runs. Those branches are kept from the start-time list, so every run opens the same one.
+ */
+function keepPreviewInspectorReachedTargetUiStateBlockers(summary, initial) {
+  const state = readPreviewInspectorNeuralAssistanceReachability();
+  if (
+    state?.status !== 'reached' || state.targetHasOutput !== true ||
+    !Array.isArray(summary?.active) || !Array.isArray(initial?.active)
+  ) {
+    return summary;
+  }
+  const present = new Set(summary.active.map(readPreviewInspectorNeuralAssistanceBlockerIdentity));
+  const kept = initial.active.filter((node) => {
+    const condition = node?.blockerKind === 'render-condition' ? node.condition : undefined;
+    const record = previewInspectorSession.renderConditions?.get?.(condition?.id);
+    return condition?.stateBound === true && record?.effectiveEnabled === condition.effectiveEnabled &&
+      !present.has(readPreviewInspectorNeuralAssistanceBlockerIdentity(node)) &&
+      !previewInspectorSession.renderConditionAutoOverrides?.has?.(condition.id) &&
+      !previewInspectorSession.renderConditionOverrides?.has?.(condition.id) &&
+      typeof readPreviewInspectorScalarCoherentOverride === 'function' &&
+      readPreviewInspectorScalarCoherentOverride(record) === undefined &&
+      typeof matchesPreviewInspectorConditionDefinitionPath === 'function' &&
+      matchesPreviewInspectorConditionDefinitionPath(condition.sourcePath, state.targetSourcePath);
+  });
+  return kept.length === 0
+    ? summary
+    : { ...summary, active: [...summary.active, ...kept], count: summary.count + kept.length };
+}
 `;
 }

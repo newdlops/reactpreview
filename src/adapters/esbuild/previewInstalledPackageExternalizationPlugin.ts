@@ -15,9 +15,11 @@ const BARE_MODULE_SPECIFIER =
 const INSTANCE_BOUND_PACKAGE_NAMES = new Set([
   '@apollo/client',
   '@emotion/react',
+  '@tanstack/react-query',
   'formik',
   'react',
   'react-dom',
+  'react-query',
   'react-redux',
   'react-router',
   'react-router-dom',

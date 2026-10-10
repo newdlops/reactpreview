@@ -36,6 +36,10 @@ import {
   type PreviewInspectorShallowProjectionInventory,
 } from './previewInspectorShallowProjection';
 import { hasPreviewInspectorAuthoredHookLogic } from './previewInspectorAuthoredHookLogic';
+import {
+  createPreviewDeferredCorridorBranch,
+  loadPreviewDeferredCorridorBranch,
+} from './previewInspectorDeferredDynamicSurface';
 import { createPreviewInspectorPackageDemandPathSet } from './previewInspectorPackageDemand';
 import { readPreviewInspectorPageSurfaceImporterPath } from './previewInspectorPageExecutionPlugin';
 import { registerPreviewInspectorBundleFrontierGuard } from './previewInspectorBundleFrontierGuard';
@@ -93,9 +97,7 @@ export interface PreviewInspectorCorridorPluginOptions {
 }
 
 /** Maps imports emitted by a virtual page slice back to the authored module it was cut from. */
-function readPreviewInspectorAuthoredImporterPath(
-  arguments_: OnResolveArgs,
-): string | undefined {
+function readPreviewInspectorAuthoredImporterPath(arguments_: OnResolveArgs): string | undefined {
   if (arguments_.importer.length > 0 && path.isAbsolute(arguments_.importer)) {
     return arguments_.importer;
   }
@@ -348,7 +350,10 @@ export function createPreviewInspectorCorridorPlugin(
     ) {
       return undefined;
     }
-    return createOmittedDeferredBranch();
+    // Registries share one module; a single known target keeps its named export surface.
+    return createOmittedDeferredBranch(
+      importerEvidence.isBroadRegistry ? undefined : canonicalTarget,
+    );
   }
 
   /**
@@ -531,22 +536,6 @@ export function createPreviewInspectorCorridorPlugin(
     return pending;
   }
 
-  /** Emits one shared side-effect-free module for every unselected generated route branch. */
-  function loadDeferredBranch(arguments_: OnLoadArgs): OnLoadResult {
-    if (arguments_.path !== INSPECTOR_CORRIDOR_PLACEHOLDER_PATH) {
-      throw new TypeError('Unknown React Preview deferred corridor module.');
-    }
-    return {
-      contents: [
-        '/** Unselected project route omitted from this pinned static Page Inspector corridor. */',
-        'function ReactPreviewDeferredCorridorRoute() { return null; }',
-        'export default ReactPreviewDeferredCorridorRoute;',
-        'export const __reactPreviewDeferredCorridorRoute = ReactPreviewDeferredCorridorRoute;',
-      ].join('\n'),
-      loader: 'js',
-    };
-  }
-
   /** Emits the exact default/named ESM surface requested by one omitted eager route import. */
   function loadStaticRouteBranch(arguments_: OnLoadArgs): OnLoadResult {
     const projection = readStaticProjectionPluginData(arguments_.pluginData);
@@ -666,7 +655,9 @@ export function createPreviewInspectorCorridorPlugin(
           workspaceRoot,
         });
       }
-      build.onLoad({ filter: /.*/, namespace: INSPECTOR_CORRIDOR_NAMESPACE }, loadDeferredBranch);
+      build.onLoad({ filter: /.*/, namespace: INSPECTOR_CORRIDOR_NAMESPACE }, (arguments_) =>
+        loadPreviewDeferredCorridorBranch(arguments_, INSPECTOR_CORRIDOR_PLACEHOLDER_PATH),
+      );
       build.onLoad(
         { filter: /.*/, namespace: INSPECTOR_STATIC_CORRIDOR_NAMESPACE },
         loadStaticRouteBranch,
@@ -704,11 +695,12 @@ function shouldExpandVirtualPageComponent(projection: PreviewInspectorShallowPro
 }
 
 /** Returns one stable virtual identity so thousands of discarded registry edges share output. */
-function createOmittedDeferredBranch(): OnResolveResult {
-  return {
-    namespace: INSPECTOR_CORRIDOR_NAMESPACE,
-    path: INSPECTOR_CORRIDOR_PLACEHOLDER_PATH,
-  };
+function createOmittedDeferredBranch(targetPath?: string): OnResolveResult {
+  return createPreviewDeferredCorridorBranch(
+    INSPECTOR_CORRIDOR_NAMESPACE,
+    INSPECTOR_CORRIDOR_PLACEHOLDER_PATH,
+    targetPath,
+  );
 }
 
 /** Returns an importer-scoped virtual identity so different named ESM demands cannot collide. */

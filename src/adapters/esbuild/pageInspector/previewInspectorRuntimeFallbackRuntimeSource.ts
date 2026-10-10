@@ -7,6 +7,7 @@
  */
 import { createPreviewInspectorRuntimeFallbackMetadataRuntimeSource } from './previewInspectorRuntimeFallbackMetadataRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackValuesRuntimeSource } from './previewInspectorRuntimeFallbackValuesRuntimeSource';
+import { createPreviewInspectorRuntimeFallbackTypedValueRuntimeSource } from './previewInspectorRuntimeFallbackTypedValueRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackSharingRuntimeSource } from './previewInspectorRuntimeFallbackSharingRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackRecommendationsRuntimeSource } from './previewInspectorRuntimeFallbackRecommendationsRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackResolutionRuntimeSource } from './previewInspectorRuntimeFallbackResolutionRuntimeSource';
@@ -381,6 +382,7 @@ ${overlayActivationRuntimeSource}
 ${hookGraphqlRuntimeSource}
 ` +
     createPreviewInspectorRuntimeFallbackMetadataRuntimeSource() +
+    createPreviewInspectorRuntimeFallbackTypedValueRuntimeSource() +
     createPreviewInspectorRuntimeFallbackValuesRuntimeSource() +
     createPreviewInspectorRuntimeFallbackSharingRuntimeSource() +
     createPreviewInspectorRuntimeFallbackRecommendationsRuntimeSource() +

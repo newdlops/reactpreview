@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { resolvePreviewCompilerFailure } from '../../../src/adapters/esbuild/previewCompilerFailure';
+import type { PreviewDependencyResolutionHintPlan } from '../../../src/adapters/esbuild/previewMissingDependencyRequirements';
 import { PreviewBuildStalledError } from '../../../src/domain/previewBuildExecution';
 
 describe('resolvePreviewCompilerFailure', () => {
@@ -72,5 +73,57 @@ describe('resolvePreviewCompilerFailure', () => {
         tryAcquireMissingDependencies: vi.fn(() => Promise.resolve(undefined)),
       }),
     ).rejects.toBe(error);
+  });
+
+  /** The retry skips the preflight, so a contract the failed build applied must survive it. */
+  it('keeps the applied preflight contracts on the acquisition retry', async () => {
+    const score = {
+      action: 'facade-package-contract' as const,
+      featureVector: [],
+      modelScore: 0.5,
+      selectionScore: 0.9,
+      updates: 0,
+    };
+    const plan = (
+      overrides: Partial<PreviewDependencyResolutionHintPlan>,
+    ): PreviewDependencyResolutionHintPlan => ({
+      facadeCandidates: [],
+      facadeSourcePaths: [],
+      packageCandidates: [],
+      packageContractCandidates: [],
+      packageNames: [],
+      styleCandidates: [],
+      version: 4,
+      ...overrides,
+    });
+    const applied = plan({
+      packageContractCandidates: [
+        {
+          moduleSpecifier: 'axios',
+          packageName: 'axios',
+          score,
+          sourcePath: '/workspace/src/lib/envClient.ts',
+        },
+      ],
+    });
+    const acquired = plan({ packageNames: ['xlsx'] });
+    const retryCompilation = vi.fn(() => Promise.resolve({} as never));
+
+    await resolvePreviewCompilerFailure({
+      appliedHints: applied,
+      buildSignal: new AbortController().signal,
+      dependencyAcquisitionAttempted: false,
+      error: { errors: [{ text: 'Could not resolve "xlsx"' }], warnings: [] },
+      retryCompilation,
+      target: '/workspace/src/Target.tsx',
+      tryAcquireMissingDependencies: () => Promise.resolve(acquired),
+    });
+
+    expect(retryCompilation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        packageContractCandidates: applied.packageContractCandidates,
+        packageNames: ['xlsx'],
+      }),
+    );
   });
 });

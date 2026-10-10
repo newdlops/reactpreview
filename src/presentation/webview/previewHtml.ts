@@ -3,7 +3,8 @@
  * All dynamic text and URI values are escaped, authored scripts are external ESM files, and the CSP
  * blocks active network connections, frames, workers, forms, untrusted inline scripts, and dynamic
  * code evaluation. Host-owned inline bootstrap scripts use per-document nonces.
- * Passive HTTPS images remain available because authored page visuals often live on a CDN.
+ * Passive HTTPS images remain available because authored page visuals often live on a CDN, and
+ * ready documents may load HTTPS stylesheets (web fonts, CDN CSS) unless the user turns that off.
  */
 import type { PreviewProgressStage } from '../../domain/previewProgress';
 import {
@@ -47,6 +48,11 @@ export interface ReadyPreviewState {
   readonly runtimeRevision?: number;
   /** Optional webview URI for generated component CSS. */
   readonly stylesheetUri?: string;
+  /**
+   * Whether authored HTTPS stylesheets (web-font CSS, CDN themes) may load. Stylesheets cannot run
+   * script, and their requests use the HTTPS image/font access the page already has.
+   */
+  readonly remoteStylesheets?: boolean;
 }
 
 /** UI state rendered for unsupported documents, compilation failures, or trust failures. */
@@ -89,7 +95,7 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   const csp = [
     "default-src 'none'",
     `script-src ${cspSource}${retryNonce === undefined ? '' : ` 'nonce-${retryNonce}'`}${readyScriptNonce === undefined ? '' : ` 'nonce-${readyScriptNonce}'`}`,
-    `style-src ${cspSource} 'unsafe-inline'`,
+    `style-src ${cspSource} 'unsafe-inline'${state.kind === 'ready' && state.remoteStylesheets === true ? ' https:' : ''}`,
     `img-src ${cspSource} data: blob: https:`,
     `font-src ${cspSource} data: https:`,
     "connect-src 'none'",
@@ -209,7 +215,7 @@ function createBody(
     case 'ready':
       return `${createReadyProgressHost(createPreviewProgressSnapshot('loading-preview'))}
 <div id="react-preview-root" data-react-preview-mount aria-busy="true"${createRuntimeHandshakeAttributes(state)}></div>
-${createModuleImportMapElement(state, readyScriptNonce)}${createPublicAssetCompatibilityScriptElement(state, readyScriptNonce)}${createApplicationFrameCompatibilityScriptElement(publicApplicationOrigin, readyScriptNonce)}${createGlobalCompatibilityScriptElement(readyScriptNonce)}${createHostBridgeScriptElement(state)}<script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
+${createModuleImportMapElement(state, readyScriptNonce)}${createPublicAssetCompatibilityScriptElement(state, readyScriptNonce)}${createApplicationFrameCompatibilityScriptElement(publicApplicationOrigin, readyScriptNonce)}${createGlobalCompatibilityScriptElement(readyScriptNonce)}${createNavigationGuardScriptElement(readyScriptNonce)}${createHostBridgeScriptElement(state)}<script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
   }
 }
 
@@ -507,6 +513,56 @@ function createGlobalCompatibilityScriptElement(nonce: string | undefined): stri
         writable: true,
       });
     } catch {}
+  })();
+</script>
+`;
+}
+
+/**
+ * Keeps a previewed page from leaving the preview document.
+ *
+ * Pages call `navigate(-1)` or `location.assign('/login')` while they render (guards, redirects
+ * after a dialog). Outside the application those leave this document: history steps back past
+ * the preview into a blank frame, and an application URL does not exist in the webview. History
+ * steps run only when the destination entry is this same document (local route changes still go
+ * back), and cross-document push/replace navigations are cancelled. Reloads are untouched.
+ */
+function createNavigationGuardScriptElement(nonce: string | undefined): string {
+  if (nonce === undefined) return '';
+  return `<script nonce="${nonce}">
+  (() => {
+    const navigation = globalThis.navigation;
+    if (typeof navigation?.addEventListener !== 'function' || typeof navigation.entries !== 'function') return;
+    const warn = (target) => console.warn('[React Preview] Kept the preview open instead of navigating to ' + String(target).slice(0, 200) + '.');
+    const staysInDocument = (delta) => {
+      try {
+        const index = navigation.currentEntry?.index;
+        return Number.isSafeInteger(index) && navigation.entries()[index + delta]?.sameDocument === true;
+      } catch {
+        return false;
+      }
+    };
+    const historyPrototype = globalThis.History?.prototype;
+    // Without a current entry (opaque origins) the destination cannot be judged; keep history as is.
+    if (historyPrototype !== undefined && navigation.currentEntry != null) {
+      const { back, forward, go } = historyPrototype;
+      const guard = (delta, step) => function guardedHistoryStep(...args) {
+        const distance = delta ?? Math.trunc(Number(args[0]) || 0);
+        if (distance === 0 || staysInDocument(distance)) return step.apply(this, args);
+        warn('history step ' + distance);
+      };
+      Object.assign(historyPrototype, { back: guard(-1, back), forward: guard(1, forward), go: guard(undefined, go) });
+    }
+    navigation.addEventListener('navigate', (event) => {
+      if (
+        event.cancelable !== true ||
+        event.destination?.sameDocument !== false ||
+        (event.navigationType !== 'push' && event.navigationType !== 'replace') ||
+        event.downloadRequest != null
+      ) return;
+      event.preventDefault();
+      warn(event.destination.url);
+    });
   })();
 </script>
 `;

@@ -66,6 +66,13 @@ export const PREVIEW_INVENTORY_WORKER_OLD_GENERATION_LIMIT_MB =
   PREVIEW_COMPILER_WORKER_ISOLATION_POLICY.inventoryOldGenerationLimitMb;
 export const PREVIEW_ROUTE_WORKER_OLD_GENERATION_LIMIT_MB =
   PREVIEW_COMPILER_WORKER_ISOLATION_POLICY.routeOldGenerationLimitMb;
+/**
+ * Heap cap for the extension's interactive preview worker. It runs only on the developer's own
+ * machine, where render fidelity (for example declared types from multi-megabyte generated
+ * GraphQL schemas) is worth far more than a small heap; the cap only stops a runaway build before
+ * it exhausts system memory. Validation campaigns keep the frozen route policy value above.
+ */
+export const PREVIEW_INTERACTIVE_WORKER_OLD_GENERATION_LIMIT_MB = 4_096;
 export const PREVIEW_INVENTORY_WORKER_TIMEOUT_MS =
   PREVIEW_COMPILER_WORKER_ISOLATION_POLICY.inventoryTimeoutMs;
 export const PREVIEW_COMPILER_WORKER_SHUTDOWN_GRACE_MS =

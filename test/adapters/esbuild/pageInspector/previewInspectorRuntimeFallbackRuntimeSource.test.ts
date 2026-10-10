@@ -417,6 +417,85 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.api.read()).toEqual([]);
   });
 
+  /** SWR exposes `data` through a subscribing getter; a proven read path runs it exactly once. */
+  it('completes a required accessor once and leaves other accessors unexecuted', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const calls = { data: 0, error: 0 };
+    const value = Object.defineProperties(
+      { mutate: (): undefined => undefined },
+      {
+        data: {
+          enumerable: true,
+          get(): undefined {
+            calls.data += 1;
+            return undefined;
+          },
+        },
+        error: {
+          enumerable: true,
+          get(): undefined {
+            calls.error += 1;
+            return undefined;
+          },
+        },
+      },
+    ) as { readonly data?: { readonly name: string }; readonly mutate: () => undefined };
+    const fallback = Object.freeze({
+      data: Object.freeze({ name: 'Preview name' }),
+      error: Object.freeze({ message: 'Preview error' }),
+    });
+
+    const resolved = fixture.api.resolve(
+      () => value,
+      () => fallback,
+      {
+        ...createMetadata(),
+        hookName: 'useSWR',
+        moduleSpecifier: 'swr',
+        requiredPaths: ['data.name'],
+      },
+    ) as typeof value;
+    // Matchers below read accessors themselves, so count the runtime's reads first.
+    const runtimeCalls = { ...calls };
+
+    expect(runtimeCalls).toEqual({ data: 1, error: 0 });
+    expect(Object.is(resolved, value)).toBe(false);
+    expect(resolved.data).toEqual({ name: 'Preview name' });
+    expect(resolved.mutate).toBe(value.mutate);
+  });
+
+  /** react-hook-form's `errors` getter returns real empty state; a guard path must not fill it. */
+  it('keeps an accessor that returns an object even on a required path', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const errors = {};
+    const formState = Object.defineProperty({}, 'errors', {
+      enumerable: true,
+      get(): object {
+        return errors;
+      },
+    });
+    const value = { formState };
+    const fallback = Object.freeze({
+      formState: Object.freeze({
+        errors: Object.freeze({ email: Object.freeze({ message: 'message' }) }),
+      }),
+    });
+
+    const resolved = fixture.api.resolve(
+      () => value,
+      () => fallback,
+      {
+        ...createMetadata(),
+        hookName: 'useForm',
+        moduleSpecifier: 'react-hook-form',
+        requiredPaths: ['formState.errors.email', 'formState.errors.email.message'],
+      },
+    );
+
+    expect(Object.is(resolved, value)).toBe(true);
+    expect(errors).toEqual({});
+  });
+
   /** Fills only undefined tuple slots while preserving the application's callable slot. */
   it('completes bounded arrays without replacing present indexes', () => {
     const fixture = createRuntimeFallbackFixture(true);

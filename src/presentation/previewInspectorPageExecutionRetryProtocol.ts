@@ -7,6 +7,8 @@ export interface PreviewInspectorPageExecutionRetryRequest {
   readonly candidateId: string;
   readonly executionCandidateId: string;
   readonly interactionId: string;
+  /** Returns to an execution this session already committed (a failed full-page replay's fallback). */
+  readonly restore?: true;
   readonly runtimeRevision: number;
   readonly type: 'react-preview-inspector-page-execution-retry';
 }
@@ -21,6 +23,7 @@ export function readPreviewInspectorPageExecutionRetryRequest(
   const executionCandidateId = message.executionCandidateId;
   const interactionId = message.interactionId;
   const runtimeRevision = message.runtimeRevision;
+  const restore = message.restore;
   if (
     message.type !== 'react-preview-inspector-page-execution-retry' ||
     !isPreviewInspectorPageCandidateId(candidateId) ||
@@ -35,13 +38,15 @@ export function readPreviewInspectorPageExecutionRetryRequest(
     !interactionId.startsWith('execution:') ||
     typeof runtimeRevision !== 'number' ||
     !Number.isSafeInteger(runtimeRevision) ||
-    runtimeRevision < 0
+    runtimeRevision < 0 ||
+    (restore !== undefined && restore !== true)
   )
     return undefined;
   return Object.freeze({
     candidateId,
     executionCandidateId,
     interactionId,
+    ...(restore === true ? { restore } : {}),
     runtimeRevision,
     type: 'react-preview-inspector-page-execution-retry',
   });

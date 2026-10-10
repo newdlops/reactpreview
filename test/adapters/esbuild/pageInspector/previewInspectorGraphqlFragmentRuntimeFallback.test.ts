@@ -35,7 +35,7 @@ describe('Preview Inspector GraphQL fragment runtime fallback', () => {
 
     expect(Array.isArray(upstream.company)).toBe(true);
     expect(resolved).toMatchObject({ id: 'preview-company' });
-    expect(resolved.warnings).toEqual([{ id: 'preview-1', isStaffOnly: true, name: 'name' }]);
+    expect(resolved.warnings).toEqual([{ id: 'preview-1', isStaffOnly: true, name: 'Name' }]);
     expect(() => resolved.warnings.some(({ isStaffOnly }) => !isStaffOnly)).not.toThrow();
     expect(resolved.warnings.some(({ isStaffOnly }) => !isStaffOnly)).toBe(false);
   });
@@ -49,9 +49,7 @@ describe('Preview Inspector GraphQL fragment runtime fallback', () => {
       hookName: 'getFragmentData',
       requiredPaths: ['warnings', 'warnings.some()', 'warnings.filter()', 'warnings[].isStaffOnly'],
     };
-    const contextCompany = Object.freeze([
-      Object.freeze({ id: 'context-company' }),
-    ]);
+    const contextCompany = Object.freeze([Object.freeze({ id: 'context-company' })]);
 
     const resolved = fixture.api.resolveFragment(
       () => contextCompany,

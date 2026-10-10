@@ -5,12 +5,22 @@ import type {
   PreviewReduxStaticState,
   PreviewReduxStaticValue,
 } from './previewReduxRuntimeSource';
+import {
+  PREVIEW_CANONICAL_SAMPLE_DATE_TIME,
+  PREVIEW_CANONICAL_SAMPLE_EPOCH_MILLIS,
+} from './previewSampleDateRuntimeSource';
 import { collectPreviewReduxStateContainerPaths } from './staticResources/reduxStateContainerPaths';
 import {
   collectPreviewReselectStateRequirements,
   type PreviewReselectStateValueRequirement,
 } from './staticResources/previewReselectStateContainerPaths';
+import type { PreviewReselectOptionalChainPath } from './staticResources/previewReselectOptionalChainPaths';
 import type { PreviewInferredPropShape } from './staticResources/reactExportPropInference';
+import {
+  inferPreviewRuntimeSemanticFallback,
+  PREVIEW_RUNTIME_SEMANTIC_DATE_TIME_LABEL,
+  type PreviewRuntimeSemanticFallback,
+} from './staticResources/previewRuntimeHookSemantics';
 
 const MAXIMUM_REDUX_FRONTIER_SOURCES = 2_048;
 const JAVASCRIPT_SOURCE_PATTERN = /\.[cm]?[jt]sx?$/iu;
@@ -46,13 +56,14 @@ export async function collectPreviewReduxAutomaticState(
     .slice(0, MAXIMUM_REDUX_FRONTIER_SOURCES);
   const containerPaths: (readonly string[])[] = [];
   const valueRequirements: PreviewReselectStateValueRequirement[] = [];
+  const optionalChainPaths: PreviewReselectOptionalChainPath[] = [];
   for (const sourcePath of sourcePaths) {
     const sourceText = await options.readSource(sourcePath);
     if (sourceText === undefined || !sourceText.includes('Selector')) continue;
     containerPaths.push(...collectPreviewReduxStateContainerPaths(sourcePath, sourceText));
-    valueRequirements.push(
-      ...collectPreviewReselectStateRequirements(sourcePath, sourceText).valueRequirements,
-    );
+    const reselect = collectPreviewReselectStateRequirements(sourcePath, sourceText);
+    valueRequirements.push(...reselect.valueRequirements);
+    optionalChainPaths.push(...reselect.optionalChainPaths);
   }
   if (containerPaths.length === 0 && valueRequirements.length === 0) return undefined;
 
@@ -74,7 +85,88 @@ export async function collectPreviewReduxAutomaticState(
     if (generatedValue === undefined) continue;
     assignReduxAutomaticValue(state, requirement.path, generatedValue);
   }
-  return Object.freeze(state);
+  // Optional chains run last so every module's evidence decides whether their receiver exists.
+  let grafted: PreviewReduxStaticObject = state;
+  for (const chain of optionalChainPaths.sort((left, right) =>
+    compareReduxContainerPaths(left.path, right.path),
+  )) {
+    grafted = graftReduxOptionalChain(grafted, chain, 0) ?? grafted;
+  }
+  return Object.freeze(grafted);
+}
+
+/**
+ * Adds one optional selector chain below a receiver that other evidence already seeded. Containers
+ * are created only toward a leaf that has a value, and an existing value is never replaced.
+ */
+function graftReduxOptionalChain(
+  node: PreviewReduxStaticValue | undefined,
+  chain: PreviewReselectOptionalChainPath,
+  index: number,
+): PreviewReduxStaticObject | undefined {
+  const name = chain.path[index];
+  if (!isReduxStaticObject(node) || name === undefined) return undefined;
+  const existing = node[name];
+  let child: PreviewReduxStaticValue | undefined;
+  if (index === chain.path.length - 1) {
+    if (existing === undefined) {
+      child =
+        chain.collection === true
+          ? Object.freeze([])
+          : createReduxOptionalLeafValue(chain.path[index - 1], name);
+    }
+  } else if (existing !== undefined) {
+    child = graftReduxOptionalChain(existing, chain, index + 1);
+  } else if (index >= chain.receiverLength) {
+    // A collection name gets an empty collection, never a `{ length }`-style object below it.
+    child =
+      inferPreviewRuntimeSemanticFallback(name)?.kind === 'array'
+        ? Object.freeze([])
+        : graftReduxOptionalChain(Object.freeze({}), chain, index + 1);
+  }
+  return child === undefined ? undefined : Object.freeze({ ...node, [name]: child });
+}
+
+/**
+ * Picks the value of an optional leaf from its name, only where an absent value breaks rendering:
+ * counts become 0 instead of a project sentinel such as -1, dates become the sample date, and
+ * collections become empty. Text and flags stay absent so the project's own defaults and the
+ * render-only fallback (which may continue past an early return) still decide them. A `{ value }`
+ * wrapper (protobuf Timestamp or Int32Value) carries its meaning in the parent name, and a timestamp
+ * wrapper gets epoch milliseconds: the proto field is an int64 of milliseconds, `Number(v)`,
+ * `new Date(v)`, and `dayjs(v)` all accept a number, while a numeric string would break `new Date(v)`.
+ */
+function createReduxOptionalLeafValue(
+  parentName: string | undefined,
+  leafName: string,
+): PreviewReduxStaticValue | undefined {
+  if (leafName === 'value' && parentName !== undefined) {
+    const parent = inferPreviewRuntimeSemanticFallback(parentName);
+    if (parent?.label === PREVIEW_RUNTIME_SEMANTIC_DATE_TIME_LABEL) {
+      return PREVIEW_CANONICAL_SAMPLE_EPOCH_MILLIS;
+    }
+    const wrapped = readReduxNeutralValue(parent);
+    if (wrapped !== undefined) return wrapped;
+  }
+  const leaf = inferPreviewRuntimeSemanticFallback(leafName);
+  return leaf?.label === PREVIEW_RUNTIME_SEMANTIC_DATE_TIME_LABEL
+    ? PREVIEW_CANONICAL_SAMPLE_DATE_TIME
+    : readReduxNeutralValue(leaf);
+}
+
+/** Maps a count or collection family to its empty value; every other family stays absent. */
+function readReduxNeutralValue(
+  fallback: PreviewRuntimeSemanticFallback | undefined,
+): PreviewReduxStaticValue | undefined {
+  if (fallback?.kind === 'array') return Object.freeze([]);
+  return fallback?.kind === 'number' ? 0 : undefined;
+}
+
+/** Recognizes a plain JSON object container. */
+function isReduxStaticObject(
+  value: PreviewReduxStaticValue | undefined,
+): value is PreviewReduxStaticObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** Materializes only JSON-safe, falsey values proven by projector operations. */

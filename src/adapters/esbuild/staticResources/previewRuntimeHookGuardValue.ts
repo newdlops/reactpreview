@@ -20,6 +20,7 @@ import {
   inferPreviewRuntimeSemanticFallback,
   type PreviewRuntimeSemanticFallback,
 } from './previewRuntimeHookSemantics';
+import { isPreviewSelectedTargetExit } from './previewSelectedTargetExit';
 
 /**
  * Selects a Boolean that avoids every compatible early-exit guard involving one local binding.
@@ -37,6 +38,50 @@ export function inferPreviewRuntimeHookGuardPassFallback(
     (expression) => ts.isIdentifier(expression) && expression.text === identifier.text,
   );
   return value === undefined ? undefined : createBooleanGuardFallback(value);
+}
+
+/**
+ * Selects the Boolean that takes an early return whose JSX renders the selected target.
+ *
+ * Generated values normally continue past early returns. When the returned JSX is the selected
+ * target itself (a login page behind `if (!token) return …`), the binding must instead make the
+ * guard true, and a declared-type value must not replace that choice.
+ *
+ * @param identifier Hook-result binding consumed by component control flow.
+ * @returns The Boolean taking every target exit it guards, or `undefined` when none or conflicting.
+ */
+export function inferPreviewRuntimeHookTargetExitFallback(
+  identifier: ts.Identifier,
+): (PreviewRuntimeSemanticFallback & { readonly targetExit: true }) | undefined {
+  const owner = findNearestPreviewRuntimeFunction(identifier);
+  if (owner === undefined) return undefined;
+  const matches = (expression: ts.Expression): boolean =>
+    ts.isIdentifier(expression) && expression.text === identifier.text;
+  const demandedValues = new Set<boolean>();
+  const visit = (node: ts.Node): void => {
+    if (node !== owner && isPreviewRuntimeFunction(node)) return;
+    if (ts.isIfStatement(node)) {
+      const thenExit = node.elseStatement === undefined && statementAlwaysExits(node.thenStatement);
+      const exit = thenExit ? node.thenStatement : node.elseStatement;
+      if (exit !== undefined && (thenExit || statementAlwaysExits(exit))) {
+        const value = isPreviewSelectedTargetExit(exit)
+          ? readConditionTrackedValue(node.expression, matches, thenExit)
+          : undefined;
+        if (value !== undefined) demandedValues.add(value);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner);
+  if (demandedValues.size !== 1) return undefined;
+  const value = [...demandedValues][0] === true;
+  return {
+    expression: String(value),
+    kind: 'boolean',
+    label: `generated Boolean ${String(value)} to take the branch rendering the selected target`,
+    targetExit: true,
+    value,
+  };
 }
 
 /**
@@ -364,13 +409,18 @@ function inferGuardPassBoolean(
   const visit = (node: ts.Node): void => {
     if (node !== owner && isPreviewRuntimeFunction(node)) return;
     if (ts.isIfStatement(node)) {
-      if (acceptsExit(node.thenStatement) && node.elseStatement === undefined) {
+      if (
+        acceptsExit(node.thenStatement) &&
+        node.elseStatement === undefined &&
+        !isPreviewSelectedTargetExit(node.thenStatement)
+      ) {
         const passValue = readConditionTrackedValue(node.expression, matchesExpression, false);
         if (passValue !== undefined) demandedValues.add(passValue);
       } else if (
         node.elseStatement !== undefined &&
         acceptsExit(node.elseStatement) &&
-        !acceptsExit(node.thenStatement)
+        !acceptsExit(node.thenStatement) &&
+        !isPreviewSelectedTargetExit(node.elseStatement)
       ) {
         const passValue = readConditionTrackedValue(node.expression, matchesExpression, true);
         if (passValue !== undefined) demandedValues.add(passValue);

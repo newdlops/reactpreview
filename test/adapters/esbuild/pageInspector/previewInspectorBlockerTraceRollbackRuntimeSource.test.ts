@@ -66,6 +66,35 @@ describe('Preview Inspector blocker trace rollback', () => {
     },
   );
 
+  /** Served REST sample rows are withdrawn by a new fatal error and the fill attempt reports it. */
+  it('withdraws REST collection rows on a new fatal error', () => {
+    const runtime = createTraceRuntime();
+    runtime.snapshot(createSnapshot('auto'));
+    runtime.serveRestCollectionRows();
+    const traceId = runtime.decide({
+      action: 'Fill empty REST collection rows',
+      blockerId: 'rest-collection-fill',
+      blockerKind: 'data-request',
+      blockerName: 'REST collection rows',
+      mode: 'rest-collection-auto',
+      startsRenderAttempt: true,
+    });
+
+    runtime.error({ level: 'warn', message: 'generated value', source: 'runtime-fallback' });
+    expect(runtime.restCollectionWithdrawals).toEqual([]);
+    runtime.error({ level: 'error', message: 'row crash', source: 'react-boundary' });
+
+    expect(runtime.restCollectionWithdrawals).toHaveLength(1);
+    expect(runtime.restCollectionWithdrawals[0]).toContain('row crash');
+    const subsequent = runtime.messages.find(
+      (message) => message.event.event === 'subsequent-error',
+    );
+    expect(subsequent?.event.traceId).toBe(traceId);
+    expect(subsequent?.event.blocker?.outcome).toBe('rolled-back');
+    expect(runtime.requirementRollbackCalls).toEqual([]);
+    expect(runtime.rollbackCalls).toEqual([]);
+  });
+
   it.each(['deterministic-minimum-auto', 'minimum-requirement-dfs'])(
     'does not roll back eligible mode %s for a known baseline error',
     (mode) => {

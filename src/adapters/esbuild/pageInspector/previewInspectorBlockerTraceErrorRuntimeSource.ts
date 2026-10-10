@@ -68,6 +68,10 @@ function recordPreviewInspectorBlockerTraceError(entry) {
       previewInspectorSession.blockerTraceRecentFatalErrors.keys().next().value,
     );
   }
+  // Generated REST rows are withdrawn by any fatal error the page had not reported before them.
+  const restCollectionRowsWithdrawn =
+    typeof withdrawPreviewInspectorRestCollectionFillAfterError === 'function' &&
+    withdrawPreviewInspectorRestCollectionFillAfterError(fatalErrorFingerprint);
   const fingerprint = [
     active ? activeAttempt.traceId : '',
     entry.level,
@@ -105,7 +109,10 @@ function recordPreviewInspectorBlockerTraceError(entry) {
       ...(!active || activeAttempt.blocker === undefined ? {} : {
         blocker: {
           ...activeAttempt.blocker,
-          outcome: conditionRolledBack || requirementRolledBack ? 'rolled-back' : 'report-only',
+          outcome: conditionRolledBack || requirementRolledBack ||
+            (restCollectionRowsWithdrawn && activeAttempt.autoMode === 'rest-collection-auto')
+            ? 'rolled-back'
+            : 'report-only',
         },
       }),
       error: {

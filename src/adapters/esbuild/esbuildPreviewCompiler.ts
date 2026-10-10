@@ -80,6 +80,7 @@ import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
 import { createPreviewDragDropBridgePlugin } from './previewDragDropBridgePlugin';
 import { collectPreviewDragDropRequirement } from './previewDragDropRequirement';
 import { createPreviewDependencyResolutionHintPlugin } from './previewDependencyResolutionHintPlugin';
+import { collectPreviewHostIoServerSourcePaths } from './previewHostIoServerModules';
 import {
   PreviewDependencyResolutionNeuralModel,
   type PreviewDependencyResolutionNeuralScore,
@@ -101,7 +102,10 @@ import {
   type PreviewDependencyResolutionHintPlan,
   type PreviewMissingDependencyAcquisitionContext,
 } from './previewMissingDependencyRequirements';
-import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
+import {
+  createPreviewNodeBuiltinPlugin,
+  PREVIEW_NODE_PATH_GLOBAL_DEFINES,
+} from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
 import { createPreviewYarnLibuiBridgePlugin } from './previewYarnLibuiBridgePlugin';
@@ -127,6 +131,12 @@ import {
   refinePreviewPortalHostsFromBuild,
 } from './previewPortalHostBuildRefinement';
 import { selectPreviewReactDomRootKind } from './previewReactDomRootRuntimeSource';
+import { createPreviewReactQueryBridgePlugin } from './previewReactQueryBridgePlugin';
+import {
+  createPreviewBuildTypeOracleView,
+  PreviewTypeOracle,
+} from './typeOracle/previewTypeOracle';
+import { resolvePreviewTypeLibDirectory } from './typeOracle/previewTypeProgram';
 import { createPreviewReduxBridgePlugin } from './previewReduxBridgePlugin';
 import { collectPreviewReduxAutomaticState } from './previewReduxAutomaticState';
 import {
@@ -146,6 +156,7 @@ import { createPreviewRouterBridgePlugin } from './previewRouterBridgePlugin';
 import { createPreviewRuntimeInstanceKey } from './previewRuntimeInstanceKey';
 import { collectPreviewRouterRequirement } from './previewRouterRequirement';
 import { PREVIEW_SOURCE_LOADERS } from './previewLoaderPolicy';
+import { readPreviewNextI18nConfig } from './previewNextConfigI18n';
 import { collectPreviewNextRuntimeEvidence as findNext } from './previewNextRuntimeEvidence';
 import { findPreviewProjectRoot } from './previewProjectRoot';
 import { PreviewProjectUsageCache } from './previewProjectUsageCache';
@@ -176,6 +187,10 @@ import { PreviewSetupFailureCache } from './previewSetupFailureCache';
 import { createPreviewTargetBridgePlugin } from './previewTargetBridgePlugin';
 import { assertPreviewReactTarget } from './previewTargetRuntimeGuard';
 import { createPreviewTailwindPlugin } from './previewTailwindPlugin';
+import { PreviewAdapterStrategyLearner } from './previewAdapterStrategyLearner';
+import { PREVIEW_ADAPTER_STRATEGY_SEED } from './previewAdapterStrategySeed';
+import { createPreviewSelectedTargetOccurrences } from './staticResources/previewSelectedTargetExit';
+import { selectPreviewTailwindCompilerPackage } from './previewTailwindImplementation';
 import { selectPreviewThemeImport } from './previewTargetExports';
 import { createPreviewThemeBridgePlugin } from './previewThemeBridgePlugin';
 import { createPreviewThemeCandidatePlugin } from './previewThemeCandidatePlugin';
@@ -198,6 +213,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   private readonly diagnosticEmissionCache = new PreviewDiagnosticEmissionCache();
   private readonly dependencyResolutionNeuralModel = new PreviewDependencyResolutionNeuralModel();
   private readonly setupFailureCache = new PreviewSetupFailureCache();
+  private readonly typeOracle: PreviewTypeOracle;
   private readonly vendorModuleBuilder: PreviewVendorModuleBuilder;
   private readonly completeRouteInventoryCache = new Map<
     string,
@@ -205,8 +221,19 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   >();
   private readonly inspectorGestureSeed = randomBytes(32);
   private readonly managedDependencyStore: PreviewManagedDependencyStore | undefined;
+  private readonly adapterStrategyLearner: PreviewAdapterStrategyLearner | undefined;
   private shutdownPromise: Promise<void> | undefined;
   public constructor(options: EsbuildPreviewCompilerOptions = {}) {
+    this.adapterStrategyLearner =
+      options.adapterLearningRoot === undefined
+        ? undefined
+        : new PreviewAdapterStrategyLearner({
+            seed: PREVIEW_ADAPTER_STRATEGY_SEED,
+            storePath: path.join(options.adapterLearningRoot, 'adapter-strategies.json'),
+          });
+    this.typeOracle = new PreviewTypeOracle(
+      resolvePreviewTypeLibDirectory(options.bundledNodeModulesPath),
+    );
     this.vendorModuleBuilder = new PreviewVendorModuleBuilder(options.vendorModuleCacheBackend);
     this.managedDependencyStore =
       options.managedDependencyStoreRoot === undefined
@@ -581,6 +608,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         EMPTY_MANAGED_ENVIRONMENT;
       const dependencyProfile = managedDependencyEnvironment.profile;
       const nextEvidence = await findNext(dependencyProfile, projectRoot, request);
+      const nextPagesI18n = nextEvidence.projectRuntime
+        ? await readPreviewNextI18nConfig(projectRoot)
+        : undefined;
       const baseStaticModuleResolver = createPreviewStaticModuleResolver({
         ...(request.tsconfigPath === undefined
           ? {}
@@ -664,10 +694,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         findPreviewDependencySpecifier(dependencyProfile, 'tailwindcss') !== undefined ||
         analysisStaticModuleResolver.resolve('tailwindcss', request.documentPath) !== undefined;
       const requiredTailwindCompilerPackage =
-        dependencyProfile?.hasReusableLockEvidence === true &&
-        findPreviewDependencySpecifier(dependencyProfile, '@tailwindcss/postcss') !== undefined
-          ? '@tailwindcss/postcss'
-          : undefined;
+        selectPreviewTailwindCompilerPackage(dependencyProfile);
       assertPreviewReactTarget(request, dependencyProfile, analysisStaticModuleResolver);
       const targetSelection = preparePreviewCompilerTarget(request);
       const routerNeed = collectPreviewRouterRequirement(request.documentPath, request.sourceText);
@@ -911,13 +938,14 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         preparedBundleExecution.throwIfRejected(request.documentPath);
       }
       if (activeDependencyResolutionHints === undefined && preparedBundleExecution !== undefined) {
+        const readPreflightSource = async (sourcePath: string): Promise<string | undefined> =>
+          snapshotSourceByPath.get(path.normalize(sourcePath)) ??
+          (await this.projectUsageCache.readSourceText({
+            maximumBytes: 2 * 1024 * 1024,
+            sourcePath,
+          }));
         const preflightMessages = await collectPreviewDependencyResolutionPreflightMessages({
-          readSource: async (sourcePath) =>
-            snapshotSourceByPath.get(path.normalize(sourcePath)) ??
-            (await this.projectUsageCache.readSourceText({
-              maximumBytes: 2 * 1024 * 1024,
-              sourcePath,
-            })),
+          readSource: readPreflightSource,
           resolveModule: analysisStaticModuleResolver.resolve,
           sourcePaths: [
             ...preparedBundleExecution.prepared.frontier.authenticSourcePaths,
@@ -938,6 +966,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           preflightMessages,
           acquisitionContext,
           this.dependencyResolutionNeuralModel,
+          await collectPreviewHostIoServerSourcePaths({
+            readSource: readPreflightSource,
+            sourcePaths: preparedBundleExecution.prepared.frontier.authenticSourcePaths,
+            targetPath: request.documentPath,
+          }),
         );
         const hasRenderOnlyContracts =
           preflightHints.facadeSourcePaths.length > 0 ||
@@ -1184,6 +1217,15 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           request.renderMode !== 'page-inspector' && environment.setupKind === 'none'
             ? targetUsageProps.parentSlicesByExport
             : {};
+        const typeOracle =
+          request.renderMode === 'page-inspector'
+            ? createPreviewBuildTypeOracleView(this.typeOracle, {
+                managedNodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
+                plan: inspectorPlan,
+                request,
+                snapshotSourceByPath,
+              })
+            : undefined;
         const sourceTransformer = new PreviewSourceTransformer({
           ...(findPreviewDependencySpecifier(dependencyProfile, 'ag-grid-enterprise') !== undefined
             ? { agGridModulePackage: 'enterprise' as const }
@@ -1211,6 +1253,13 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           instrumentRenderConditions: request.renderMode === 'page-inspector',
           instrumentRuntimeEffectIsolation: request.renderMode === 'page-inspector',
           instrumentRuntimeHookFallbacks: request.renderMode === 'page-inspector',
+          ...(inspectorPlan === undefined
+            ? {}
+            : {
+                selectedTargetOccurrences: createPreviewSelectedTargetOccurrences(
+                  activePageExecutionCandidate?.browserCandidate.edges ?? inspectorPlan.edges,
+                ),
+              }),
           ...(localTargetModuleContract === undefined
             ? {}
             : {
@@ -1255,6 +1304,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           projectUsesReactRuntime:
             findPreviewDependencySpecifier(dependencyProfile, 'react') !== undefined,
           readGraphqlSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
+          ...(typeOracle === undefined ? {} : { typeOracle }),
           workspaceRoot: canonicalWorkspaceRoot,
         });
         const sourceCompilation: WorkspaceSourceCompilationState = {
@@ -1315,6 +1365,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             bundle: true,
             charset: 'utf8',
             define: {
+              ...PREVIEW_NODE_PATH_GLOBAL_DEFINES,
               ...createPreviewLegacyCommonJsGlobalDefines(legacyCommonJsGlobalNames),
               'import.meta.env': JSON.stringify(
                 createPreviewImportMetaEnvironment(environment.publicEnvironment),
@@ -1455,6 +1506,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 projectRoot,
               }),
               createPreviewFormikBridgePlugin({ projectRoot }),
+              createPreviewReactQueryBridgePlugin({ projectRoot }),
               createPreviewYarnLibuiBridgePlugin({ projectRoot }),
               createPreviewReduxBridgePlugin({
                 ...(automaticReduxState === undefined
@@ -1469,6 +1521,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                   inspectorPlan?.pageCandidates.some(
                     (candidate) => candidate.routeLocation?.evidenceKind === 'next-app-filesystem',
                   ) === true,
+                ...(nextPagesI18n === undefined ? {} : { nextPagesI18n }),
                 projectRoot,
               }),
               createPreviewThemeBridgePlugin({
@@ -1514,6 +1567,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                       ),
                       globalStyleImports,
                       plan: inspectorAnalysisPlan ?? inspectorPlan,
+                      targetTypedProps: typeOracle?.readTypedComponentProps(
+                        runtimeOwnershipTarget ?? inspectorPlan.target,
+                      ),
                       ...(activePageExecutionCandidate === undefined
                         ? {}
                         : { pageExecutionCandidate: activePageExecutionCandidate }),
@@ -1551,6 +1607,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 workspaceRoot: canonicalWorkspaceRoot,
               }),
               createPreviewTailwindPlugin({
+                ...(this.adapterStrategyLearner === undefined
+                  ? {}
+                  : { adapterStrategyLearner: this.adapterStrategyLearner }),
                 boundedSourceDiscovery: policy.boundedTailwindSourceDiscovery,
                 fallbackNodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
                 ...(activeDependencyResolutionHints === undefined
@@ -1678,9 +1737,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             pass: adaptivePass,
           });
         };
-        const result =
+        const result = await (
           fallbackBoundary === undefined
-            ? await this.incrementalBuildCache.rebuild({
+            ? this.incrementalBuildCache.rebuild({
                 captureSassState: (dependencyPaths, watchDirectories) => {
                   styleDependencyPaths = dependencyPaths;
                   styleWatchDirectories = watchDirectories;
@@ -1693,11 +1752,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 signal: buildSignal,
                 sourceCompilation,
               })
-            : await this.incrementalBuildCache.buildOnce(
+            : this.incrementalBuildCache.buildOnce(
                 createBuildOptions(undefined, requirePreviewSassBoundary(oneShotSassBoundary)),
                 buildSignal,
                 reportNativeActivity,
-              );
+              )
+        ).finally(() => typeOracle?.release());
         if (oneShotSassBoundary !== undefined) {
           styleDependencyPaths = oneShotSassBoundary.getDependencyPaths();
           styleWatchDirectories = oneShotSassBoundary.getWatchDirectories();
@@ -2101,6 +2161,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         buildSignal,
         dependencyAcquisitionAttempted: dependencyRecoveryAttempted,
         error,
+        appliedHints: activeDependencyResolutionHints,
         retryCompilation: (hints) => this.compile(request, context, hints),
         target: request.documentPath,
         tryAcquireMissingDependencies: (errors) =>
@@ -2132,6 +2193,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         this.implicitGlobalEvidenceCache,
         this.projectUsageCache,
         this.setupFailureCache,
+        this.typeOracle,
         this.vendorModuleBuilder,
         this.completeRouteInventoryCache,
       ],

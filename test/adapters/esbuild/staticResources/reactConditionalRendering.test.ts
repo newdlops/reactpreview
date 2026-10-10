@@ -15,6 +15,52 @@ function readRenderConditionCalls(transformed: string): readonly string[] {
 }
 
 describe('React conditional rendering instrumentation', () => {
+  /** An error view beside the page content does not make that whole branch the placeholder. */
+  it('marks a multi-leaf branch as fallback only when every leaf is a fallback', () => {
+    const source = [
+      'export function Page({ phase, isError, data }) {',
+      '  return (',
+      '    <main>',
+      "      {phase !== 'idle' ? (",
+      '        <><div><SkeletonTable /></div></>',
+      '      ) : isError && data == null ? (',
+      '        <ErrorRetry />',
+      '      ) : (',
+      '        <><div><OrderTable /></div><Pagination /></>',
+      '      )}',
+      '      {ready ? <Content /> : busy ? <LoadingSpinner /> : <ErrorView />}',
+      '      {isLoading ? (',
+      '        <TableShell><SkeletonTable /></TableShell>',
+      '      ) : rows.length === 0 ? <EmptyCard /> : <TableShell>{rows.map((row) => <Row key={row.id} />)}</TableShell>}',
+      '    </main>',
+      '  );',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering('/workspace/src/Page.tsx', source);
+    // Each resolver call carries one metadata object; slice the source between consecutive calls.
+    const metadata = transformed
+      .split('.resolveRenderCondition')
+      .slice(1)
+      .map((text) => ({ expression: /"authoredExpression":"([^"]*)"/u.exec(text)?.[1], text }));
+    const phase = metadata.find((entry) => entry.expression === "phase !== 'idle'");
+    const ready = metadata.find((entry) => entry.expression === 'ready');
+
+    // Components inside a host wrapper name the branch; the error view beside the table does not
+    // make the content side a placeholder, so the skeleton side is the fallback.
+    expect(phase?.text).toContain('"truthyLabel":"<Fragment: div, SkeletonTable>"');
+    expect(phase?.text).toContain(
+      '"falsyLabel":"<ErrorRetry> | <Fragment: div, OrderTable, Pagination>"',
+    );
+    expect(phase?.text).toContain('"fallbackBranch":"truthy"');
+    // Every leaf of the falsy side is a fallback here, so it still marks that side.
+    expect(ready?.text).toContain('"fallbackBranch":"falsy"');
+    // A wrapper component is named by the component it wraps.
+    const loading = metadata.find((entry) => entry.expression === 'isLoading');
+    expect(loading?.text).toContain('"truthyLabel":"<TableShell: SkeletonTable>"');
+    expect(loading?.text).toContain('"fallbackBranch":"truthy"');
+  });
+
   /** Exposes logical-and visibility and both authored ternary branches through stable runtime calls. */
   it('instruments direct JSX conditions and records readable branch metadata', () => {
     const sourcePath = '/workspace/src/Page.tsx';
@@ -551,6 +597,35 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"expression":"<SignupPage> gate: !target"');
     expect(transformed).toContain('"requiresAuthoredState":true');
     expect(transformed).toContain('"targetBranch":"falsy"');
+  });
+
+  /** Forcing past an emptiness guard cannot create rows; it only reaches `points[0].date`. */
+  it('marks an emptiness guard whose collection elements are dereferenced later', () => {
+    const guarded = (guard: string, use: string): string =>
+      instrumentReactConditionalRendering(
+        '/workspace/UpliftGapChart.tsx',
+        [
+          'export function UpliftGapChart({ points }) {',
+          `  if (${guard}) return <div>empty</div>;`,
+          `  return <svg>${use}</svg>;`,
+          '}',
+        ].join('\n'),
+      );
+
+    for (const guard of ['points.length === 0', '!points.length', 'points.length < 1']) {
+      expect(guarded(guard, '{points[0].date}')).toContain('"requiresAuthoredState":true');
+    }
+    expect(guarded('points.length === 0', '{points.at(-1).date}')).toContain(
+      '"requiresAuthoredState":true',
+    );
+    // An empty list renders safely, and an optional read tolerates a missing element.
+    expect(guarded('points.length === 0', '{points.map((p) => p.date)}')).not.toContain(
+      'requiresAuthoredState',
+    );
+    expect(guarded('points.length === 0', '{points[0]?.date}')).not.toContain(
+      'requiresAuthoredState',
+    );
+    expect(guarded('rows.length === 0', '{points[0].date}')).not.toContain('requiresAuthoredState');
   });
 
   /** Retains the selected child identity when two early returns use the same shared wrapper. */

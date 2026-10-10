@@ -52,6 +52,8 @@ export interface PreviewCompilerWorkerTransport {
 
 /** Optional transport factory used to isolate Node worker construction in unit tests. */
 export interface PreviewCompilerWorkerClientOptions {
+  /** Global-storage directory for verified per-package-version adapter strategies. */
+  readonly adapterLearningRoot?: string;
   /** Extension-packaged production node_modules used to seed a compatible React runtime. */
   readonly bundledNodeModulesPath?: string;
   /** Creates one transport; omitted in production to use `node:worker_threads`. */
@@ -68,12 +70,24 @@ export interface PreviewCompilerWorkerClientOptions {
   readonly shutdownGraceMs?: number;
   /** Quiet period after which completed compiler caches are released to return memory to the OS. */
   readonly idleWorkerTimeoutMs?: number;
+  /**
+   * Old-generation heap cap for each compiler worker. Defaults to the frozen route isolation
+   * policy that validation campaigns record; interactive editor previews pass a larger value.
+   */
+  readonly maxOldGenerationSizeMb?: number;
+  /**
+   * Adds the operating system's certificate store to the worker's TLS roots for package
+   * downloads (VS Code `http.systemCertificates`). Defaults to true, matching VS Code.
+   */
+  readonly trustSystemCertificates?: boolean;
 }
 
 /** Serializable immutable bootstrap data delivered before the worker constructs its compiler. */
 export interface PreviewCompilerWorkerBootstrap {
+  readonly adapterLearningRoot?: string;
   readonly bundledNodeModulesPath?: string;
   readonly managedDependencyStoreRoot?: string;
+  readonly trustSystemCertificates?: boolean;
 }
 
 /** One unresolved compile request and its thread-local callback/cancellation ownership. */
@@ -139,10 +153,11 @@ class NodePreviewCompilerWorkerTransport implements PreviewCompilerWorkerTranspo
     workerPath: string,
     bootstrap: PreviewCompilerWorkerBootstrap,
     parentEnvironment: Readonly<NodeJS.ProcessEnv>,
+    maxOldGenerationSizeMb: number,
   ) {
     const workerOptions = createPreviewCompilerWorkerOptions(
       parentEnvironment,
-      PREVIEW_ROUTE_WORKER_OLD_GENERATION_LIMIT_MB,
+      maxOldGenerationSizeMb,
     );
     this.worker = new Worker(workerPath, {
       env: workerOptions.env,
@@ -398,6 +413,9 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
       new NodePreviewCompilerWorkerTransport(
         path.resolve(this.workerPath),
         {
+          ...(this.options.adapterLearningRoot === undefined
+            ? {}
+            : { adapterLearningRoot: path.resolve(this.options.adapterLearningRoot) }),
           ...(this.options.bundledNodeModulesPath === undefined
             ? {}
             : { bundledNodeModulesPath: path.resolve(this.options.bundledNodeModulesPath) }),
@@ -406,8 +424,10 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
             : {
                 managedDependencyStoreRoot: path.resolve(this.options.managedDependencyStoreRoot),
               }),
+          trustSystemCertificates: this.options.trustSystemCertificates !== false,
         },
         this.options.parentEnvironment ?? process.env,
+        this.options.maxOldGenerationSizeMb ?? PREVIEW_ROUTE_WORKER_OLD_GENERATION_LIMIT_MB,
       );
     this.transport = transport;
     transport.onMessage((message) => {

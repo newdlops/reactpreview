@@ -365,9 +365,9 @@ describe('Preview Inspector generated collection repair', () => {
       ['0.template', '0.template.endsWith()', '1()'],
     ) as [{ template: unknown }, unknown];
 
-    expect(draft).toEqual([{ template: 'template' }, '[Preview no-op function]']);
+    expect(draft).toEqual([{ template: 'Template' }, '[Preview no-op function]']);
     expect(typeof draft[0].template).toBe('string');
-    expect((draft[0].template as string).replace('-monorepo', '')).toBe('template');
+    expect((draft[0].template as string).replace('-monorepo', '')).toBe('Template');
   });
 
   /** Applies the same receiver constraint while the automatic hook fallback is first registered. */

@@ -23,16 +23,50 @@ function isPreviewInspectorNeuralSuccessVerificationPending(record) {
   return record?.provisionalSuccessfulPath !== undefined ||
     record?.successVerificationScheduled === true;
 }
-/** Selects the most exact, least invasive checkpoint that has not failed during restoration. */
+/**
+ * Reports a success sweep of the active corridor that is sampling an explored path or about to
+ * change one. Work that snapshots request state (the collection fill) waits, or it records an
+ * explored alternative as the page and skips the requests the restored path brings back. Sampling
+ * the first verified path is not busy: no alternative was tried yet, and waiting there only delays
+ * the sample rows past the point where the page is read.
+ */
+function isPreviewInspectorNeuralSuccessCollectionBusy() {
+  const state = typeof readPreviewInspectorNeuralAssistanceReachability === 'function'
+    ? readPreviewInspectorNeuralAssistanceReachability()
+    : undefined;
+  if (state === undefined || typeof createPreviewInspectorAutomaticNeuralAssistanceKey !== 'function') {
+    return false;
+  }
+  const record = previewInspectorSession.automaticNeuralAssistanceByKey?.get?.(
+    createPreviewInspectorAutomaticNeuralAssistanceKey(state),
+  );
+  if (record === undefined) return false;
+  // Once one path is verified, every later provisional path is an explored alternative.
+  const exploring = readPreviewInspectorNeuralSuccessfulPathCount(record) > 0;
+  return (exploring && isPreviewInspectorNeuralSuccessVerificationPending(record)) ||
+    record.scheduled === true ||
+    record.restoringSuccessfulPath === true;
+}
+/**
+ * Selects the most exact, least invasive checkpoint that has not failed during restoration.
+ * Within one output tier, fewer forced JSX branches win before smaller generated values: a forced
+ * branch changes what the page shows (another tab, an opened modal), while value size only
+ * reflects which responses had arrived when the checkpoint was taken.
+ */
 function selectPreviewInspectorBestNeuralSuccessfulPath(record) {
   const failed = record.failedSuccessRestorations instanceof Set
     ? record.failedSuccessRestorations
     : new Set();
+  const tierOf = (candidate) => Number.isFinite(candidate.tier) ? candidate.tier : candidate.score;
+  const forcedOf = (candidate) => Array.isArray(candidate.conditionEntries)
+    ? candidate.conditionEntries.length
+    : 0;
   return [...(Array.isArray(record.successfulPaths) ? record.successfulPaths : [])]
     .filter((candidate) => !failed.has(candidate.fingerprint))
     .sort((left, right) =>
       Number(right.temporalState?.kind === 'terminal-stable') -
         Number(left.temporalState?.kind === 'terminal-stable') ||
+        tierOf(right) - tierOf(left) || forcedOf(left) - forcedOf(right) ||
         right.score - left.score || left.observedAt - right.observedAt ||
         left.fingerprint.localeCompare(right.fingerprint))[0];
 }
@@ -304,7 +338,7 @@ function isPreviewInspectorNeuralSuccessSnapshotVisible(state, snapshot) {
     : state.targetHasOutput === true;
   if (!visible) return false;
   const current = createPreviewInspectorNeuralSuccessSnapshot(state);
-  return current?.fingerprint === snapshot.fingerprint;
+  return isPreviewInspectorNeuralSuccessSnapshotCompatible(current, snapshot);
 }
 /** Clears one untrained candidate marker when its exact viewer state was abandoned. */
 function clearPreviewInspectorNeuralProvisionalSuccess(record) {

@@ -180,7 +180,7 @@ describe('PreviewInspectorNeuralModelStore', () => {
     });
     const store = new PreviewInspectorNeuralModelStore(
       { get: (key) => values.get(key), update },
-      { debug: vi.fn() },
+      { debug: vi.fn(), info: vi.fn() },
     );
     const condition = requireModel({
       heads: { condition: createHead(4, 0.4) },
@@ -220,7 +220,7 @@ describe('PreviewInspectorNeuralModelStore', () => {
     });
     const store = new PreviewInspectorNeuralModelStore(
       { get: (key) => values.get(key), update },
-      { debug: vi.fn() },
+      { debug: vi.fn(), info: vi.fn() },
     );
 
     const shared = await store.synchronize(createEmptyPreviewInspectorNeuralModel());

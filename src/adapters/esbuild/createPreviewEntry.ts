@@ -25,6 +25,7 @@ import {
   PREVIEW_CONTEXT_SPECIFIER,
   PREVIEW_DRAG_DROP_SPECIFIER,
   PREVIEW_FORMIK_SPECIFIER,
+  PREVIEW_REACT_QUERY_SPECIFIER,
   PREVIEW_REDUX_SPECIFIER,
   PREVIEW_ROUTER_SPECIFIER,
   PREVIEW_SETUP_SPECIFIER,
@@ -91,7 +92,14 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const encodedContextSpecifier = JSON.stringify(PREVIEW_CONTEXT_SPECIFIER);
   const encodedDragDropSpecifier = JSON.stringify(PREVIEW_DRAG_DROP_SPECIFIER);
   const encodedFormikSpecifier = JSON.stringify(PREVIEW_FORMIK_SPECIFIER);
+  const encodedReactQuerySpecifier = JSON.stringify(PREVIEW_REACT_QUERY_SPECIFIER);
   const encodedReduxSpecifier = JSON.stringify(PREVIEW_REDUX_SPECIFIER);
+  // Page Inspector data edits re-render without remounting authored components, so the Query
+  // boundary observes the data revision and invalidates its cached queries instead.
+  const reactQueryFreshnessSource =
+    renderMode === 'page-inspector'
+      ? 'readDataRevision: () => previewInspectorSession.dataRevision ?? 0,\n    subscribeDataRevision: subscribePreviewInspector,'
+      : '';
   const encodedRouterSpecifier = JSON.stringify(PREVIEW_ROUTER_SPECIFIER);
   const encodedSetupSpecifier = JSON.stringify(PREVIEW_SETUP_SPECIFIER);
   const encodedStyleSheetManagerSpecifier = JSON.stringify(PREVIEW_STYLE_SHEET_MANAGER_SPECIFIER);
@@ -652,6 +660,7 @@ async function preparePreviewElement() {
     contextBridge,
     dragDropBridge,
     formikBridge,
+    reactQueryBridge,
     reduxBridge,
     routerBridge,
     themeBridge,
@@ -664,6 +673,7 @@ async function preparePreviewElement() {
     tagPreviewRuntimePhase(import(${encodedContextSpecifier}), 'load automatic Context bridge'),
     tagPreviewRuntimePhase(import(${encodedDragDropSpecifier}), 'load automatic drag-and-drop bridge'),
     tagPreviewRuntimePhase(import(${encodedFormikSpecifier}), 'load automatic Formik bridge'),
+    tagPreviewRuntimePhase(import(${encodedReactQuerySpecifier}), 'load automatic React Query bridge'),
     tagPreviewRuntimePhase(import(${encodedReduxSpecifier}), 'load automatic Redux bridge'),
     tagPreviewRuntimePhase(import(${encodedRouterSpecifier}), 'load automatic Router bridge'),
     tagPreviewRuntimePhase(import(${encodedThemeSpecifier}), 'load automatic Theme bridge'),
@@ -686,6 +696,7 @@ async function preparePreviewElement() {
   registerPreviewRuntimeCapability('Context', contextBridge);
   registerPreviewRuntimeCapability('Drag and drop', dragDropBridge);
   registerPreviewRuntimeCapability('Formik', formikBridge);
+  registerPreviewRuntimeCapability('React Query', reactQueryBridge);
   registerPreviewRuntimeCapability('Redux', reduxBridge);
   registerPreviewRuntimeCapability('Router', routerBridge);
   registerPreviewRuntimeCapability('Theme', themeBridge);
@@ -781,6 +792,13 @@ async function preparePreviewElement() {
   enterRuntimePhase('compose static Apollo boundary');
   previewElement = apolloBridge.createApolloPreviewElement(previewElement, {
     configuration: readSetupMember(setupModule, 'apolloPreview'),
+    ...setupContext,
+  });
+
+  enterRuntimePhase('compose memory-only React Query boundary');
+  previewElement = reactQueryBridge.createReactQueryPreviewElement(previewElement, {
+    configuration: readSetupMember(setupModule, 'reactQueryPreview'),
+    ${reactQueryFreshnessSource}
     ...setupContext,
   });
 

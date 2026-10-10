@@ -22,7 +22,13 @@ import {
   type PreviewReactRenderTerminalEvidence,
 } from './previewReactRenderTerminal';
 import { createPreviewReactOverlayActivationReplacements } from './previewReactOverlayActivation';
+import {
+  readPreviewEarlyReturnBranchRoles,
+  registerPreviewSelectedTargetNames,
+} from './previewSelectedTargetExit';
 import { instrumentReactArrayIndexRendering } from './reactArrayIndexRendering';
+import { isReactConditionLocalStateBound } from './reactConditionStateBinding';
+import { isPreviewReactEmptyCollectionSafetyGuard } from './reactEmptyCollectionGuard';
 import { instrumentReactSwitchRendering } from './reactSwitchRendering';
 
 const MAX_CONDITIONS_PER_MODULE = 128;
@@ -103,12 +109,16 @@ interface ReactConditionalRenderMetadata {
   readonly role?: 'navigation' | 'overlay';
   /** Serializable scalar logic whose value can be checked against one learned hook-state choice. */
   readonly scalarExpression?: ReactConditionalScalarExpression;
+  /** Set when the condition reads only its component's own useState/useReducer values. */
+  readonly stateBound?: true;
   /** Whether continuing requires an authored state transition instead of a Boolean branch override. */
   readonly requiresAuthoredState?: true;
   /** Whether a one-sided terminal throw must be bypassed before the selected page can commit. */
   readonly synchronousContinuation?: true;
   /** Branch that continues toward the selected descendant after an early render exit. */
   readonly targetBranch?: 'falsy' | 'truthy';
+  /** Set when the returned branch itself renders the selected target at a proven occurrence. */
+  readonly targetBranchEvidence?: 'selected-target';
   /** Label rendered when the condition resolves true. */
   readonly truthyLabel: string;
 }
@@ -163,6 +173,7 @@ export function instrumentReactConditionalRendering(
   sourcePath: string,
   sourceText: string,
   definitionRegistrations?: string[],
+  selectedTargetNames?: ReadonlySet<string>,
 ): string {
   if (!isJavaScriptLikeSource(sourcePath)) return sourceText;
   if (!mayContainReactRenderSyntax(sourceText)) {
@@ -188,7 +199,7 @@ export function instrumentReactConditionalRendering(
   if (hasParseDiagnostics(sourceFile)) {
     return switchInstrumentedSource;
   }
-
+  registerPreviewSelectedTargetNames(sourceFile, selectedTargetNames);
   const candidates = collectConditionalRenderCandidates(
     sourceFile,
     collectReactDomPortalBindings(sourceFile),
@@ -399,8 +410,11 @@ function collectEarlyReturnGateCandidate(
     };
   }
   const returnedBranch = thenRender !== undefined || thenThrows ? 'truthy' : 'falsy';
-  const targetBranch = returnedBranch === 'truthy' ? 'falsy' : 'truthy';
-  const requiresAuthoredState = isPreviewReactContinuationSafetyGuard(statement, returnedBranch);
+  const roles = readPreviewEarlyReturnBranchRoles(statement, returnedBranch);
+  const requiresAuthoredState =
+    roles.continuesPastExit &&
+    (isPreviewReactContinuationSafetyGuard(statement, returnedBranch) ||
+      isPreviewReactEmptyCollectionSafetyGuard(statement, returnedBranch));
   const thrownBranch = returnedBranch === 'truthy' ? thenThrows : elseThrows;
   const returnedLabel = thrownBranch
     ? 'thrown error'
@@ -411,14 +425,17 @@ function collectEarlyReturnGateCandidate(
     condition: statement.expression,
     expressionLabel: `<${ownerName}> gate: ${statement.expression.getText(sourceFile)}`,
     metadata: {
-      fallbackBranch: returnedBranch,
+      fallbackBranch: roles.fallbackBranch,
       falsyLabel: returnedBranch === 'falsy' ? returnedLabel : continuationLabel,
       kind: 'early-return',
       ownerName,
       ...(role === undefined ? {} : { role }),
       ...(requiresAuthoredState ? { requiresAuthoredState: true as const } : {}),
-      ...(thrownBranch ? { synchronousContinuation: true as const } : {}),
-      targetBranch,
+      ...(thrownBranch && roles.continuesPastExit
+        ? { synchronousContinuation: true as const }
+        : {}),
+      targetBranch: roles.targetBranch,
+      ...(roles.continuesPastExit ? {} : { targetBranchEvidence: 'selected-target' as const }),
       truthyLabel: returnedBranch === 'truthy' ? returnedLabel : continuationLabel,
     },
   };
@@ -993,6 +1010,7 @@ function createConditionalRenderReplacement(
     line: location.line + 1,
     ...(runtimeOwnerName === undefined ? {} : { ownerName: runtimeOwnerName }),
     ...(scalarExpression === undefined ? {} : { scalarExpression }),
+    ...(isReactConditionLocalStateBound(candidate.condition) ? { stateBound: true } : {}),
     sourcePath: path.normalize(sourcePath),
     ...candidate.metadata,
     ...(candidate.metadata.kind === 'overlay-visibility' && runtimeOwnerName !== undefined
@@ -1306,6 +1324,10 @@ function describeJsxFragment(fragment: ts.JsxFragment, sourceFile: ts.SourceFile
       continue;
     }
     componentNames.push(boundMetadataText(tagName));
+    // A host wrapper (`<div><SkeletonTable /></div>`) hides the component that defines the branch.
+    if (ts.isJsxElement(child) && /^[a-z]/u.test(tagName)) {
+      collectJsxLayoutComponentNames(child, sourceFile, componentNames, 1);
+    }
   }
   return componentNames.length === 0 ? '<Fragment>' : `<Fragment: ${componentNames.join(', ')}>`;
 }
@@ -1346,12 +1368,12 @@ function describeJsxRenderExpression(expression: ts.Expression, sourceFile: ts.S
   }
   if (ts.isJsxElement(unwrapped)) {
     const tagName = boundMetadataText(unwrapped.openingElement.tagName.getText(sourceFile));
-    if (/^[a-z]/u.test(tagName)) {
-      const componentNames: string[] = [];
-      collectJsxLayoutComponentNames(unwrapped, sourceFile, componentNames);
-      if (componentNames.length > 0) {
-        return boundMetadataText(`<${tagName}: ${componentNames.join(', ')}>`);
-      }
+    // A wrapper component (`<TableShell><SkeletonTable /></TableShell>`) is named by what it wraps
+    // as well; otherwise a loading branch and the content branch carry the same opaque label.
+    const componentNames: string[] = [];
+    collectJsxLayoutComponentNames(unwrapped, sourceFile, componentNames);
+    if (componentNames.length > 0) {
+      return boundMetadataText(`<${tagName}: ${componentNames.join(', ')}>`);
     }
     return `<${tagName}>`;
   }
@@ -1389,11 +1411,20 @@ function inferFallbackBranch(
   return { fallbackBranch: truthyFallback ? 'truthy' : 'falsy' };
 }
 
-/** Recognizes common authored fallback component names without assigning project-specific meaning. */
+/**
+ * Recognizes common authored fallback component names without assigning project-specific meaning.
+ * A branch with several terminals (`error ? <ErrorRetry/> : <Table/>`) is labeled with every leaf
+ * joined by ' | '; it is a fallback only when every leaf is, or the page content beside an error
+ * view would be classified as the placeholder and target search would open the other branch.
+ */
 function isFallbackBranchLabel(label: string): boolean {
-  return /fallback|empty|error|loading|placeholder|skeleton|spinner|no[-_ ]?data|log[-_ ]?in|sign[-_ ]?in|unauthori[sz]ed|forbidden|access[-_ ]?denied|navigate|redirect/iu.test(
-    label,
-  );
+  return label
+    .split(' | ')
+    .every((leaf) =>
+      /fallback|empty|error|loading|placeholder|skeleton|spinner|no[-_ ]?data|log[-_ ]?in|sign[-_ ]?in|unauthori[sz]ed|forbidden|access[-_ ]?denied|navigate|redirect/iu.test(
+        leaf,
+      ),
+    );
 }
 
 /** Recognizes an exact router navigation component label already proven as returned React output. */

@@ -128,6 +128,73 @@ describe('createPreviewTailwindPlugin', () => {
     expect(result.warnings).toEqual([]);
   });
 
+  /** Supplies the project theme as data and drops only an @apply class Tailwind cannot build. */
+  it('reads the legacy configuration statically and recovers from unknown @apply classes', async () => {
+    const projectRoot = await createProject('tailwind-v3-config-');
+    const stylesheetPath = path.join(projectRoot, 'src/index.css');
+    await mkdir(path.dirname(stylesheetPath), { recursive: true });
+    await Promise.all([
+      writeFile(
+        stylesheetPath,
+        '@tailwind utilities;\n.card { @apply plugin-only-utility p-2; }',
+        'utf8',
+      ),
+      writeFile(
+        path.join(projectRoot, 'tailwind.config.js'),
+        [
+          'globalThis.__previewTailwindPluginConfigExecuted = true;',
+          'module.exports = {',
+          "  theme: { extend: { colors: { s400: '#5f6b7a' } } },",
+          "  plugins: [require('@tailwindcss/forms')],",
+          '};',
+        ].join('\n'),
+        'utf8',
+      ),
+      installFakePostcss(projectRoot),
+      installFakeLegacyTailwind(projectRoot),
+    ]);
+
+    const result = await buildStylesheet(projectRoot, stylesheetPath);
+    const css = readCssOutput(result);
+
+    expect(css).toContain('color: #5f6b7a;');
+    expect(css).toContain('@apply p-2;');
+    expect(css).not.toContain('plugin-only-utility');
+    expect(result.warnings.map((warning) => warning.text)).toEqual([
+      'React Preview removed @apply classes Tailwind could not generate so the rest of the stylesheet compiles: plugin-only-utility',
+      'React Preview read the Tailwind configuration as data and skipped values that are not plain data: config.plugins',
+    ]);
+    expect(Reflect.get(globalThis, '__previewTailwindPluginConfigExecuted')).toBeUndefined();
+  });
+
+  /** Leaves remote web-font imports external instead of refusing the whole stylesheet. */
+  it('compiles a stylesheet that imports a remote web-font stylesheet', async () => {
+    const projectRoot = await createProject('tailwind-v3-font-import-');
+    const stylesheetPath = path.join(projectRoot, 'src/index.css');
+    await mkdir(path.dirname(stylesheetPath), { recursive: true });
+    await Promise.all([
+      writeFile(
+        stylesheetPath,
+        [
+          '@import url("https://fonts.googleapis.com/css2?family=Inter&display=swap");',
+          '@tailwind utilities;',
+        ].join('\n'),
+        'utf8',
+      ),
+      installFakePostcss(projectRoot),
+      installFakeLegacyTailwind(projectRoot),
+    ]);
+
+    const result = await buildStylesheet(projectRoot, stylesheetPath);
+    const css = readCssOutput(result);
+
+    expect(css).toContain('.legacy-safe-baseline');
+    expect(css).toContain('https://fonts.googleapis.com/css2?family=Inter&display=swap');
+    expect(result.warnings.map((warning) => warning.text)).not.toContainEqual(
+      expect.stringContaining('could not be safely inspected'),
+    );
+  });
+
   /** Retains authored CSS and emits one concrete warning when no optional adapter is installed. */
   it('fails softly when the Tailwind compiler is unavailable', async () => {
     const projectRoot = await createProject('tailwind-missing-');
@@ -592,9 +659,12 @@ async function installFakeLegacyTailwind(projectRoot: string): Promise<void> {
       path.join(packageRoot, 'index.js'),
       [
         'module.exports = (configuration) => ({',
-        '  transform: async () => {',
+        '  transform: async (source) => {',
+        '    if (/@apply[^;]*plugin-only-utility/.test(source)) throw new Error("The `plugin-only-utility` class does not exist.");',
         '    const raw = configuration.content.some((entry) => typeof entry === "object" && entry.raw.includes("legacy-dirty"));',
-        '    return { css: `.legacy-safe-baseline,.raw-snapshot-${raw} { display: block; }`, messages: [] };',
+        '    const theme = configuration.theme?.extend?.colors?.s400;',
+        '    const authored = source.replace(/@tailwind[^;]*;/g, "");',
+        '    return { css: `.legacy-safe-baseline,.raw-snapshot-${raw} { display: block; }\\n.theme-s400 { color: ${theme}; }\\n${authored}`, messages: [] };',
         '  },',
         '});',
       ].join('\n'),

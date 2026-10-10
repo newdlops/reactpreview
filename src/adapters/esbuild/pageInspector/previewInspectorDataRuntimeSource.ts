@@ -7,10 +7,15 @@
  */
 import { createPreviewInspectorGraphqlShapeRuntimeSource } from './previewInspectorGraphqlShapeRuntimeSource';
 import { createPreviewInspectorDataBooleanRuntimeSource } from './previewInspectorDataBooleanRuntimeSource';
+import { createPreviewInspectorDataSampleDateRuntimeSource } from './previewInspectorDataSampleDateRuntimeSource';
+import { PREVIEW_DATE_RANGE_ENDPOINT_PATTERN } from '../previewDateRangeEndpoint';
+import { createPreviewSampleLabelRuntimeSource } from '../previewSampleLabel';
 import { createPreviewInspectorDataIdentityRuntimeSource } from './previewInspectorDataIdentityRuntimeSource';
 import { createPreviewInspectorDataReachabilityRuntimeSource } from './previewInspectorDataReachabilityRuntimeSource';
 import { createPreviewInspectorFetchResponseRuntimeSource } from './previewInspectorFetchResponseRuntimeSource';
+import { createPreviewInspectorRestCollectionFillRuntimeSource } from './previewInspectorRestCollectionFillRuntimeSource';
 import { createPreviewInspectorVirtualBackendRuntimeSource } from './previewInspectorVirtualBackendRuntimeSource';
+import { createPreviewInspectorTypedRestRuntimeSource } from './previewInspectorTypedRestRuntimeSource';
 import { createPreviewInspectorXmlHttpRequestRuntimeSource } from './previewInspectorXmlHttpRequestRuntimeSource';
 
 /**
@@ -29,10 +34,16 @@ export function createPreviewInspectorDataRuntimeSource(): string {
   const fetchResponseRuntimeSource = createPreviewInspectorFetchResponseRuntimeSource();
   const virtualBackendRuntimeSource = createPreviewInspectorVirtualBackendRuntimeSource();
   const xmlHttpRequestRuntimeSource = createPreviewInspectorXmlHttpRequestRuntimeSource();
+  const typedRestRuntimeSource = createPreviewInspectorTypedRestRuntimeSource();
   return String.raw`
 ${graphqlShapeRuntimeSource}
 
+${typedRestRuntimeSource}
+${createPreviewInspectorRestCollectionFillRuntimeSource()}
+
 ${booleanRuntimeSource}
+${createPreviewInspectorDataSampleDateRuntimeSource()}
+${createPreviewSampleLabelRuntimeSource('previewInspectorDataSampleLabel')}
 
 ${identityRuntimeSource}
 
@@ -281,8 +292,7 @@ function looksLikePreviewInspectorCollection(fieldName) {
  * Extremely long schema keys are truncated because their purpose is provenance, not layout stress.
  */
 function createPreviewInspectorCompactKeyText(fieldName) {
-  const key = String(fieldName).trim() || 'value';
-  return key.length <= 32 ? key : key.slice(0, 31) + '…';
+  return previewInspectorDataSampleLabel(fieldName, 'Value');
 }
 
 /** Produces deterministic type-correct text rather than random data that changes on every remount. */
@@ -295,8 +305,9 @@ function createPreviewInspectorStringValue(fieldName, mode, itemIndex) {
   if (name.includes('email')) return 'preview' + suffix + '@example.com';
   if (name.includes('phone') || name.includes('tel')) return '010-0000-000' + itemIndex;
   if (/(date|time|timestamp|createdat|updatedat|deletedat)$/u.test(name)) {
-    return '2026-01-' + String(15 + Math.min(itemIndex, 9)).padStart(2, '0') + 'T09:00:00.000Z';
+    return createPreviewInspectorSampleDateTime(Math.min(itemIndex, 9));
   }
+  if (${PREVIEW_DATE_RANGE_ENDPOINT_PATTERN}.test(String(fieldName))) return previewInspectorSampleDates.day(Math.min(itemIndex, 9));
   if (/^(avatar|image|photo|picture|thumbnail)(url|uri|href|src)$/u.test(name)) return '';
   if (/(url|uri|href|link)$/u.test(name)) return 'https://example.com/preview/' + suffix;
   if (mode === 'lorem') {
@@ -309,7 +320,7 @@ function createPreviewInspectorStringValue(fieldName, mode, itemIndex) {
   }
   if (/(status|state)$/u.test(name)) return 'ACTIVE';
   if (/(type|kind|code)$/u.test(name)) return 'PREVIEW';
-  return keyText;
+  return mode === 'corridor-rows-item' && itemIndex > 0 ? keyText + ' ' + suffix : keyText;
 }
 
 /** Keeps additive aggregates neutral while retaining useful positive samples for other numbers. */
@@ -322,22 +333,22 @@ function createPreviewInspectorNumberValue(fieldName, itemIndex) {
 /** Materializes one payload from an already-normalized shape without repeating tree validation. */
 function materializePreviewInspectorDataValue(shape, fieldName, mode, itemIndex, depth) {
   if (depth > PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT) return null;
-  if (shape.kind === 'literal') return shape.value;
+  if (shape.kind === 'literal') return rebasePreviewInspectorSampleDate(shape.value);
   if (shape.kind === 'array') {
     // An unknown item has no proven fields, so expose only neutral objects. Corridor Auto remains
     // empty to avoid activating unrelated siblings during the initial page pass; once a request is
     // deliberately selected by Smart/Lorem, a bounded item lets map/render traversal discover the
     // next concrete requirement without inventing truthy flags, enum values, or backend identity.
+    // Verified post-reach rows ("corridor-rows") fill only outer typed lists; rows stay corridor.
+    const itemMode = mode === 'corridor-rows' ? 'corridor-rows-item' : mode;
     if (shape.items?.kind === 'unknown') {
-      const indexes = createPreviewInspectorDataItemIndexes(mode);
-      return indexes.map(() => ({}));
+      return createPreviewInspectorDataItemIndexes(itemMode).map(() => ({}));
     }
     // Initial authored-page traversal keeps lists empty so unrelated dashboard siblings cannot
     // execute enum switches before target reachability is known. The incremental Smart frontier
     // adds one typed item for a selected request; ordinary gallery Auto and Lorem retain samples.
-    const indexes = createPreviewInspectorDataItemIndexes(mode);
-    return indexes.map((index) =>
-      materializePreviewInspectorDataValue(shape.items, fieldName, mode, index, depth + 1),
+    return createPreviewInspectorDataItemIndexes(mode).map((index) =>
+      materializePreviewInspectorDataValue(shape.items, fieldName, itemMode, index, depth + 1),
     );
   }
   if (shape.kind === 'object') {
@@ -364,7 +375,7 @@ function materializePreviewInspectorDataValue(shape, fieldName, mode, itemIndex,
 
 /** Keeps corridor traversal empty and Smart minimal while making ordinary samples configurable. */
 function createPreviewInspectorDataItemIndexes(mode) {
-  if (mode === 'corridor-auto') return [];
+  if (mode === 'corridor-auto' || mode === 'corridor-rows-item') return [];
   if (mode === 'smart') return [0];
   return Array.from({ length: readPreviewGeneratedListSampleCount() }, (_, index) => index);
 }
@@ -440,20 +451,31 @@ function normalizePreviewInspectorDataRequest(metadata, seedPayload) {
   const id = typeof source.id === 'string' && source.id.length > 0
     ? source.id.slice(0, 160)
     : createPreviewInspectorRuntimeRequestId(kind, method, safeUrl || label);
-  const suppliedShape = source.shape !== undefined
-    ? normalizePreviewInspectorDataShape(source.shape)
-    : inferPreviewInspectorDataShape(seedPayload);
+  // An imported client instance or a generic helper (\`fetchJson<T>(url)\`) registered the declared
+  // body at its call site; a compiler shape of \`unknown\` (\`as T\` inside the helper) carries no
+  // evidence and must not hide that registration.
+  const compilerShapeKnown = source.shape !== undefined && source.shape?.kind !== 'unknown';
+  const typedRestShape = kind === 'rest' && !compilerShapeKnown
+    ? readPreviewInspectorTypedRestShape(method, safeUrl)
+    : undefined;
+  const suppliedShape = typedRestShape !== undefined
+    ? normalizePreviewInspectorDataShape(typedRestShape)
+    : source.shape !== undefined
+      ? normalizePreviewInspectorDataShape(source.shape)
+      : inferPreviewInspectorDataShape(seedPayload);
   const emptySeedObject = seedPayload !== null && typeof seedPayload === 'object' &&
     !Array.isArray(seedPayload) && Object.keys(seedPayload).length === 0;
   const shape = suppliedShape.kind === 'unknown' ||
-    (kind === 'rest' && source.shape === undefined && emptySeedObject)
+    (kind === 'rest' && !compilerShapeKnown && typedRestShape === undefined && emptySeedObject)
     ? inferPreviewInspectorEndpointShape({ label, url: safeUrl })
     : suppliedShape;
   return {
     column: Number.isSafeInteger(source.column) && source.column > 0 ? source.column : undefined,
-    evidence: typeof source.evidence === 'string'
-      ? source.evidence.slice(0, 240)
-      : kind === 'graphql'
+    evidence: typedRestShape !== undefined
+      ? 'Declared TypeScript response type of the request call'
+      : typeof source.evidence === 'string'
+        ? source.evidence.slice(0, 240)
+        : kind === 'graphql'
         ? 'GraphQL selection and field-name inference'
         : 'endpoint and field-name inference',
     graphqlSourceIdentity: typeof source.graphqlSourceIdentity === 'string'
@@ -532,11 +554,7 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
   const renderScenario = typeof readPreviewInspectorRenderScenario === 'function'
     ? readPreviewInspectorRenderScenario()
     : 'file-components';
-  const autoPayloadProfile =
-    renderScenario === 'authored-page' ||
-    typeof previewInspectorSession.activeTargetReachabilityKey === 'string'
-      ? 'corridor-auto'
-      : 'auto';
+  const autoPayloadProfile = readPreviewInspectorAutoPayloadProfile(normalized.id, renderScenario);
   // Auto and Corridor Auto intentionally materialize arrays differently. Include the profile in
   // the cache identity so opening/closing target traversal cannot reuse a broad gallery payload in
   // a guarded page corridor (or keep a corridor payload empty after returning to the gallery).
@@ -571,6 +589,7 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
     previous !== undefined &&
     (
       previous.autoPayloadProfile !== autoPayloadProfile ||
+      previous.shapeFingerprint !== shapeFingerprint ||
       stringifyPreviewInspectorProps(previous.renderedCollectionRecommendation) !==
         stringifyPreviewInspectorProps(renderedCollectionRecommendation)
     ) &&
@@ -583,9 +602,8 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
     clearPreviewInspectorVirtualBackendResource(normalized.id);
   }
   const payloadMode = override?.mode ?? (previewInspectorSession.dataAutoEnabled ? 'auto' : 'seed');
-  const selectedPayload = override?.payload ?? (previewInspectorSession.dataAutoEnabled
-    ? autoPayload
-    : seedPayload ?? {});
+  const selectedPayload = readPreviewInspectorRestCollectionFillPayload(normalized.id) ??
+    override?.payload ?? (previewInspectorSession.dataAutoEnabled ? autoPayload : seedPayload ?? {});
   const backendResult = resolvePreviewInspectorVirtualBackendRequest(
     next,
     selectedPayload,
@@ -839,25 +857,25 @@ function completePreviewInspectorDataSmartPayload(authored, generated, depth = 0
 }
 
 /** Stores one bounded payload override without scheduling a page remount for batch callers. */
-function applyPreviewInspectorDataPayloadOverride(requestId, payload, mode) {
+function applyPreviewInspectorDataPayloadOverride(requestId, payload, mode, automatic = false) {
   initializePreviewInspectorDataState();
   if (!previewInspectorSession.dataRequests.has(requestId)) return false;
   if (!['custom', 'lorem', 'smart', 'smart-custom'].includes(mode)) return false;
   previewInspectorSession.dataPayloadOverrides.set(requestId, {
-    mode,
+    mode, ...(automatic === true && mode === 'smart' ? { automatic: true } : {}),
     payload: JSON.parse(stringifyPreviewInspectorProps(payload)),
   });
   return true;
 }
 
-/** Stores an explicitly generated or user-authored payload for one observed request. */
-function setPreviewInspectorDataPayload(requestId, payload, mode = 'custom') {
-  if (!applyPreviewInspectorDataPayloadOverride(requestId, payload, mode)) return;
+/** Stores a generated or user-authored payload; Auto writers mark minimum Smart rows as automatic. */
+function setPreviewInspectorDataPayload(requestId, payload, mode = 'custom', automatic = false) {
+  if (!applyPreviewInspectorDataPayloadOverride(requestId, payload, mode, automatic)) return;
   commitPreviewInspectorDataChange();
 }
 
-/** Applies only inferred response fields and one item per list to cross a backend-data blocker. */
-function smartFillPreviewInspectorDataPayload(requestId) {
+/** Applies inferred fields and one item per list to cross a backend-data blocker (Auto or user). */
+function smartFillPreviewInspectorDataPayload(requestId, automatic = false) {
   initializePreviewInspectorDataState();
   const record = previewInspectorSession.dataRequests.get(requestId);
   if (record === undefined) return false;
@@ -893,7 +911,7 @@ function smartFillPreviewInspectorDataPayload(requestId) {
   setPreviewInspectorDataPayload(
     requestId,
     selectedPayload,
-    retainUserPayload ? 'smart-custom' : 'smart',
+    retainUserPayload ? 'smart-custom' : 'smart', automatic,
   );
   return true;
 }

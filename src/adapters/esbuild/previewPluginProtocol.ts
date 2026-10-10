@@ -52,6 +52,12 @@ export const PREVIEW_APOLLO_BRIDGE_NAMESPACE = 'react-preview-apollo-bridge';
 /** Stable virtual import specifier used to load the no-network Apollo boundary. */
 export const PREVIEW_APOLLO_SPECIFIER = 'react-preview:apollo';
 
+/** Namespace used by the optional, project-owned TanStack/React Query runtime bridge. */
+export const PREVIEW_REACT_QUERY_BRIDGE_NAMESPACE = 'react-preview-react-query-bridge';
+
+/** Stable virtual import specifier used to load the memory-only QueryClient boundary. */
+export const PREVIEW_REACT_QUERY_SPECIFIER = 'react-preview:react-query';
+
 /** Namespace used by the optional, project-owned React Redux runtime bridge. */
 export const PREVIEW_REDUX_BRIDGE_NAMESPACE = 'react-preview-redux-bridge';
 
@@ -126,6 +132,7 @@ export function isFileBackedPreviewNamespace(namespace: string): boolean {
     namespace === PREVIEW_DATA_URL_NAMESPACE ||
     namespace === PREVIEW_SNAPSHOT_NAMESPACE ||
     namespace === PREVIEW_APOLLO_BRIDGE_NAMESPACE ||
+    namespace === PREVIEW_REACT_QUERY_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_REDUX_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_FORMIK_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_YARN_LIBUI_BRIDGE_NAMESPACE ||

@@ -2,6 +2,8 @@
  * Generates the browser adapter that applies statically proven project document attributes.
  * Application markup is never copied into the webview; values are JSON-encoded and applied through
  * DOM APIs before setup or target modules load, preserving CSS selector and root-layout contracts.
+ * HTTPS stylesheets linked by the project document (web fonts) become owned `<link>` elements
+ * only when the webview CSP admits them.
  */
 import type { PreviewDocumentShell, PreviewDocumentShellAttribute } from './previewDocumentShell';
 
@@ -26,6 +28,7 @@ const previewPortalHostIds = ${encodedPortalHostIds};
 const previewDocumentShellStateKey = Symbol.for('newdlops.react-file-preview.document-shell');
 const previewPortalHostMarker = 'data-react-preview-portal-host';
 const previewPortalHostOwner = 'newdlops.react-file-preview';
+const previewDocumentStylesheetMarker = 'data-react-preview-document-stylesheet';
 
 /** Applies one static attribute set while retaining project-added class tokens across hot revisions. */
 function applyPreviewDocumentAttributes(element, attributes, previousAttributes) {
@@ -62,13 +65,62 @@ function applyPreviewDocumentAttributes(element, attributes, previousAttributes)
 /** Restores selector-relevant HTML shell evidence before any project module can read the document. */
 function initializePreviewDocumentShell(mountNode) {
   const previous = globalThis[previewDocumentShellStateKey] ?? {
-    bodyAttributes: [], htmlAttributes: [], rootAttributes: [], portalHosts: [],
+    bodyAttributes: [], htmlAttributes: [], rootAttributes: [], portalHosts: [], stylesheets: [],
   };
   applyPreviewDocumentAttributes(document.documentElement, previewDocumentShell.htmlAttributes, previous.htmlAttributes);
   applyPreviewDocumentAttributes(document.body, previewDocumentShell.bodyAttributes, previous.bodyAttributes);
   applyPreviewDocumentAttributes(mountNode, previewDocumentShell.rootAttributes, previous.rootAttributes);
   const portalHosts = initializePreviewPortalHosts(previous.portalHosts ?? []);
-  globalThis[previewDocumentShellStateKey] = { ...previewDocumentShell, portalHosts };
+  const stylesheets = initializePreviewDocumentStylesheets(previous.stylesheets ?? []);
+  globalThis[previewDocumentShellStateKey] = { ...previewDocumentShell, portalHosts, stylesheets };
+}
+
+/** Reports whether the webview CSP admits HTTPS stylesheets; the user setting can remove them. */
+function allowsPreviewRemoteStylesheets() {
+  const policy = document.querySelector?.('meta[http-equiv="Content-Security-Policy"]')
+    ?.getAttribute?.('content') ?? '';
+  const directive = policy.split(';').map((part) => part.trim())
+    .find((part) => part.startsWith('style-src '));
+  return directive !== undefined && directive.split(/\\s+/u).includes('https:');
+}
+
+/**
+ * Links project HTTPS stylesheets ahead of the bundle stylesheet, as the app's own document does,
+ * and reconciles only links this adapter created across hot revisions.
+ */
+function initializePreviewDocumentStylesheets(previousRecords) {
+  const head = document.head;
+  if (head === null || head === undefined) return [];
+  const nextLinks = Array.isArray(previewDocumentShell.stylesheetLinks) &&
+    allowsPreviewRemoteStylesheets()
+    ? previewDocumentShell.stylesheetLinks
+    : [];
+  const retained = [];
+  for (const record of Array.isArray(previousRecords) ? previousRecords : []) {
+    const element = record?.element;
+    if (element?.getAttribute?.(previewDocumentStylesheetMarker) !== previewPortalHostOwner) continue;
+    if (nextLinks.includes(record.href) && element.isConnected === true) {
+      retained.push(record);
+      continue;
+    }
+    element.remove?.();
+  }
+  const anchor = [...(head.querySelectorAll?.('link[rel~="stylesheet"]') ?? [])].find(
+    (link) => link.getAttribute?.(previewDocumentStylesheetMarker) === null,
+  );
+  for (const href of nextLinks) {
+    if (retained.some((record) => record.href === href)) continue;
+    const link = document.createElement?.('link');
+    if (link === undefined || link === null) continue;
+    link.setAttribute?.('rel', 'stylesheet');
+    link.setAttribute?.('href', href);
+    link.setAttribute?.('referrerpolicy', 'no-referrer');
+    link.setAttribute?.(previewDocumentStylesheetMarker, previewPortalHostOwner);
+    if (anchor === undefined) head.append?.(link);
+    else head.insertBefore?.(link, anchor);
+    retained.push({ element: link, href });
+  }
+  return retained;
 }
 
 /**

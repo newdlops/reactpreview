@@ -22,11 +22,13 @@ import {
   collectPreviewTailwindSnapshotSources,
   scanPreviewTailwindInlineCandidates,
 } from './previewTailwindCandidates';
-import {
-  loadPreviewTailwindImplementation,
-  type PreviewPostcssMessage,
-  type PreviewTailwindImplementation,
+import type { PreviewAdapterStrategyLearner } from './previewAdapterStrategyLearner';
+import { processPreviewTailwindWithApplyRecovery } from './previewTailwindApplyRecovery';
+import type {
+  PreviewPostcssMessage,
+  PreviewTailwindImplementation,
 } from './previewTailwindImplementation';
+import { selectPreviewTailwindImplementation } from './previewTailwindStrategySelection';
 import {
   createPreviewWorkspacePackageResolver,
   type PreviewWorkspacePackageResolver,
@@ -87,6 +89,8 @@ interface PreviewTailwindImportFallback {
 
 /** Trusted roots and live dirty-source access used by one persistent esbuild context. */
 export interface PreviewTailwindPluginOptions {
+  /** Persistent learner that verifies and remembers the compile strategy per package version. */
+  readonly adapterStrategyLearner?: PreviewAdapterStrategyLearner;
   /** Disables package-wide v4 scans after a complete page corridor supplied bounded sources. */
   readonly boundedSourceDiscovery?: boolean;
   /** Immutable managed-store package roots used only after ordinary project resolution misses. */
@@ -128,7 +132,10 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
       (hint) => `${canonicalizeExistingPath(hint.sourcePath)}\0${hint.moduleSpecifier}`,
     ),
   );
-  const implementationByStyleRoot = new Map<string, PreviewTailwindImplementation>();
+  const implementationByStyleRoot = new Map<
+    string,
+    Promise<PreviewTailwindImplementation | undefined>
+  >();
   const processingQueueByStyleRoot = new Map<string, Promise<void>>();
   const workspacePackageResolver = createPreviewWorkspacePackageResolver(workspaceRoot);
   return {
@@ -186,13 +193,19 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
         const unadmittedUnresolvedImports = importPreflight.unresolvedRootImports.filter(
           (moduleSpecifier) => !admittedUnresolvedImports.has(moduleSpecifier),
         );
-        let implementation = implementationByStyleRoot.get(styleRoot);
-        if (implementation === undefined) {
-          implementation = loadPreviewTailwindImplementation(styleRoot, fallbackNodeModulesPaths);
-          if (implementation !== undefined) {
-            implementationByStyleRoot.set(styleRoot, implementation);
-          }
+        let selection = implementationByStyleRoot.get(styleRoot);
+        if (selection === undefined) {
+          selection = selectPreviewTailwindImplementation(
+            styleRoot,
+            fallbackNodeModulesPaths,
+            workspaceRoot,
+            options.adapterStrategyLearner,
+          );
+          implementationByStyleRoot.set(styleRoot, selection);
         }
+        const implementation = await selection;
+        // Managed acquisition may install a compiler later; retry instead of caching the miss.
+        if (implementation === undefined) implementationByStyleRoot.delete(styleRoot);
         const requiredCompilerPackage = options.requiredCompilerPackage;
         if (
           requiredCompilerPackage !== undefined &&
@@ -256,11 +269,13 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
           workspaceRoot,
         );
         const inlineCandidates =
-          implementation.kind === 'v4' && implementation.Scanner !== undefined
+          implementation.kind === 'v4' &&
+          implementation.inlineSources !== false &&
+          implementation.Scanner !== undefined
             ? scanPreviewTailwindInlineCandidates(implementation.Scanner, snapshots)
             : [];
         const processorSource = rewriteWorkspaceCssImportFallbacks(
-          boundedSource,
+          implementation.inlineSources === false ? executableDirectives.source : boundedSource,
           sourcePath,
           styleRoot,
           workspaceRoot,
@@ -276,9 +291,15 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
           // Esbuild may load sibling CSS files concurrently. Tailwind v4 reuses one processor per
           // package root, while each run may allocate a large candidate graph. Serializing only
           // this processor boundary bounds peak memory without blocking unrelated packages.
-          const result = await runPreviewSerialWork(processingQueueByStyleRoot, styleRoot, () =>
-            implementation.createProcessor(snapshots).process(processorInput, { from: sourcePath }),
+          const { removedClasses, result } = await runPreviewSerialWork(
+            processingQueueByStyleRoot,
+            styleRoot,
+            () =>
+              processPreviewTailwindWithApplyRecovery(processorInput, (input) =>
+                implementation.createProcessor(snapshots).process(input, { from: sourcePath }),
+              ),
           );
+          const configEvidence = implementation.readConfigEvidence?.();
           if (result.css.trim().length === 0 && source.trim().length > 0) {
             return createFailSoftResult(
               source,
@@ -298,19 +319,23 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
             contents: result.css,
             loader,
             resolveDir: path.dirname(sourcePath),
-            warnings: executableDirectives.omitted
-              ? [
-                  {
-                    text: 'React Preview omitted direct Tailwind @plugin/@config execution while compiling the remaining bounded application styles.',
-                  },
-                ]
-              : [],
+            warnings: [
+              ...(executableDirectives.omitted
+                ? [
+                    {
+                      text: 'React Preview omitted direct Tailwind @plugin/@config execution while compiling the remaining bounded application styles.',
+                    },
+                  ]
+                : []),
+              ...describeTailwindRecoveryWarnings(removedClasses, configEvidence?.skipped ?? []),
+            ],
             watchDirs: [...evidence.watchDirectories],
-            watchFiles: [...evidence.dependencyPaths],
+            watchFiles: [...evidence.dependencyPaths, ...(configEvidence?.dependencyPaths ?? [])],
           };
         } catch (error) {
+          // An unresolvable `@import "tailwindcss"` would fail the whole build; drop only that rule.
           return createFailSoftResult(
-            source,
+            omitUnresolvedTailwindRootImports(source, sourcePath).source,
             sourcePath,
             loader,
             `Tailwind compilation failed and the original stylesheet was retained: ${describeTailwindError(error)}`,
@@ -405,6 +430,29 @@ function findPreviewCssStringEnd(source: string, start: number, quote: string): 
     if (source[index] === quote) return index + 1;
   }
   return source.length;
+}
+
+/** Reports classes dropped from `@apply` and configuration values that were not plain data. */
+function describeTailwindRecoveryWarnings(
+  removedClasses: readonly string[],
+  skippedConfigKeys: readonly string[],
+): { readonly text: string }[] {
+  return [
+    ...(removedClasses.length === 0
+      ? []
+      : [
+          {
+            text: `React Preview removed @apply classes Tailwind could not generate so the rest of the stylesheet compiles: ${removedClasses.join(', ')}`,
+          },
+        ]),
+    ...(skippedConfigKeys.length === 0
+      ? []
+      : [
+          {
+            text: `React Preview read the Tailwind configuration as data and skipped values that are not plain data: ${skippedConfigKeys.slice(0, 12).join(', ')}`,
+          },
+        ]),
+  ];
 }
 
 /** Emits ordinary missing-package diagnostics so the existing lock-backed recovery can cooperate. */
@@ -593,6 +641,8 @@ function preflightCssImports(
         }
       }
       if (specifier === 'tailwindcss' || specifier.startsWith('tailwindcss/')) continue;
+      // Web-font and CDN stylesheets stay external; the browser loads them like the app does.
+      if (/^(?:(?:https?:)?\/\/|data:)/iu.test(specifier)) continue;
       const importedPath = resolveImportedCssPath(
         specifier,
         current.sourcePath,

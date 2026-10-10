@@ -10,10 +10,18 @@ import {
   PreviewBuildStalledError,
 } from '../../domain/previewBuildExecution';
 import { convertMessage, describeUnknownError, isBuildFailure } from './previewBuildResult';
-import type { PreviewDependencyResolutionHintPlan } from './previewMissingDependencyRequirements';
+import {
+  mergePreviewDependencyResolutionHintPlans,
+  type PreviewDependencyResolutionHintPlan,
+} from './previewMissingDependencyRequirements';
 
 /** Failure inputs kept outside the compiler's successful build orchestration. */
 export interface ResolvePreviewCompilerFailureOptions {
+  /**
+   * Contracts the failed build already applied (from its preflight). The retry skips the preflight,
+   * so it keeps them; otherwise acquiring another package would undo an applied contract.
+   */
+  readonly appliedHints?: PreviewDependencyResolutionHintPlan | undefined;
   readonly error: unknown;
   readonly buildSignal: AbortSignal;
   readonly dependencyAcquisitionAttempted: boolean;
@@ -44,7 +52,11 @@ export async function resolvePreviewCompilerFailure(
   }
   if (!options.dependencyAcquisitionAttempted && isBuildFailure(error)) {
     const hints = await options.tryAcquireMissingDependencies(error.errors);
-    if (hints !== undefined) return options.retryCompilation(hints);
+    if (hints !== undefined) {
+      return options.retryCompilation(
+        mergePreviewDependencyResolutionHintPlans(options.appliedHints, hints),
+      );
+    }
   }
   if (error instanceof PreviewCompilationError) throw error;
   const diagnostics: readonly PreviewDiagnostic[] = isBuildFailure(error)

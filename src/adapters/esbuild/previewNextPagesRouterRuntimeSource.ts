@@ -7,6 +7,7 @@
  * already-selected webview location and never starts a server, performs a fetch, or leaves the
  * current preview origin.
  */
+import type { PreviewNextI18nConfig } from './previewNextConfigI18n';
 
 /**
  * Creates the self-contained `next/router` replacement bundled into a preview artifact.
@@ -15,9 +16,12 @@
  * candidate location lazily. Navigation methods accept only local paths and update in-memory
  * browser history so ordinary click handlers remain inspectable without reaching a backend.
  *
+ * @param i18n Literal `i18n` routing settings from the project's Next config, when present.
  * @returns JavaScript module source with the common Pages Router public exports.
  */
-export function createPreviewNextPagesRouterRuntimeSource(): string {
+export function createPreviewNextPagesRouterRuntimeSource(i18n?: PreviewNextI18nConfig): string {
+  const locale = i18n === undefined ? 'undefined' : JSON.stringify(i18n.defaultLocale);
+  const locales = i18n === undefined ? 'undefined' : JSON.stringify(i18n.locales);
   return `
 import * as React from 'react';
 import { RouterContext } from 'next/dist/shared/lib/router-context.shared-runtime';
@@ -194,7 +198,7 @@ const previewRouter = {
   basePath: '',
   beforePopState() {},
   back() { globalThis.history?.back?.(); },
-  defaultLocale: undefined,
+  defaultLocale: ${locale},
   domainLocales: undefined,
   events,
   forward() { globalThis.history?.forward?.(); },
@@ -202,8 +206,8 @@ const previewRouter = {
   isLocaleDomain: false,
   isPreview: false,
   isReady: true,
-  locale: undefined,
-  locales: undefined,
+  locale: ${locale},
+  locales: ${locales},
   prefetch: async () => undefined,
   push(value, as, options) { return navigate('pushState', as ?? value, options); },
   ready(callback) { if (typeof callback === 'function') callback(); },

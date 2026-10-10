@@ -42,6 +42,10 @@ import { collectPreviewReduxStateContainerPaths } from './reduxStateContainerPat
 import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGlobals';
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
 import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
+import { createPreviewRuntimeHookTypedCallResolver } from './previewRuntimeHookTypedFallback';
+import { createPreviewTypedResponseShapeResolver } from './previewTypedResponseShape';
+import { createPreviewTypedModuleRegistrations } from './previewTypedModuleRegistrations';
+import { createPreviewTypedGuardReplacements } from './previewTypedGuardReplacements';
 import { PreviewRuntimeHookChildPropDemandCatalogBuilder } from './previewRuntimeHookChildPropDemand';
 import {
   createPreviewGraphqlRenderPropUsageReplacements,
@@ -49,6 +53,7 @@ import {
 } from './previewGraphqlRenderPropUsageInstrumentation';
 import * as framework from './previewFrameworkReplacements';
 import { instrumentPreviewRuntimeSource } from './previewRuntimeSourceInstrumentation';
+import { readPreviewSelectedTargetNamesForSource } from './previewSelectedTargetExit';
 import { instrumentPreviewLocalTargetExportBindings } from './previewLocalTargetExportInstrumentation';
 import { createPreviewGraphqlFragmentValueReplacements } from './previewGraphqlFragmentValueInstrumentation';
 import { PreviewGraphqlDocumentInstrumentation } from './previewGraphqlDocumentInstrumentation';
@@ -164,6 +169,12 @@ export class PreviewSourceTransformer {
     sourcePath: string,
     sourceText: string,
   ): Promise<PreviewSourceTransformResult> {
+    // Read before framework rewrites move the compiler-measured target occurrence offsets.
+    const selectedTargetNames = readPreviewSelectedTargetNamesForSource(
+      this.options.selectedTargetOccurrences,
+      sourcePath,
+      sourceText,
+    );
     const previewOwnedSource = isPreviewOwnedSourcePath(
       this.options.workspaceRoot,
       this.options.documentPath,
@@ -189,7 +200,14 @@ export class PreviewSourceTransformer {
     }
     const initialWatchDirectories = new Set(this.watchDirectories);
     if (canPassThroughPreviewDependency(sourcePath, sourceText, this.options)) {
-      return { contents: sourceText, watchDirectories: [] };
+      // An API module passes through unchanged but still registers its declared response types.
+      const typedRegistrations = previewOwnedSource
+        ? createPreviewTypedModuleRegistrations(this.options.typeOracle, sourcePath, sourceText)
+        : [];
+      return {
+        contents: appendPreviewSourceImports(sourceText, typedRegistrations),
+        watchDirectories: [],
+      };
     }
     const replacements: PreviewSourceReplacement[] = [];
     const generatedImports: string[] = [];
@@ -319,6 +337,8 @@ export class PreviewSourceTransformer {
             sourcePath,
             sourceText,
           ),
+          createPreviewRuntimeHookTypedCallResolver(this.options.typeOracle, sourcePath),
+          selectedTargetNames,
         );
         replacements.push(...contextHookFallback.replacements);
         const contextRegistrations = createContextRegistrationStatements(
@@ -357,6 +377,8 @@ export class PreviewSourceTransformer {
               sourcePath,
               sourceText,
             ),
+            createPreviewRuntimeHookTypedCallResolver(this.options.typeOracle, sourcePath),
+            selectedTargetNames,
           ),
         );
       }
@@ -465,13 +487,36 @@ export class PreviewSourceTransformer {
       }
     }
 
+    if (
+      previewOwnedSource &&
+      this.options.instrumentRenderConditions === true &&
+      this.options.typeOracle !== undefined
+    ) {
+      // Last, so identifier reads never displace a broader compatibility rewrite.
+      const typedGuards = createPreviewTypedGuardReplacements(
+        sourcePath,
+        sourceText,
+        this.options.typeOracle,
+        allocate,
+        replacements,
+      );
+      replacements.push(...typedGuards.replacements);
+      generatedImports.push(
+        ...typedGuards.declarations,
+        ...createPreviewTypedModuleRegistrations(this.options.typeOracle, sourcePath, sourceText),
+      );
+    }
     const compatibilitySource = applyPreviewSourceReplacements(
       sourceText,
       selectCompatiblePreviewSourceReplacements(replacements),
     );
     const dataBoundarySource =
       previewOwnedSource && this.options.instrumentDataRequests === true
-        ? instrumentPreviewDataRequests(sourcePath, compatibilitySource)
+        ? instrumentPreviewDataRequests(
+            sourcePath,
+            compatibilitySource,
+            createPreviewTypedResponseShapeResolver(this.options.typeOracle, sourcePath),
+          )
         : compatibilitySource;
     const localTargetSource = instrumentPreviewLocalTargetExportBindings(
       sourcePath,
@@ -485,6 +530,7 @@ export class PreviewSourceTransformer {
         (this.options.documentPath === undefined ||
           path.normalize(sourcePath) === path.normalize(this.options.documentPath)),
       renderConditions: previewOwnedSource && this.options.instrumentRenderConditions === true,
+      ...(selectedTargetNames === undefined ? {} : { selectedTargetNames }),
     });
     generatedImports.push(...runtimeSource.registrations);
     return {

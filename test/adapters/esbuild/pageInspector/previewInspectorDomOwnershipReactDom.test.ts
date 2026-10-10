@@ -78,7 +78,8 @@ for (const runtime of [
           '--user-data-dir=' + path.join(directory, 'chromium-profile'),
           'file://' + page,
         ],
-        { timeout: 30_000 },
+        // A hung headless Chromium can ignore SIGTERM; SIGKILL keeps a failed run from leaking it.
+        { killSignal: 'SIGKILL', timeout: 30_000 },
       );
       const result = /<output id="result">([^<]+)<\/output>/u.exec(stdout)?.[1];
       expect(result).toBeDefined();
@@ -109,7 +110,8 @@ for (const runtime of [
       expect(parsed.privateReleases).toBe(parsed.privateAttaches);
       expect(parsed.callbackRefWarning).toBe(false);
     },
-    30_000,
+    // Longer than the bundle step plus Chromium's own 30 s limit, so the kill always runs here.
+    60_000,
     );
   });
 }

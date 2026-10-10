@@ -8,12 +8,14 @@ import type { PreviewBuildRequest, PreviewSourceSnapshot } from '../../domain/pr
 import { getPreviewSourceLanguage } from '../../domain/previewTarget';
 import type { PreviewPreparationPolicy } from './previewPreparationPolicy';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import { collectPreviewApplicationStylesheetLinks } from './previewApplicationStylesheetLinks';
 import {
   selectPreviewApplicationStylesheetImports,
   type PreviewApplicationStylesheetImportSelection,
 } from './previewApplicationStylesheetSelection';
 import {
   discoverPreviewDocumentShell,
+  mergePreviewDocumentShellStylesheetLinks,
   type PreviewDocumentShellEvidence,
 } from './previewDocumentShell';
 import { discoverPreviewPortalHostIds } from './previewPortalHostDiscovery';
@@ -115,10 +117,11 @@ export async function preparePreviewStyleContext(
   ];
   const [
     themeImport,
-    documentShellEvidence,
+    htmlShellEvidence,
     globalStyleImports,
     applicationStylesheetImports,
     availability,
+    wrapperStylesheetLinks,
   ] = await Promise.all([
     options.directThemeImport ??
       (options.inspectorDependencyPaths.length === 0
@@ -144,9 +147,21 @@ export async function preparePreviewStyleContext(
       projectRoot: options.projectRoot,
       readSource: readProjectSource,
       ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
+      resolveModule: options.staticModuleResolver.resolve,
     }),
     availabilityPromise,
+    options.renderPath === undefined
+      ? undefined
+      : collectPreviewApplicationStylesheetLinks({
+          readSource: readProjectSource,
+          resolveModule: options.staticModuleResolver.resolve,
+          rootSourcePaths: options.renderPath.steps.map((step) => step.sourcePath),
+        }),
   ]);
+  const documentShellEvidence = mergePreviewDocumentShellStylesheetLinks(
+    htmlShellEvidence,
+    wrapperStylesheetLinks,
+  );
   const styledComponentsPlan = await selectPreviewStyleSheetManagerPlan({
     availability,
     ...(options.mountedRoot === undefined ? {} : { mountedRoot: options.mountedRoot }),

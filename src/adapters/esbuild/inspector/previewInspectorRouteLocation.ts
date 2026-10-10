@@ -33,6 +33,7 @@ import {
   type PreviewInspectorRouteFactoryOwnerEvidence,
 } from './previewInspectorRouteFactoryChoices';
 import { retainPreviewInspectorNestedRouteOwnerContext } from './previewInspectorNestedRouteOwnerContext';
+import { createPreviewInspectorEarlyReturnRoutePenalty } from './previewInspectorRouteEarlyReturn';
 import {
   addPreviewInspectorSupportingRoutePattern as addSupportingRoutePattern,
   isPreviewInspectorRootWildcardRoutePattern as isRootWildcardRoutePattern,
@@ -328,6 +329,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
       ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
     }),
     options.documentPath,
+    createPreviewInspectorEarlyReturnRoutePenalty(options.documentPath, targetText),
   );
   const contextualDirectResolution = materializeDirectRouteResolution(
     await resolvePreviewInspectorDirectRouteChoices({
@@ -701,6 +703,7 @@ function isTransparentRouteComponentCorridorProven(
 function materializeDirectRouteResolution(
   resolution: PreviewInspectorDirectRouteResolution,
   documentPath: string,
+  earlyReturnPenalty?: (choice: PreviewInspectorDirectRouteChoice) => number,
 ): {
   readonly duplicates: readonly DuplicateDirectRouteChoice[];
   readonly selectable: readonly ResolvedDirectRouteChoice[];
@@ -724,7 +727,8 @@ function materializeDirectRouteResolution(
       identityOrder: item.identityOrder,
       pattern: item.pattern,
       provenanceIdentity: item.provenanceIdentity,
-      scoreAdjustment: DIRECT_ROUTE_OCCURRENCE_EVIDENCE_BONUS,
+      scoreAdjustment:
+        DIRECT_ROUTE_OCCURRENCE_EVIDENCE_BONUS - (earlyReturnPenalty?.(item.choice) ?? 0),
       sourcePath: item.sourcePath,
     });
     return candidates[0];

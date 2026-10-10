@@ -239,6 +239,16 @@ describe('Inspector condition state clarity', () => {
     ).toContain(text);
   });
 
+  /** 'tab === "overview"' turned off by a forced members tab used to read "From page code". */
+  it('names the automatic branch whose value a condition follows', () => {
+    expect(
+      evaluate(scenarioSource, 'describePreviewInspectorJsxScenarioMode(scenario)', {
+        readPreviewInspectorConditionFixedBy: () => 'tab === "members" ON',
+        scenario: { id: 'overview' },
+      }),
+    ).toBe('Follows tab === "members" ON (same value)');
+  });
+
   it('shows a known OFF parent requirement without treating it as a timer', () => {
     const scenario = {
       id: 'child',

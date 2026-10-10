@@ -13,6 +13,11 @@ import { createHotReloadScriptUri } from '../../presentation/previewHotReloadPro
 import { createPreviewHtml } from '../../presentation/webview/previewHtml';
 import { planPreviewArtifactLayout } from '../vscode/previewArtifactLayout';
 import { PREVIEW_INSPECTOR_ROUTE_ERROR_PROBE_SYMBOL_KEY } from '../esbuild/inspector/previewInspectorRouteExecutionRuntimeSource';
+import type { PreviewInspectorNeuralModel } from '../../presentation/previewInspectorNeuralModelProtocol';
+import {
+  createPreviewHeadlessNeuralStateSource,
+  readPreviewHeadlessNeuralModel,
+} from './previewHeadlessNeuralModel';
 import { createPreviewManagedChildEnvironment } from './previewManagedChildEnvironment';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -202,6 +207,8 @@ export interface PreviewHeadlessResult {
   readonly cleanup: PreviewHeadlessCleanup;
   readonly diagnostics: readonly PreviewDiagnostic[];
   readonly evidence: PreviewHeadlessBrowserEvidence;
+  /** Model from the page's last neural synchronization, validated like host sync traffic. */
+  readonly neuralResidualModel?: PreviewInspectorNeuralModel;
   readonly protocolError?: string;
   readonly rootHtml: string;
   readonly runtimeErrorText?: string;
@@ -228,6 +235,10 @@ export interface PreviewHeadlessRendererOptions {
   readonly spawnProcess?: PreviewHeadlessSpawnProcess;
   readonly timeoutMs?: number;
   readonly virtualTimeMs?: number;
+  /** Mirrors the extension's HTTPS stylesheet setting; off keeps campaign runs network-free. */
+  readonly remoteStylesheets?: boolean;
+  /** Profile neural model restored before boot; offline pre-training carries it across pages. */
+  readonly neuralResidualModel?: PreviewInspectorNeuralModel;
   /** Bounded observational ownership telemetry; exceptions are deliberately ignored. */
   readonly reportOwnership?: (event: PreviewHeadlessOwnershipEvent) => void;
 }
@@ -270,6 +281,7 @@ interface BrowserBridgePayload {
     | 'requiredArtifactFailures'
     | 'runtimeEvents'
   >;
+  readonly neuralResidualModel?: unknown;
   readonly rootHtml: string;
   readonly runtimeErrorText?: string;
   readonly stabilization?: PreviewHeadlessStabilization;
@@ -371,6 +383,7 @@ export async function renderCompiledPreviewHeadlessly(
           revision,
           bindingName,
           request.renderMode === 'page-inspector',
+          options.neuralResidualModel,
         ),
       ),
       type: 'text/javascript; charset=utf-8',
@@ -392,6 +405,7 @@ export async function renderCompiledPreviewHeadlessly(
           ...(bundle.publicAssetRoot === undefined
             ? {}
             : { publicAssetBaseUri: `${origin}${HEADLESS_PUBLIC_ASSET_PREFIX}` }),
+          ...(options.remoteStylesheets === true ? { remoteStylesheets: true } : {}),
           ...(layout.moduleImports === undefined
             ? {}
             : {
@@ -725,6 +739,7 @@ export function createPreviewHeadlessBridgeSource(
   revision: number,
   bindingName: string,
   requireCompositionSnapshot = false,
+  neuralResidualModel?: PreviewInspectorNeuralModel,
 ): string {
   const stateName = `${bindingName}State`;
   return String.raw`
@@ -741,7 +756,8 @@ export function createPreviewHeadlessBridgeSource(
   const consoleFailures = [];
   const windowErrors = [];
   let evidenceTruncated = false;
-  let vscodeState;
+  let vscodeState = ${createPreviewHeadlessNeuralStateSource(neuralResidualModel)};
+  let latestNeuralModel;
   const bridgeState = {
     installed: true,
     messages,
@@ -750,6 +766,7 @@ export function createPreviewHeadlessBridgeSource(
     lastActivityAt: undefined,
     latestComposition: undefined,
     mountMutationCount: 0,
+    openRenderAttempts: new Set(),
     published: false,
     routerScopeTransition: undefined,
     snapshotCount: 0,
@@ -1114,13 +1131,13 @@ export function createPreviewHeadlessBridgeSource(
     // A file-only component has no Page Execution corridor or requirement-search lifecycle. Its
     // runtime-ready signal plus one quiet composition snapshot is already the complete contract.
     if (composition.pageExecutionFidelity === 'none') return false;
+    // An attempt's own start/settle events decide whether it is in flight. The snapshot copy can
+    // stay stale: snapshots are re-published only when their digest changes, and only corridor
+    // modes ever set the resume flags, so a settled data or neural attempt looked open forever.
+    if (bridgeState.openRenderAttempts.size > 0) return true;
     if (
       composition.targetAutoAttemptMode &&
-      (
-        composition.targetAutoAttemptSettled !== true ||
-        composition.targetAutoAttemptResumeScheduled === true ||
-        composition.targetAutoAttemptResumeHandled !== true
-      )
+      composition.targetAutoAttemptResumeScheduled === true
     ) return true;
     if (
       composition.targetStatus === 'settling-neural-render-state' ||
@@ -1141,6 +1158,7 @@ export function createPreviewHeadlessBridgeSource(
     const now = Date.now();
     const payload = {
       evidence: { consoleFailures, extensionMessages: messages, windowErrors },
+      neuralResidualModel: latestNeuralModel,
       rootHtml: readRenderedHtml(root, ${MAX_CAPTURE_BYTES.toString()}),
       runtimeErrorText: runtimeError?.textContent?.slice(0, maxText),
       stabilization: {
@@ -1206,6 +1224,7 @@ export function createPreviewHeadlessBridgeSource(
     getState: () => vscodeState,
     postMessage: (message) => {
       retain(messages, message);
+      if (message?.type === 'react-preview-neural-model-sync') latestNeuralModel = message.model;
       if (
         message?.type === 'react-preview-runtime-health' &&
         message?.runtimeRevision === expectedRevision
@@ -1233,6 +1252,12 @@ export function createPreviewHeadlessBridgeSource(
         ) {
           if (String(event ?? '').startsWith('runtime-error')) {
             bridgeState.structuredRuntimeError = true;
+          }
+          const traceId = message?.event?.detail?.traceId;
+          if (typeof traceId === 'string' && event === 'render-attempt-started') {
+            bridgeState.openRenderAttempts.add(traceId);
+          } else if (typeof traceId === 'string' && event === 'render-attempt-settled') {
+            bridgeState.openRenderAttempts.delete(traceId);
           }
           markActivity();
         }
@@ -1486,6 +1511,14 @@ async function executeChromiumWithCdp(
             .catch(() => undefined);
         }
       }
+      // VS Code webviews are sandboxed without `allow-modals`, so alert/confirm/prompt return at
+      // once there. An unanswered CDP dialog would instead freeze the page until the timeout.
+      if (message.method === 'Page.javascriptDialogOpening' && pageSessionId !== undefined) {
+        if (runtimeEvents.length < MAX_EVIDENCE_ITEMS) runtimeEvents.push(boundedJson(message));
+        void client
+          .request('Page.handleJavaScriptDialog', { accept: false }, pageSessionId)
+          .catch(() => undefined);
+      }
       if (message.method === 'Log.entryAdded') {
         const failure = classifyPreviewHeadlessNetworkFailure(
           message.params?.entry,
@@ -1655,6 +1688,7 @@ function readBrowserResult(
       requiredArtifactFailures: execution.requiredArtifactFailures,
       runtimeEvents: execution.runtimeEvents,
     };
+    const neuralResidualModel = readPreviewHeadlessNeuralModel(payload.neuralResidualModel);
     const requiredArtifactProtocolError =
       execution.requiredArtifactFailures.length === 0
         ? undefined
@@ -1664,6 +1698,7 @@ function readBrowserResult(
       ...(execution.exitSignal === null ? {} : { browserExitSignal: execution.exitSignal }),
       diagnostics,
       evidence,
+      ...(neuralResidualModel === undefined ? {} : { neuralResidualModel }),
       ...(requiredArtifactProtocolError === undefined
         ? {}
         : { protocolError: requiredArtifactProtocolError }),

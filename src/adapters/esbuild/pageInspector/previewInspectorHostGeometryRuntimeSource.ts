@@ -1,3 +1,5 @@
+import { createPreviewInspectorHostContainmentRuntimeSource } from './previewInspectorHostContainmentRuntimeSource';
+
 /** Generates the browser helper that distinguishes painted hosts from zero-size or clipped DOM. */
 export function createPreviewInspectorHostGeometryRuntimeSource(): string {
   return String.raw`
@@ -15,14 +17,20 @@ function isPreviewInspectorHostStyleVisible(style) {
   return !Number.isFinite(opacity) || opacity > 0;
 }
 
+${createPreviewInspectorHostContainmentRuntimeSource()}
 /**
  * Rejects connected hosts whose painted rectangle is empty or fully clipped by an overflow-hidden
  * ancestor. DOM ownership alone is insufficient for drawers that retain a resize handle at width
  * zero. Geometry is fail-open when a non-browser test host cannot provide layout information.
+ * Overflow clips only boxes it contains: a fixed modal escapes a clipping page section unless an
+ * ancestor between them creates its containing block, and an absolute box escapes until the
+ * nearest positioned ancestor (InventoryTimeline in SkuDetailModal was judged hidden this way).
  */
 function hasPreviewInspectorRenderableHostGeometry(node) {
   if (node?.nodeType !== 1 || node.hidden === true) return false;
-  if (!isPreviewInspectorHostStyleVisible(readPreviewInspectorHostStyle(node))) return false;
+  const nodeStyle = readPreviewInspectorHostStyle(node);
+  if (!isPreviewInspectorHostStyleVisible(nodeStyle)) return false;
+  let escape = readPreviewInspectorHostClipEscape(nodeStyle);
   if (typeof node.getBoundingClientRect !== 'function') return true;
   let rectangle;
   try { rectangle = node.getBoundingClientRect(); } catch { return true; }
@@ -38,8 +46,10 @@ function hasPreviewInspectorRenderableHostGeometry(node) {
     steps += 1;
     const style = readPreviewInspectorHostStyle(ancestor);
     if (!isPreviewInspectorHostStyleVisible(style)) return false;
-    const clipsX = /^(?:clip|hidden)$/u.test(String(style?.overflowX ?? style?.overflow ?? ''));
-    const clipsY = /^(?:clip|hidden)$/u.test(String(style?.overflowY ?? style?.overflow ?? ''));
+    const contains = containsPreviewInspectorEscapedHost(style, escape);
+    const clipsX = contains && /^(?:clip|hidden)$/u.test(String(style?.overflowX ?? style?.overflow ?? ''));
+    const clipsY = contains && /^(?:clip|hidden)$/u.test(String(style?.overflowY ?? style?.overflow ?? ''));
+    if (contains) escape = readPreviewInspectorHostClipEscape(style);
     if ((clipsX || clipsY) && typeof ancestor.getBoundingClientRect === 'function') {
       let ancestorRectangle;
       try { ancestorRectangle = ancestor.getBoundingClientRect(); } catch { ancestorRectangle = undefined; }

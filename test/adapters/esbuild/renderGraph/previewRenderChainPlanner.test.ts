@@ -726,4 +726,34 @@ describe('createPreviewRenderChainPlan', () => {
       'create-root entry',
     ]);
   });
+
+  /** A Next page whose only child is `dynamic(() => import(...))` renders that module like lazy. */
+  it('follows a component loaded through next/dynamic', async () => {
+    const mainImpl = `${ROOT}/MainImpl.tsx`;
+    const mainPage = `${ROOT}/Main.tsx`;
+    const sources = {
+      [mainImpl]: 'export default function MainImpl() { return <main />; }',
+      [mainPage]: [
+        "import dynamic from 'next/dynamic';",
+        "const MainImpl = dynamic(() => import('./MainImpl'), { ssr: false });",
+        'export default function Main() { return <MainImpl />; }',
+      ].join('\n'),
+      [ENTRY_PATH]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import Main from './Main';",
+        'createRoot(document.body).render(<Main />);',
+      ].join('\n'),
+    };
+    const fixture = createFixture(sources);
+
+    const plan = await createPreviewRenderChainPlan({
+      documentPath: mainImpl,
+      exportName: 'default',
+      ...fixture,
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.reachability).toBe('entry-connected');
+    expect(plan.paths[0]?.steps.map((step) => step.kind)).toContain('react-lazy');
+  });
 });

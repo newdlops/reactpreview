@@ -72,7 +72,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(2);
     expect(transformed).toContain('() => (false)');
     expect(transformed).toContain('"isStaffMode": false');
-    expect(transformed).toContain('"userName": "userName"');
+    expect(transformed).toContain('"userName": "User name"');
     expect(transformed).toContain('"refresh": Object.freeze(() => undefined)');
   });
 
@@ -168,6 +168,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"fallback": null');
     expect(transformed).toContain('"requiredPaths":["loading","data","fallback"]');
     expect(transformed).not.toContain('() => ("query")');
+    expect(transformed).not.toContain('() => ("Query")');
   });
 
   /** Keeps an aliased data property at its source query-result key beside flattened rest fields. */
@@ -212,7 +213,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"companyWithDeletionStatus": Object.freeze({');
     expect(transformed).toContain('"my": Object.freeze({ "role": Object.freeze({');
     expect(transformed).toContain('"hasOwnerAccess": true');
-    expect(transformed).toContain('"name": "name"');
+    expect(transformed).toContain('"name": "Name"');
     expect(transformed).toContain(
       '"requiredPaths":["data.companyWithDeletionStatus.my.role.hasOwnerAccess","data.companyWithDeletionStatus.name","data.companyWithDeletionStatus","loading"]',
     );
@@ -233,7 +234,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/Badge.tsx', source),
     );
 
-    expect(transformed).toContain('() => ("badge")');
+    expect(transformed).toContain('() => ("Badge")');
     expect(transformed).toContain('"fallbackLabel":"generated rendered key text"');
   });
 
@@ -416,7 +417,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     );
 
     expect(transformed).toContain(
-      '() => (Object.freeze({ "initialState": Object.freeze({ "search": "search" }) }))',
+      '() => (Object.freeze({ "initialState": Object.freeze({ "search": "Search" }) }))',
     );
     expect(transformed).toContain('"failurePaths":["initialState.search"]');
     expect(transformed).toContain('"fallbackLabel":"generated optional failure shape"');
@@ -653,10 +654,10 @@ describe('createPreviewRuntimeHookReplacements', () => {
     );
 
     expect(transformed).toContain(
-      'Object.freeze(Object.assign({}, Object.freeze({ "name": "name" }), Object.freeze({ "id": "preview-id", "my": Object.freeze({ "role": Object.freeze({ "hasOwnerAccess": true }) })',
+      'Object.freeze(Object.assign({}, Object.freeze({ "name": "Name" }), Object.freeze({ "id": "preview-id", "my": Object.freeze({ "role": Object.freeze({ "hasOwnerAccess": true }) })',
     );
     expect(transformed).toContain('"id": "preview-id"');
-    expect(transformed).toContain('"shortName": "shortName"');
+    expect(transformed).toContain('"shortName": "Short name"');
     expect(transformed).toContain('"companies.[].my.role.hasOwnerAccess"');
   });
 
@@ -680,7 +681,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     );
 
     expect(transformed).toContain('"data": Object.freeze({ "genres": ((__createPreviewItem)');
-    expect(transformed).toContain('() => ("genre")');
+    expect(transformed).toContain('() => ("Genre")');
     expect(transformed).toContain('"requiredPaths":["data","data.genres.map()","data.genres[]"]');
   });
 
@@ -747,8 +748,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
 
     expect(transformed).toContain('"timeSeconds": 0');
     expect(transformed).toContain('"failurePaths":["timeSeconds","day"]');
-    expect(transformed).toContain('() => ("pageLayoutState")');
-    expect(transformed).toContain('() => ("indicatorType")');
+    expect(transformed).toContain('() => ("Page layout state")');
+    expect(transformed).toContain('() => ("Indicator type")');
     expect(transformed).not.toContain('() => (State.Loading)');
     expect(transformed).not.toContain('() => (Type.OVERLAY)');
   });
@@ -922,8 +923,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/Topbar.tsx', source),
     );
 
-    expect(transformed).toContain('"shortName": "shortName"');
-    expect(transformed).toContain('"name": "name"');
+    expect(transformed).toContain('"shortName": "Short name"');
+    expect(transformed).toContain('"name": "Name"');
     expect(transformed).toContain('"subscription": Object.freeze({})');
     expect(transformed).toContain('"requiredPaths":["shortName","name","subscription"]');
   });
@@ -947,7 +948,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('() => (Object.freeze({');
     expect(transformed).toContain('"email": "preview@example.invalid"');
     expect(transformed).toContain('"id": "preview-id"');
-    expect(transformed).toContain('"name": "name"');
+    expect(transformed).toContain('"name": "Name"');
     expect(transformed).toContain('"requiredPaths":["[].id","[].name","[].email"]');
   });
 
@@ -977,11 +978,11 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/CarePlanTable.tsx', source),
     );
 
-    expect(transformed).toContain('"endDate": "2024-01-01T00:00:00.000Z"');
+    expect(transformed).toContain('"endDate": "2026-01-15T09:00:00.000Z"');
     expect(transformed).toContain('"id": "preview-id"');
-    expect(transformed).toContain('"startDate": "2024-01-01T00:00:00.000Z"');
+    expect(transformed).toContain('"startDate": "2026-01-15T09:00:00.000Z"');
     expect(transformed).toContain('"status": "PREVIEW"');
-    expect(transformed).toContain('"title": "title"');
+    expect(transformed).toContain('"title": "Title"');
     expect(transformed).toContain('data.[].startDate');
     expect(transformed).toContain('data.[].endDate');
   });
@@ -1015,9 +1016,9 @@ describe('createPreviewRuntimeHookReplacements', () => {
 
     expect(transformed).toContain('"totalCount": 1');
     expect(transformed).toContain('"patients": ((__createPreviewItem)');
-    expect(transformed).toContain('"code": "code"');
-    expect(transformed).toContain('"dateOfBirth": "2024-01-01T00:00:00.000Z"');
-    expect(transformed).toContain('"givenName": "givenName"');
+    expect(transformed).toContain('"code": "Code"');
+    expect(transformed).toContain('"dateOfBirth": "2026-01-15T09:00:00.000Z"');
+    expect(transformed).toContain('"givenName": "Given name"');
     expect(transformed).toContain('"id": "preview-id"');
     expect(transformed).toContain('"renderGuardPaths":["data.totalCount","status"]');
     expect(transformed).toContain('data.patients[].familyName');
@@ -1040,7 +1041,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     );
 
     expect(transformed).toContain('react-file-preview.generated-list-runtime');
-    expect(transformed).toContain('() => ("button")');
+    expect(transformed).toContain('() => ("Button")');
     expect(transformed).toContain('"requiredPaths":["[]"]');
     expect(transformed).not.toContain('Object.freeze({ id: "preview-id", name: "name" })');
   });
@@ -1179,13 +1180,39 @@ describe('createPreviewRuntimeHookReplacements', () => {
 
     expect(replacements).toHaveLength(2);
     expect(replacements[0]?.replacement).toContain('useQuery(DOCUMENT, queryOptions)');
-    expect(replacements[0]?.replacement).toContain('"data": "data"');
+    expect(replacements[0]?.replacement).toContain('"data": "Data"');
     expect(replacements[0]?.replacement).toContain(
       ', () => (DOCUMENT), () => (queryOptions), () => (useQuery))',
     );
     expect(replacements[0]?.replacement).not.toContain('useTheme()');
     expect(replacements[1]?.replacement).toContain('useAppContext()');
-    expect(replacements[1]?.replacement).toContain('"user": Object.freeze({ "name": "name" })');
+    expect(replacements[1]?.replacement).toContain('"user": Object.freeze({ "name": "Name" })');
+  });
+
+  /**
+   * Values read only inside untagged template strings are text, so they get key labels instead of
+   * `{}` ("[object Object]") or nothing ("undefined차"); tagged templates keep their values.
+   */
+  it('fills template-interpolated hook values with text labels', () => {
+    const source = [
+      `import { gql } from '@apollo/client';`,
+      `import { useAppContext } from 'legal/app/app-context';`,
+      'export function Summary() {',
+      '  const { round, vehicle, fragment } = useAppContext();',
+      '  const QUERY = gql`query Summary { ...${fragment} }`;',
+      "  const columns = [{ key: 'round', cell: `${round}차` }];",
+      '  return <p title={columns[0].cell}>{`${vehicle.model} ∙ ${vehicle.licensePlate}`}</p>;',
+      '}',
+    ].join('\n');
+
+    const replacement = createPreviewRuntimeHookReplacements('/workspace/Summary.tsx', source)[0]
+      ?.replacement;
+
+    expect(replacement).toContain('"round": "Round"');
+    expect(replacement).toContain(
+      '"vehicle": Object.freeze({ "licensePlate": "License plate", "model": "Model" })',
+    );
+    expect(replacement).not.toContain('"fragment": "Fragment"');
   });
 
   /** Supplies an inert fragment carrier when an unbridged project Context exposes GraphQL data. */
@@ -1251,7 +1278,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     );
 
     expect(transformed).toContain('useField("name")');
-    expect(transformed).toContain('"value": "value"');
+    expect(transformed).toContain('"value": "Value"');
     expect(transformed).toContain('"touched": false');
     expect(transformed).toContain('"setValue": Object.freeze(() => undefined)');
   });
@@ -1306,7 +1333,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
 
     expect(replacements).toHaveLength(1);
     expect(replacements[0]?.replacement).toContain('useRemoteThing()');
-    expect(replacements[0]?.replacement).toContain('"name": "name"');
+    expect(replacements[0]?.replacement).toContain('"name": "Name"');
   });
 
   /** Treats String prototype calls as receiver evidence instead of generating callable properties. */
@@ -1443,7 +1470,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('() => (React.useContext(CompanyContext))');
     expect(transformed).toContain('undefined, undefined, () => (AppContext)');
     expect(transformed).toContain('undefined, undefined, () => (CompanyContext)');
-    expect(transformed).toContain('"user": Object.freeze({ "name": "name" })');
+    expect(transformed).toContain('"user": Object.freeze({ "name": "Name" })');
     expect(transformed).not.toContain('() => (useMemo(');
     expect(transformed).not.toContain('() => (React.useMemo(');
   });

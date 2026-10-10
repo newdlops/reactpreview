@@ -9,8 +9,12 @@ import path from 'node:path';
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { PREVIEW_NODE_BUILTIN_NAMESPACE } from './previewPluginProtocol';
 import { createPreviewNodeEventsRuntimeSource } from './previewNodeEventsRuntimeSource';
+import { createPreviewNodeModuleRuntimeSource } from './previewNodeModuleRuntimeSource';
+import { createPreviewNodeOsRuntimeSource } from './previewNodeOsRuntimeSource';
+import { createPreviewNodeProcessRuntimeSource } from './previewNodeProcessRuntimeSource';
 import { createPreviewNodeFsRuntimeSource } from './previewNodeFsRuntimeSource';
 import { createPreviewNodePathRuntimeSource } from './previewNodePathRuntimeSource';
+import { createPreviewNodeUrlRuntimeSource } from './previewNodeUrlRuntimeSource';
 
 /** Bare built-in names accepted with or without Node's explicit `node:` prefix. */
 const NODE_BUILTIN_NAMES = new Set(
@@ -22,6 +26,17 @@ const NODE_BUILTIN_FILTER = new RegExp(
   `^(?:node:)?(?:${[...NODE_BUILTIN_NAMES].map(escapeRegularExpression).join('|')})$`,
 );
 const PREVIEW_NODE_BUILTIN_RESOLVE_MARKER = 'reactPreviewNodeBuiltinResolve';
+/**
+ * Webpack-style mocks for the CommonJS path globals. Server packages reached through shared
+ * modules read them while evaluating (`__nccwpck_require__.ab = __dirname + "/"`), which throws
+ * in a browser before any component renders.
+ */
+export const PREVIEW_NODE_PATH_GLOBAL_DEFINES = Object.freeze({
+  __dirname: '"/"',
+  __filename: '"/index.js"',
+});
+/** Compiled Node addons, which esbuild has no loader for and a browser can never execute. */
+const NATIVE_ADDON_FILTER = /\.node$/;
 
 /**
  * Creates the browser boundary for optional Node-only dependencies.
@@ -107,42 +122,72 @@ export function createPreviewNodeBuiltinPlugin(): Plugin {
             loader: 'js',
           };
         }
-        const encodedModuleName = JSON.stringify(arguments_.path);
-        const encodedExportNames = JSON.stringify(
-          await readNodeBuiltinExportNames(arguments_.path, exportNamesByModule),
-        );
+        if (arguments_.path === 'url') {
+          return { contents: createPreviewNodeUrlRuntimeSource(), loader: 'js' };
+        }
+        if (arguments_.path === 'os') {
+          return { contents: createPreviewNodeOsRuntimeSource(), loader: 'js' };
+        }
+        if (arguments_.path === 'module') {
+          return { contents: createPreviewNodeModuleRuntimeSource(), loader: 'js' };
+        }
+        if (arguments_.path === 'process') {
+          return { contents: createPreviewNodeProcessRuntimeSource(), loader: 'js' };
+        }
         return {
-          contents: [
-            `const moduleName = ${encodedModuleName};`,
-            `const exportNames = ${encodedExportNames};`,
-            'let neutral;',
-            'const callable = function previewNodeBuiltinNeutralValue() { return undefined; };',
-            'neutral = new Proxy(callable, {',
-            '  get(_target, property) {',
-            "    if (property === '__esModule') return false;",
-            "    if (property === 'then') return undefined;",
-            "    if (property === Symbol.toStringTag) return 'ReactPreviewNodeBuiltinShim';",
-            '    if (property === Symbol.toPrimitive) return () => 0;',
-            '    if (Reflect.has(_target, property)) return Reflect.get(_target, property);',
-            '    return neutral;',
-            '  },',
-            '});',
-            'for (const exportName of exportNames) {',
-            '  if (!Object.hasOwn(callable, exportName)) {',
-            '    Object.defineProperty(callable, exportName, { configurable: true, enumerable: true, value: neutral, writable: true });',
-            '  }',
-            '}',
-            "console.warn('[React Preview] Node built-in ' + moduleName + ' is unavailable in the browser preview; calls return neutral values.');",
-            'module.exports = neutral;',
-          ].join('\n'),
+          contents: createNeutralModuleSource(
+            `Node built-in ${arguments_.path}`,
+            await readNodeBuiltinExportNames(arguments_.path, exportNamesByModule),
+          ),
           loader: 'js',
         };
       }
 
       build.onResolve({ filter: NODE_BUILTIN_FILTER }, resolveNodeBuiltin);
       build.onLoad({ filter: /.*/, namespace: PREVIEW_NODE_BUILTIN_NAMESPACE }, loadNodeBuiltin);
+      /*
+       * Server-only packages (ONNX runtimes, image codecs) reach a page graph through shared
+       * modules and `require` native bindings, often through a platform template that makes
+       * esbuild include every prebuilt binary. Each becomes the same neutral namespace instead of
+       * failing the whole build; code that would call into it never runs in a rendered page.
+       */
+      build.onLoad({ filter: NATIVE_ADDON_FILTER, namespace: 'file' }, (arguments_) => ({
+        contents: createNeutralModuleSource(`Native addon ${path.basename(arguments_.path)}`, []),
+        loader: 'js',
+      }));
     },
   };
+}
+
+/**
+ * Generates a CommonJS module whose namespace answers every property with a callable neutral
+ * value. Unmodified calls return `undefined`; export-shaped properties stay writable data
+ * properties so legacy packages can still assign methods onto inherited exports.
+ */
+function createNeutralModuleSource(label: string, exportNames: readonly string[]): string {
+  return [
+    `const label = ${JSON.stringify(label)};`,
+    `const exportNames = ${JSON.stringify(exportNames)};`,
+    'let neutral;',
+    'const callable = function previewNodeBuiltinNeutralValue() { return undefined; };',
+    'neutral = new Proxy(callable, {',
+    '  get(_target, property) {',
+    "    if (property === '__esModule') return false;",
+    "    if (property === 'then') return undefined;",
+    "    if (property === Symbol.toStringTag) return 'ReactPreviewNodeBuiltinShim';",
+    '    if (property === Symbol.toPrimitive) return () => 0;',
+    '    if (Reflect.has(_target, property)) return Reflect.get(_target, property);',
+    '    return neutral;',
+    '  },',
+    '});',
+    'for (const exportName of exportNames) {',
+    '  if (!Object.hasOwn(callable, exportName)) {',
+    '    Object.defineProperty(callable, exportName, { configurable: true, enumerable: true, value: neutral, writable: true });',
+    '  }',
+    '}',
+    "console.warn('[React Preview] ' + label + ' is unavailable in the browser preview; calls return neutral values.');",
+    'module.exports = neutral;',
+  ].join('\n');
 }
 
 /**

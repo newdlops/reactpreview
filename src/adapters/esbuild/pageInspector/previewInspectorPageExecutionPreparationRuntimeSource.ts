@@ -34,11 +34,14 @@ function finishPreviewInspectorPageExecutionPreparation(reason, retryable = fals
     record.status = 'preparation-blocked';
     record.preparationBlockedRevision = pending.revision;
     pending.recovery.state.status = 'page-context-incomplete';
+    let retrying = false;
     if (retryable && owned) {
       record.preparationFailureCount = record.preparationFailureRevision === pending.revision
         ? (record.preparationFailureCount || 0) + 1 : 1;
       record.preparationFailureRevision = pending.revision;
-      if (record.preparationFailureCount < PREVIEW_INSPECTOR_PAGE_EXECUTION_PREPARATION_FAILURE_LIMIT) {
+      retrying =
+        record.preparationFailureCount < PREVIEW_INSPECTOR_PAGE_EXECUTION_PREPARATION_FAILURE_LIMIT;
+      if (retrying) {
         Promise.resolve().then(() => {
           if (!ownsPreviewInspectorPageExecutionPreparation(pending) ||
             previewInspectorSession.pendingPageCandidateId !== undefined ||
@@ -46,11 +49,29 @@ function finishPreviewInspectorPageExecutionPreparation(reason, retryable = fals
             record.status !== 'preparation-blocked') return;
           record.status = 'searching';
           previewInspectorSession.pageExecutionRetryRevision = undefined;
-          requestPreviewInspectorNeuralPageExecutionContextRecovery(
+          // From a failed full page whose own context looks complete, the search cannot resume.
+          if (!requestPreviewInspectorNeuralPageExecutionContextRecovery(
             pending.descriptor, pending.candidate, pending.recovery.state, record.recipeSnapshot,
-          );
+          )) {
+            requestPreviewInspectorPageExecutionComponentOutputReturn(
+              pending.descriptor, pending.candidate, pending.recovery.state, record,
+            );
+          }
         });
       }
+    }
+    // A full-page replay the host stopped for good falls back to the verified component output.
+    if (owned && !retrying) {
+      Promise.resolve().then(() => {
+        if (!ownsPreviewInspectorPageExecutionPreparation(pending) ||
+          previewInspectorSession.pendingPageCandidateId !== undefined ||
+          readPreviewInspectorPageExecutionContextRecoveryRecord(pending.recovery.state) !== record ||
+          record.status !== 'preparation-blocked') return;
+        previewInspectorSession.pageExecutionRetryRevision = undefined;
+        requestPreviewInspectorPageExecutionComponentOutputReturn(
+          pending.descriptor, pending.candidate, pending.recovery.state, record,
+        );
+      });
     }
     if (owned && typeof setPreviewInspectorNeuralNeedsChoiceStatus === 'function') {
       setPreviewInspectorNeuralNeedsChoiceStatus('page-execution-preparation-' + reason);
@@ -160,7 +181,7 @@ function postPreviewInspectorPageExecutionCandidate(descriptor, candidate, execu
   previewInspectorSession.pendingPageCandidateRevision = previewEntryRevision;
   previewInspectorSession.pendingPageCandidateError = undefined;
   if (recovery !== undefined) {
-    const { record, state, decision } = recovery;
+    const { record, state, decision, restore } = recovery;
     record.attemptedExecutionCandidateIds.add(executionCandidateId);
     if (decision !== undefined) record.decisionByExecutionCandidateId.set(executionCandidateId, decision);
     record.pendingExecutionCandidateId = executionCandidateId;
@@ -169,7 +190,10 @@ function postPreviewInspectorPageExecutionCandidate(descriptor, candidate, execu
     state.status = 'recovering-page-context';
     if (typeof setPreviewInspectorNeuralLearningStatus === 'function') {
       setPreviewInspectorNeuralLearningStatus({ activeCount: 1,
-        labelReason: 'component-output-found-restoring-full-page-context', phase: 'applying',
+        labelReason: restore === true
+          ? 'full-page-context-failed-returning-to-component-output'
+          : 'component-output-found-restoring-full-page-context',
+        phase: 'applying',
         successCount: 0, updates: typeof readPreviewInspectorNeuralLearningModelUpdates === 'function'
           ? readPreviewInspectorNeuralLearningModelUpdates() : 0 });
     }
@@ -179,6 +203,7 @@ function postPreviewInspectorPageExecutionCandidate(descriptor, candidate, execu
     'Page path request was not accepted. Choose the path again.');
   try {
     previewInspectorPostHostMessage({ candidateId: candidate.id, executionCandidateId, interactionId,
+      ...(recovery?.restore === true ? { restore: true } : {}),
       runtimeRevision: readPreviewInspectorHostRuntimeRevision(),
       type: 'react-preview-inspector-page-execution-retry' });
   } catch {

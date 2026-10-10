@@ -5,6 +5,50 @@
  * name-only heuristic separate makes the syntax walker easier to audit: names can select a scalar
  * family, but they never authorize imports, project execution, or unbounded generated content.
  */
+import {
+  createPreviewSampleDateRebaseExpression,
+  PREVIEW_CANONICAL_SAMPLE_DATE_TIME,
+} from '../previewSampleDateRuntimeSource';
+import { createPreviewSampleLabel } from '../previewSampleLabel';
+
+/** Label of the date-time family, which other generators read to recognize a date name. */
+export const PREVIEW_RUNTIME_SEMANTIC_DATE_TIME_LABEL = 'generated ISO date-time';
+
+/** Date names: `semantic` tests the camelCase name, `normalized` its lowercase form. */
+const DATE_NAME_PATTERNS = {
+  normalized: [
+    /^(?:date|datetime|time)$/u,
+    /^(?:birthdate|dateofbirth|dob)$/u,
+    /(?:_at|_on|_date|_datetime|_time)$/u,
+  ],
+  semantic: /(?:At|On|Date|DateTime|Time)$/u,
+} as const;
+
+/** Count and measure names that hold a number. */
+const NUMBER_NAME_PATTERNS = {
+  normalized:
+    /(?:count|total|index|length|size|page|amount|rate|percent|number|num|den|numerator|denominator|price|pricepershare|unitprice|shares|quantity|seconds|milliseconds|durationms|timestamp)$/u,
+  semantic:
+    /^(?:count|total|index|length|size|amount|rate|percent|number|num|den|numerator|denominator|price|unitPrice|shares|quantity|seconds|milliseconds|durationMs|timestamp)(?=[A-Z0-9_$]|$)/u,
+} as const;
+
+/**
+ * Returns browser source for `functionName(name)`, which reports 'date' or 'number' for a name the
+ * date and number rules below recognize, so browser fallbacks classify names exactly the same way.
+ */
+export function createPreviewSemanticScalarNameKindSource(functionName: string): string {
+  return `function ${functionName}(rawName) {
+  if (typeof rawName !== 'string') return undefined;
+  const name = rawName.replace(/^use(?=[A-Z0-9_$]|$)/u, '');
+  const semanticName = name.length === 0 ? name : name.charAt(0).toLowerCase() + name.slice(1);
+  const normalized = name.toLowerCase();
+  if (${String(DATE_NAME_PATTERNS.semantic)}.test(semanticName) ||
+    ${DATE_NAME_PATTERNS.normalized.map((pattern) => `${String(pattern)}.test(normalized)`).join(' || ')}) return 'date';
+  if (${String(NUMBER_NAME_PATTERNS.semantic)}.test(semanticName) ||
+    ${String(NUMBER_NAME_PATTERNS.normalized)}.test(normalized)) return 'number';
+  return undefined;
+}`;
+}
 
 /** Static expression plus the user-facing generated-value family selected from one name. */
 export interface PreviewRuntimeSemanticFallback {
@@ -85,17 +129,15 @@ export function inferPreviewRuntimeSemanticFallback(
     return { expression: 'Object.freeze([])', kind: 'array', label: 'generated empty list' };
   }
   if (
-    /(?:At|On|Date|DateTime|Time)$/u.test(semanticName) ||
-    /^(?:date|datetime|time)$/u.test(normalized) ||
-    /^(?:birthdate|dateofbirth|dob)$/u.test(normalized) ||
-    /(?:_at|_on|_date|_datetime|_time)$/u.test(normalized)
+    DATE_NAME_PATTERNS.semantic.test(semanticName) ||
+    DATE_NAME_PATTERNS.normalized.some((pattern) => pattern.test(normalized))
   ) {
-    const value = '2024-01-01T00:00:00.000Z';
+    // The canonical sample instant: browser runtimes move it to the preview's current day.
     return {
-      expression: JSON.stringify(value),
+      expression: createPreviewSampleDateRebaseExpression(PREVIEW_CANONICAL_SAMPLE_DATE_TIME),
       kind: 'string',
-      label: 'generated ISO date-time',
-      value,
+      label: PREVIEW_RUNTIME_SEMANTIC_DATE_TIME_LABEL,
+      value: PREVIEW_CANONICAL_SAMPLE_DATE_TIME,
     };
   }
   if (normalized === 'step') {
@@ -107,12 +149,8 @@ export function inferPreviewRuntimeSemanticFallback(
     };
   }
   if (
-    /^(?:count|total|index|length|size|amount|rate|percent|number|num|den|numerator|denominator|price|unitPrice|shares|quantity|seconds|milliseconds|durationMs|timestamp)(?=[A-Z0-9_$]|$)/u.test(
-      semanticName,
-    ) ||
-    /(?:count|total|index|length|size|page|amount|rate|percent|number|num|den|numerator|denominator|price|pricepershare|unitprice|shares|quantity|seconds|milliseconds|durationms|timestamp)$/u.test(
-      normalized,
-    )
+    NUMBER_NAME_PATTERNS.semantic.test(semanticName) ||
+    NUMBER_NAME_PATTERNS.normalized.test(normalized)
   ) {
     return { expression: '0', kind: 'number', label: 'generated number 0', value: 0 };
   }
@@ -200,11 +238,11 @@ export function inferPreviewRuntimeSemanticFallback(
   return undefined;
 }
 
-/** Produces compact key-derived text while preserving formats used by common runtime operations. */
+/** Produces a key-derived label while preserving formats used by common runtime operations. */
 export function createPreviewRuntimeSemanticString(rawName: string): string {
   const normalizedName = rawName.toLowerCase();
   if (normalizedName.endsWith('id')) return 'preview-id';
   if (normalizedName.endsWith('status')) return 'PREVIEW';
   if (normalizedName.endsWith('email')) return 'preview@example.invalid';
-  return rawName.length <= 32 ? rawName : `${rawName.slice(0, 31)}…`;
+  return createPreviewSampleLabel(rawName, rawName);
 }

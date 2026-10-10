@@ -90,6 +90,32 @@ describe('PreviewPanelPageCandidateSelection', () => {
     expect(selection.beginExecutionCandidate('execution-a', 'page-auto')).toBe(true);
   });
 
+  /** A failed full-page replay returns to the component output it left, once. */
+  it('restores a committed execution once and never an uncommitted one', () => {
+    const selection = new PreviewPanelPageCandidateSelection();
+    const target = { request: { documentPath: '/workspace/Target.tsx' } } as never;
+    for (const executionId of ['execution-sliced', 'execution-target', 'execution-authentic']) {
+      expect(selection.beginExecutionCandidate(executionId, 'page-auto')).toBe(true);
+      selection.applyTo(target);
+      selection.commit();
+    }
+    expect(selection.beginExecutionCandidate('execution-failed', 'page-auto')).toBe(true);
+    selection.rollback();
+
+    expect(selection.beginExecutionCandidate('execution-target', 'page-auto')).toBe(false);
+    expect(selection.beginExecutionCandidate('execution-failed', 'page-auto', true)).toBe(false);
+    expect(selection.beginExecutionCandidate('execution-target', 'page-auto', true)).toBe(true);
+    selection.commit();
+    expect(selection.currentExecutionCandidate()).toBe('execution-target');
+    expect(selection.beginExecutionCandidate('execution-sliced', 'page-auto', true)).toBe(true);
+    selection.commit();
+    expect(selection.beginExecutionCandidate('execution-target', 'page-auto', true)).toBe(false);
+
+    // A source or manual refresh starts a fresh frontier without restorable artifacts.
+    selection.applyTo(target);
+    expect(selection.beginExecutionCandidate('execution-authentic', 'page-auto', true)).toBe(false);
+  });
+
   it('keeps per-page identities without forgetting attempts when public candidates change', () => {
     const selection = new PreviewPanelPageCandidateSelection();
     const target = { request: { documentPath: '/workspace/Target.tsx' } } as never;

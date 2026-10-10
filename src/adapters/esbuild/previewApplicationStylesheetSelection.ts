@@ -5,6 +5,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { selectPreviewApplicationEntry } from './previewApplicationEntrySelection';
 import type { ReadPreviewProjectSourceOptions } from './previewProjectFileAnalysisCache';
 import type { PreviewRenderChainCandidate } from './renderGraph/previewRenderGraphTypes';
 
@@ -29,6 +30,8 @@ export interface SelectPreviewApplicationStylesheetImportsOptions {
   readonly readSource: (options: ReadPreviewProjectSourceOptions) => Promise<string | undefined>;
   /** Exact target-to-entry path whose omitted application wrappers may own side-effect CSS. */
   readonly renderPath?: PreviewRenderChainCandidate;
+  /** Project-aware resolver proving that a single-page-application entry imports the page root. */
+  readonly resolveModule?: (moduleSpecifier: string, consumerPath: string) => string | undefined;
 }
 
 /** Existing conventional application root plus its current inert source text. */
@@ -89,8 +92,26 @@ async function collectApplicationStyleRoots(
 ): Promise<readonly PreviewConventionalApplicationRoot[]> {
   const roots: PreviewConventionalApplicationRoot[] = [];
   const seen = new Set<string>();
+  // A Vite/CRA entry styles every page but is never executed; its CSS cascades first.
+  const steps = options.renderPath?.steps ?? [];
+  if (
+    options.renderPath?.entryPoint === undefined &&
+    options.resolveModule !== undefined &&
+    steps.length > 0
+  ) {
+    const entry = await selectPreviewApplicationEntry({
+      projectRoot: options.projectRoot,
+      readSource: options.readSource,
+      resolveModule: options.resolveModule,
+      rootSourcePaths: steps.map((step) => step.sourcePath),
+    });
+    if (entry !== undefined) {
+      roots.push(entry);
+      seen.add(path.normalize(entry.sourcePath));
+    }
+  }
   const conventional = await selectConventionalApplicationRoot(options);
-  if (conventional !== undefined) {
+  if (conventional !== undefined && !seen.has(path.normalize(conventional.sourcePath))) {
     roots.push(conventional);
     seen.add(path.normalize(conventional.sourcePath));
   }

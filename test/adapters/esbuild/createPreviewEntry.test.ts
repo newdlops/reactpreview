@@ -25,6 +25,7 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('import("react-preview:context")');
     expect(entry).toContain('import("react-preview:drag-drop")');
     expect(entry).toContain('import("react-preview:formik")');
+    expect(entry).toContain('import("react-preview:react-query")');
     expect(entry).toContain('import("react-preview:yarn-libui")');
     expect(entry).toContain('import("react-preview:redux")');
     expect(entry).toContain('import("react-preview:router")');

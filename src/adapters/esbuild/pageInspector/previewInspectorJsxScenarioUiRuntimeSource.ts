@@ -335,6 +335,11 @@ function describePreviewInspectorJsxScenarioMode(scenario) {
   if (scenario.reached === false) return requirement + 'This condition has not run. On/Off also selects its required parent branches.';
   if (scenario.lineageBlocked === true) return requirement + 'The parent path is not active.';
   if (typeof scenario.override === 'boolean') return 'Manual override';
+  // A manual choice of a sibling can decide even an automatically forced condition.
+  const fixedBy = typeof readPreviewInspectorConditionFixedBy === 'function'
+    ? readPreviewInspectorConditionFixedBy(scenario)
+    : undefined;
+  if (fixedBy !== undefined) return 'Follows ' + fixedBy + ' (same value)';
   if (typeof scenario.autoOverride === 'boolean') return 'Automatic preview value';
   return 'From page code';
 }

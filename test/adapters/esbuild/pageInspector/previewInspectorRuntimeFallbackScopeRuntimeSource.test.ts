@@ -17,6 +17,34 @@ describe('Preview Inspector runtime fallback scope source', () => {
     expect(source).toContain('React.createElement(React.Fragment, { key: scopeKey }, children)');
   });
 
+  /** Name-only date fields carry the canonical sample date; the page shows the current day. */
+  it('places canonical sample dates of generated hook values on the current day', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    fixture.api.activateScope('application-page', false);
+    const value = fixture.api.resolve(
+      () => {
+        throw new Error('provider unavailable');
+      },
+      () =>
+        Object.freeze({
+          createdAt: '2026-01-15T09:00:00.000Z',
+          name: '2026-01-15 release',
+          rows: Object.freeze([Object.freeze({ day: '2026-01-15' })]),
+        }),
+      { ...createMetadata(), requiredPaths: ['createdAt'] },
+    );
+    const now = new Date();
+    const day = [now.getFullYear(), now.getMonth() + 1, now.getDate()]
+      .map((part, index) => (index === 0 ? String(part) : String(part).padStart(2, '0')))
+      .join('-');
+
+    expect(JSON.parse(JSON.stringify(value))).toEqual({
+      createdAt: `${day}T09:00:00.000Z`,
+      name: '2026-01-15 release',
+      rows: [{ day }],
+    });
+  });
+
   /** Keeps authored target-only diagnostics on the same direct scope in outer and inner layers. */
   it('includes explicit target-only reachability in the shared perspective decision', () => {
     const fixture = createRuntimeFallbackFixture(true);

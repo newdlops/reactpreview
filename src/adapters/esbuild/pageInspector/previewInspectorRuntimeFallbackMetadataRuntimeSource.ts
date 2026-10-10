@@ -179,7 +179,23 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
     smartPathCandidateId: smartPathSelection.candidateId,
     smartPathValues: smartPathSelection.values,
     sourcePath: readText('sourcePath'),
+    typedLiterals: normalizePreviewInspectorRuntimeTypedLiterals(source.typedLiterals),
+    typedOnly: source.typedOnly === true,
+    typedValue: source.typedValue,
   };
+}
+
+/** Keeps only bounded path-to-literal-set evidence issued by the declared-type oracle. */
+function normalizePreviewInspectorRuntimeTypedLiterals(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const output = {};
+  for (const [path, allowed] of Object.entries(value).slice(0, 64)) {
+    if (typeof path !== 'string' || path.length > 240 || !Array.isArray(allowed)) continue;
+    const values = allowed.filter((item) =>
+      typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean').slice(0, 16);
+    if (values.length > 0) output[path] = Object.freeze(values);
+  }
+  return Object.keys(output).length === 0 ? undefined : Object.freeze(output);
 }
 
 /** Accepts only compiler-issued scalar identity evidence at one normalized result path. */

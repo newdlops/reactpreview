@@ -35,6 +35,8 @@ export interface PreviewRuntimeSourceInstrumentationOptions {
   readonly registerConditionDefinitions?: boolean;
   /** Enables JSX branches, deferred UI discovery, and async client-component isolation. */
   readonly renderConditions: boolean;
+  /** Components rendered at the selected target's occurrences in this module. */
+  readonly selectedTargetNames?: ReadonlySet<string>;
 }
 
 /** Fully rewritten source plus inert module-scope registrations to append after it. */
@@ -142,7 +144,12 @@ export function instrumentPreviewRuntimeSource(
   );
   const conditionRegistrations = options.registerConditionDefinitions === false ? undefined : [];
   const conditionSource = options.renderConditions
-    ? instrumentReactConditionalRendering(sourcePath, deferredSource, conditionRegistrations)
+    ? instrumentReactConditionalRendering(
+        sourcePath,
+        deferredSource,
+        conditionRegistrations,
+        options.selectedTargetNames,
+      )
     : deferredSource;
   const effectSource = options.isolateEffects
     ? instrumentPreviewReactEffects(sourcePath, conditionSource)

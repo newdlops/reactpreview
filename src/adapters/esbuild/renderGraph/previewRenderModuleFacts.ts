@@ -471,7 +471,12 @@ function deduplicateExports(
   });
 }
 
-/** Reads aliases that prove a call expression is React.lazy or a React namespace lazy member. */
+/**
+ * Reads aliases that prove a call expression is React.lazy, a React namespace lazy member, or
+ * Next's `dynamic` (the default export of `next/dynamic`). `dynamic(() => import('./Page'))`
+ * renders that module's component exactly like a lazy boundary, so a page whose only child is a
+ * dynamic `MainImpl` keeps it in the render chain instead of reading it as an unrelated branch.
+ */
 function collectReactLazyBindings(sourceFile: ts.SourceFile): ReactLazyBindings {
   const directNames = new Set<string>();
   const namespaceNames = new Set<string>();
@@ -479,11 +484,16 @@ function collectReactLazyBindings(sourceFile: ts.SourceFile): ReactLazyBindings 
     if (
       !ts.isImportDeclaration(statement) ||
       !ts.isStringLiteralLike(statement.moduleSpecifier) ||
-      statement.moduleSpecifier.text !== 'react' ||
       statement.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword
     ) {
       continue;
     }
+    if (statement.moduleSpecifier.text === 'next/dynamic') {
+      const dynamicName = statement.importClause?.name;
+      if (dynamicName !== undefined) directNames.add(dynamicName.text);
+      continue;
+    }
+    if (statement.moduleSpecifier.text !== 'react') continue;
     const clause = statement.importClause;
     if (clause?.name !== undefined) {
       namespaceNames.add(clause.name.text);

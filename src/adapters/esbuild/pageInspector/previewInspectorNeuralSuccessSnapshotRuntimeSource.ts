@@ -137,9 +137,10 @@ function createPreviewInspectorNeuralSuccessSnapshot(state) {
     dataPayloadEntries,
     runtimeFallbackValueEntries,
   })?.length ?? 10_000;
-  const score = (pageExecutionContext?.contextComplete === true ? 10_000_000 : 0) +
+  const tier = (pageExecutionContext?.contextComplete === true ? 10_000_000 : 0) +
     (state?.targetDirectElementOutput === true ? 1_000_000 : 0) +
-    (state?.targetOutputKind === 'target-output' ? 100_000 : 0) - conditionEntries.length * 10 -
+    (state?.targetOutputKind === 'target-output' ? 100_000 : 0);
+  const score = tier - conditionEntries.length * 10 -
     Math.min(10_000, resolverSize) - Math.min(10_000, viewerValueSize);
   return Object.freeze({
     choicePathId: typeof previewInspectorSession.neuralActiveChoicePathId === 'string'
@@ -153,6 +154,8 @@ function createPreviewInspectorNeuralSuccessSnapshot(state) {
     fallbackValuesEnabled,
     fingerprint,
     hasResolverProps,
+    // Not fingerprinted: lets a later verification tell a new component's guard from a changed one.
+    knownConditionIds: readPreviewInspectorNeuralSuccessIds(previewInspectorSession.renderConditions),
     observedAt: Date.now(),
     pageCandidateId,
     pageExecutionContext,
@@ -163,7 +166,105 @@ function createPreviewInspectorNeuralSuccessSnapshot(state) {
     runtimeFallbackValueEntries,
     score,
     temporalState,
+    tier,
   });
+}
+
+/** Reports that every id of a checkpoint list is still present. */
+function containsPreviewInspectorNeuralSuccessIds(current, checkpoint) {
+  return Array.isArray(current) && (checkpoint ?? []).every((id) => current.includes(id));
+}
+
+/** Keeps the entries of the given ids from a sorted [id, value] list. */
+function readPreviewInspectorNeuralSuccessOwnedEntries(entries, ids) {
+  return (entries ?? []).filter(([id]) => (ids ?? []).includes(id));
+}
+
+/**
+ * Reports whether the current viewer state still reproduces one success checkpoint.
+ *
+ * Components that mount after the checkpoint (a delayed panel, a tab, or list rows) only add
+ * requests, hooks, and choices of their own, which changed the exact fingerprint and made a stable
+ * page read as a lost target. Every id the checkpoint owns must persist with an identical value, a
+ * guard known at the checkpoint must keep its branch, and everything else must match exactly.
+ */
+function isPreviewInspectorNeuralSuccessSnapshotCompatible(current, checkpoint) {
+  if (current === undefined || checkpoint === undefined) return false;
+  if (current.fingerprint === checkpoint.fingerprint) return true;
+  const same = (left, right) =>
+    stringifyPreviewInspectorNeuralSuccessValue(left ?? null) ===
+      stringifyPreviewInspectorNeuralSuccessValue(right ?? null);
+  const execution = (snapshot) => [
+    snapshot.pageExecutionContext?.executionCandidateId,
+    snapshot.pageExecutionContext?.contextComplete,
+    snapshot.pageExecutionContext?.fidelity,
+  ];
+  if (
+    ['dataAutoEnabled', 'exportName', 'fallbackValuesEnabled', 'hasResolverProps', 'pageCandidateId']
+      .some((key) => current[key] !== checkpoint[key]) ||
+    !same(current.resolverProps, checkpoint.resolverProps) ||
+    !same(execution(current), execution(checkpoint)) ||
+    !containsPreviewInspectorNeuralSuccessIds(current.dataRequestIds, checkpoint.dataRequestIds) ||
+    !containsPreviewInspectorNeuralSuccessIds(current.runtimeFallbackIds, checkpoint.runtimeFallbackIds)
+  ) return false;
+  const fallbackIds = checkpoint.runtimeFallbackIds ?? [];
+  // Without the known-guard list (older checkpoints) no condition growth is accepted.
+  const conditionIds = Array.isArray(checkpoint.knownConditionIds)
+    ? checkpoint.knownConditionIds
+    : (current.conditionEntries ?? []).map(([id]) => id);
+  return same(
+    readPreviewInspectorNeuralSuccessOwnedEntries(current.dataPayloadEntries, checkpoint.dataRequestIds),
+    checkpoint.dataPayloadEntries,
+  ) && same(
+    readPreviewInspectorNeuralSuccessOwnedEntries(current.runtimeFallbackValueEntries, fallbackIds),
+    checkpoint.runtimeFallbackValueEntries,
+  ) && same(
+    (current.runtimeFallbackSmartIds ?? []).filter((id) => fallbackIds.includes(id)),
+    checkpoint.runtimeFallbackSmartIds,
+  ) && same(
+    readPreviewInspectorNeuralSuccessOwnedEntries(current.runtimeFallbackSmartPathEntries, fallbackIds),
+    checkpoint.runtimeFallbackSmartPathEntries,
+  ) && same(
+    readPreviewInspectorNeuralSuccessOwnedEntries(current.conditionEntries, conditionIds),
+    readPreviewInspectorNeuralSuccessOwnedEntries(checkpoint.conditionEntries, conditionIds),
+  ) && (checkpoint.conditionEntries ?? []).every(([id]) => conditionIds.includes(id)) &&
+    isPreviewInspectorNeuralTemporalStateCompatible(
+      current.temporalState,
+      checkpoint.temporalState,
+      fallbackIds,
+    );
+}
+
+/**
+ * Compares the application-time part of a checkpoint with the same growth rule: owned hook and
+ * loading-guard entries must match, and a terminal checkpoint may turn transient only through hooks
+ * that mounted after it (their loading state, not the checkpoint's).
+ */
+function isPreviewInspectorNeuralTemporalStateCompatible(current, checkpoint, fallbackIds) {
+  if (current === undefined || checkpoint === undefined) return current === checkpoint;
+  if (current.fingerprint === checkpoint.fingerprint) return true;
+  const same = (left, right) =>
+    stringifyPreviewInspectorNeuralSuccessValue(left ?? null) ===
+      stringifyPreviewInspectorNeuralSuccessValue(right ?? null);
+  const conditionIds = (checkpoint.conditionEntries ?? []).map((entry) => entry.id);
+  if (
+    !same(current.applicationPath, checkpoint.applicationPath) ||
+    current.pageCandidateId !== checkpoint.pageCandidateId ||
+    current.targetExportName !== checkpoint.targetExportName ||
+    !same(
+      (current.runtimeStateEntries ?? []).filter((entry) => fallbackIds.includes(entry.fallbackId)),
+      checkpoint.runtimeStateEntries,
+    ) ||
+    !same(
+      (current.conditionEntries ?? []).filter((entry) => conditionIds.includes(entry.id)),
+      checkpoint.conditionEntries,
+    )
+  ) return false;
+  if (current.kind === checkpoint.kind) return true;
+  const transientEntries = (current.runtimeStateEntries ?? []).filter((entry) => entry.transient);
+  return checkpoint.kind === 'terminal-stable' &&
+    transientEntries.length > 0 &&
+    transientEntries.every((entry) => !fallbackIds.includes(entry.fallbackId));
 }
 `;
 }

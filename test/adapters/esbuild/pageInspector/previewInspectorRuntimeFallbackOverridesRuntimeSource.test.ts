@@ -59,13 +59,13 @@ describe('Preview Inspector runtime fallback Overrides', () => {
       metadata,
     ) as { formikProps: { setFieldValue: () => unknown; values: { employeeName: string } } };
 
-    expect(automatic.formikProps.values.employeeName).toBe('employeeName');
+    expect(automatic.formikProps.values.employeeName).toBe('Employee name');
     expect(typeof automatic.formikProps.setFieldValue).toBe('function');
 
     expect(JSON.parse(JSON.stringify(fixture.api.draft('hook-1')))).toEqual({
       formikProps: {
         setFieldValue: '[Preview no-op function]',
-        values: { employeeName: 'employeeName' },
+        values: { employeeName: 'Employee name' },
       },
     });
     expect(fixture.api.read()[0]).toMatchObject({
@@ -130,7 +130,7 @@ describe('Preview Inspector runtime fallback Overrides', () => {
     expect(Array.isArray(resolved.data.legalPartnersForCompanyCreate)).toBe(true);
     expect(
       resolved.data.legalPartnersForCompanyCreate.filter((item) => item.id === 'preview-1'),
-    ).toEqual([{ id: 'preview-1', name: 'name' }]);
+    ).toEqual([{ id: 'preview-1', name: 'Name' }]);
   });
 
   /** Repairs an older syntax placeholder when a String method proves the receiver's real kind. */
@@ -148,7 +148,7 @@ describe('Preview Inspector runtime fallback Overrides', () => {
     ) as [{ template: string }, () => unknown];
 
     expect(typeof resolved[0].template).toBe('string');
-    expect(resolved[0].template.replace('-monorepo', '')).toBe('template');
+    expect(resolved[0].template.replace('-monorepo', '')).toBe('Template');
     expect(typeof resolved[1]).toBe('function');
   });
 
@@ -235,7 +235,7 @@ describe('Preview Inspector runtime fallback Overrides', () => {
       requiredPaths: ['status', 'data.length', 'refetch()'],
     };
     const fallback = {
-      data: [{ id: 'preview-id', name: 'name' }],
+      data: [{ id: 'preview-id', name: 'Name' }],
       refetch: () => undefined,
       status: 'PREVIEW',
     };
@@ -342,7 +342,7 @@ describe('Preview Inspector runtime fallback Overrides', () => {
 
     expect(resolved.favorites).toEqual([
       {
-        label: 'label',
+        label: 'Label',
         link: 'https://example.invalid/preview/1',
       },
     ]);
@@ -368,7 +368,7 @@ describe('Preview Inspector runtime fallback Overrides', () => {
       metadata,
     ) as { user: { avatarUrl: string; name: string } };
 
-    expect(resolved.user).toEqual({ avatarUrl: '', name: 'name' });
+    expect(resolved.user).toEqual({ avatarUrl: '', name: 'Name' });
   });
 
   /** Uses the Array intrinsic when a generated value shadows its own `map` property. */

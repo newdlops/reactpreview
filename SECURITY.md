@@ -44,11 +44,20 @@ GitHub repository 설정에서 이 기능을 활성화해야 합니다.
   preflight를 통과하기 전에는 하나도 추출하지 않으며 workspace에는 쓰지 않습니다. pnpm lock, private/custom registry,
   git/file/link/workspace package와 SHA-512 근거가 없는 package는 fail closed합니다.
 - 웹뷰의 로컬 리소스 범위는 현재 session artifact directory로 제한합니다.
-- CSP는 네트워크, worker, frame, form, inline script와 `unsafe-eval`을 차단합니다.
+- CSP는 fetch·WebSocket 같은 능동 네트워크 연결, worker, frame, form, inline script와 `unsafe-eval`을
+  차단합니다. 프로젝트가 쓰는 HTTPS 이미지·폰트와, `reactPreview.remoteStylesheets`(기본 켜짐)일 때 웹 폰트
+  CSS 같은 HTTPS stylesheet는 받습니다. stylesheet는 script를 실행할 수 없으며, 이 허용은 사용자
+  승인(2026-10-01)에 따른 것이고 설정을 끄면 이전의 엄격한 style 정책으로 돌아갑니다.
 - 확장은 텔레메트리, workspace source, preview payload나 credential을 외부로 보내지 않습니다. 위 조건을
   만족하는 missing package가 있을 때 extension worker가 public tarball과 Berry의 exact-version metadata만
-  요청하며, registry에는 통상적인 IP·HTTP metadata와 요청 package가 보일 수 있습니다. 웹뷰의 network
-  차단은 유지됩니다.
+  요청하며, registry에는 통상적인 IP·HTTP metadata와 요청 package가 보일 수 있습니다. 웹뷰의 능동
+  network 연결 차단은 유지됩니다. 이 요청은 TLS 검증을 끄지 않으며, `http.systemCertificates`가 켜져
+  있으면(기본) Node 기본 root에 운영체제 인증서 저장소의 root를 더해 신뢰합니다.
+- Page Inspector 신경망의 사전학습 결과는 사용자가 global storage에 직접 둔 `neural-model-import.json`으로만
+  들어옵니다. 확장은 원자적 rename으로 이 파일을 한 번만 가져가고, 웹뷰 동기화와 같은 검증(유한 가중치·익명
+  카운터)을 통과한 학습 변화량만 프로필 모델에 더하며, 적용 전 모델을 같은 디렉터리에 백업합니다. 파일에는
+  소스·경로·실행 값이 없고, 사전학습 도구(`scripts/pretrain-page-inspector-neural.mjs`)는 개발용으로 VSIX에
+  포함되지 않습니다.
 - 종료 시 workspace source를 포함할 수 있는 session artifact 삭제를 기다립니다. Source를 포함하지 않는
   immutable dependency environment만 별도 quota/LRU 저장소에 유지합니다.
 

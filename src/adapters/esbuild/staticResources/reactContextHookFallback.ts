@@ -16,8 +16,13 @@ import {
   mergePreviewRuntimeHookCollectionItemExpressions,
 } from './previewRuntimeHookUsageTree';
 import { inferPreviewRuntimeHookAssignmentGuardPassFallback } from './previewRuntimeHookGuardValue';
+import { registerPreviewSelectedTargetNames } from './previewSelectedTargetExit';
 import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHookLocalScalarDemand';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
+import {
+  createPreviewRuntimeHookRenderedTextExpression,
+  isPreviewRuntimeHookTemplateTextValue,
+} from './previewRuntimeHookDirectUsage';
 import {
   collectLocalFunctionSummaries,
   isGlobalObjectShadowed,
@@ -26,6 +31,7 @@ import {
   type LocalFunctionSummary,
 } from './reactContextLocalFunctionSummary';
 import { createReactContextHookRuntimeReplacement } from './reactContextHookRuntimeReplacement';
+import type { PreviewRuntimeHookTypedCallResolver } from './previewRuntimeHookTypedFallback';
 import type {
   PreviewRuntimeHookImportedHelperItemFallback,
   ResolvePreviewRuntimeHookImportedHelperItemFallback,
@@ -128,6 +134,8 @@ interface HookFallbackPlan {
   readonly shape: FallbackShape;
   /** Unique materialized paths used to enforce the inference budget. */
   readonly shapePaths: Set<string>;
+  /** Leaves printed only through untagged template strings, added after all other evidence. */
+  readonly templateTextPaths: Map<string, readonly string[]>;
 }
 
 /** A context-derived local value represented by its property path from one hook result. */
@@ -177,6 +185,8 @@ export function createReactContextHookFallbackTransform(
   resolveImportedCollectionCallbackItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
   resolveImportedHelperParameter?: ResolvePreviewRuntimeHookImportedHelperParameterFallback,
   resolveImportedHelperProperty?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
+  resolveTypedCall?: PreviewRuntimeHookTypedCallResolver,
+  selectedTargetNames?: ReadonlySet<string>,
 ): ReactContextHookFallbackTransform {
   if (!isProjectRuntimeSource(sourcePath) || !sourceText.includes('Context')) {
     return EMPTY_TRANSFORM;
@@ -191,6 +201,7 @@ export function createReactContextHookFallbackTransform(
   if (hasParseDiagnostics(sourceFile)) {
     return EMPTY_TRANSFORM;
   }
+  registerPreviewSelectedTargetNames(sourceFile, selectedTargetNames);
 
   const importedHooks = collectContextHookImports(sourceFile);
   if (importedHooks.direct.size === 0 && importedHooks.namespaces.size === 0) {
@@ -228,6 +239,7 @@ export function createReactContextHookFallbackTransform(
       resolveImportedCollectionCallbackItem,
       resolveImportedHelperParameter,
     );
+    for (const textPath of plan.templateTextPaths.values()) addTemplateTextLeaf(textPath, plan);
     if (!plan.invalid && plan.required && wouldBreakOptionalShortCircuit(plan)) {
       plan.invalid = true;
     }
@@ -261,6 +273,8 @@ export function createReactContextHookFallbackTransform(
       sourceFile,
       sourceText,
     );
+    const requiredPaths = collectFallbackRequiredPaths(plan.shape);
+    const typed = resolveTypedCall?.(candidate.call, sourceFile, requiredPaths);
     replacements.push({
       end,
       fallbackBinding: declaration.binding,
@@ -273,9 +287,10 @@ export function createReactContextHookFallbackTransform(
         line: location.line + 1,
         originalCall,
         renderGuardPaths: [...plan.renderGuardPaths],
-        requiredPaths: collectFallbackRequiredPaths(plan.shape),
+        requiredPaths,
         sourcePath,
         start,
+        ...(typed === undefined ? {} : { typed }),
       }),
       start,
     });
@@ -511,6 +526,7 @@ function createFallbackPlan(
     scopeCount: 0,
     shape: { children: new Map(), kind: 'object' },
     shapePaths: new Set(),
+    templateTextPaths: new Map(),
   };
 }
 
@@ -722,7 +738,10 @@ function inspectScopeOperations(
   });
 }
 
-/** Materializes a used destructured Boolean/number/string/null leaf without guessing objects. */
+/**
+ * Materializes a used destructured Boolean/number/string/null leaf without guessing objects.
+ * A leaf without name or guard evidence stays absent unless an untagged template prints it.
+ */
 function inspectBoundScalarIdentifier(
   identifier: ts.Identifier,
   bindings: ReadonlyMap<string, HookBoundValue>,
@@ -744,7 +763,11 @@ function inspectBoundScalarIdentifier(
       (semantic !== undefined && ['boolean', 'null', 'number', 'string'].includes(semantic.kind)
         ? semantic.expression
         : undefined);
-    if (scalarExpression === undefined) continue;
+    if (scalarExpression === undefined) {
+      if (isPreviewRuntimeHookTemplateTextValue(identifier))
+        recordTemplateTextPath(valuePath, plan);
+      continue;
+    }
     plan.required = true;
     if (
       !addProperObjectPrefixes(valuePath, plan) ||
@@ -843,12 +866,41 @@ function inspectPropertyAccess(
     return;
   }
   plan.required = true;
+  const templateText = isPreviewRuntimeHookTemplateTextValue(expression);
   for (const valuePath of resolved.paths) {
     if (!addProperObjectPrefixes(valuePath, plan)) {
       plan.invalid = true;
       return;
     }
+    if (templateText) recordTemplateTextPath(valuePath, plan);
   }
+}
+
+/** Records a leaf that an untagged template prints; JSX children of absent leaves render nothing. */
+function recordTemplateTextPath(path_: readonly string[], plan: HookFallbackPlan): void {
+  if (path_.length > 0 && plan.templateTextPaths.size < MAX_FALLBACK_PATHS) {
+    plan.templateTextPaths.set(path_.join('\0'), path_);
+  }
+}
+
+/**
+ * Gives a template-printed leaf its key label, which would otherwise print "undefined" (payroll
+ * "undefined차"). It runs after all other evidence and only below already materialized object
+ * containers, so it never creates a receiver, never overrides name/type evidence, and a conflict
+ * skips the label instead of invalidating the whole fallback.
+ */
+function addTemplateTextLeaf(path_: readonly string[], plan: HookFallbackPlan): void {
+  if (plan.invalid || !isSafePath(path_)) return;
+  const key = path_.join('\0');
+  const kinds = ['callable', 'collection', 'object', 'scalar'] as const;
+  if (kinds.some((kind) => plan.shapePaths.has(`${key}\0${kind}`))) return;
+  let node: FallbackShape | undefined = plan.shape;
+  for (const propertyName of path_.slice(0, -1)) {
+    node = node.children.get(propertyName);
+    if (node?.kind !== 'object') return;
+  }
+  if (node.children.has(path_.at(-1) ?? '')) return;
+  addScalarLeaf(path_, createPreviewRuntimeHookRenderedTextExpression(path_.at(-1)), plan);
 }
 
 /** Handles calls through derived context properties plus bounded local object-inspection evidence. */

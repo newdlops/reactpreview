@@ -85,6 +85,95 @@ describe('Preview Inspector GraphQL render-prop runtime', () => {
   });
 });
 
+describe('Preview Inspector typed GraphQL hook recovery', () => {
+  /** A registered declared result keeps generated rows inside the declared literal set. */
+  it('applies declared literals and list-ness to the first loading render', () => {
+    const document = {
+      definitions: [{ kind: 'OperationDefinition', name: { value: 'InvestmentList' } }],
+      loc: { source: { body: 'query InvestmentList { investments { status round } }' } },
+    };
+    const context = vm.createContext({});
+    vm.runInContext(
+      `
+      const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
+      const inferPreviewInspectorGraphqlQueryShape = () => ({
+        fields: {
+          investments: {
+            fields: { round: { kind: 'string' }, status: { kind: 'string' } },
+            kind: 'object',
+          },
+        },
+        kind: 'object',
+      });
+      const generatePreviewInspectorDataValue = () => ({
+        investments: { round: 'round', status: 'ACTIVE' },
+      });
+      const createPreviewInspectorRuntimeFallbackRequirementTemplate = (value) => value;
+      ${createPreviewInspectorGeneratedValueRuntimeSource()}
+      ${createPreviewInspectorHookGraphqlRuntimeSource()}
+      globalThis.__fallback = createPreviewInspectorHookGraphqlFallback;
+    `,
+      context,
+    );
+    const registry = vm.runInContext(
+      "globalThis[Symbol.for('newdlops.react-file-preview.typed-graphql-documents')] = []",
+      context,
+    ) as unknown[];
+    registry.push([
+      document,
+      {
+        fields: {
+          investments: {
+            items: {
+              fields: {
+                round: { kind: 'number' },
+                status: { kind: 'literal', value: 'NOT_WILLING_TO_SELL' },
+              },
+              kind: 'object',
+            },
+            kind: 'array',
+          },
+        },
+        kind: 'object',
+      },
+    ]);
+    const fallback = (
+      vm.runInContext('globalThis.__fallback', context) as (...args: unknown[]) => unknown
+    )(
+      { data: {} },
+      () => document,
+      () => ({}),
+    );
+
+    expect(JSON.parse(JSON.stringify(fallback))).toMatchObject({
+      data: { investments: [{ round: 0, status: 'NOT_WILLING_TO_SELL' }] },
+    });
+  });
+});
+
+describe('Preview Inspector GraphQL hook row evidence', () => {
+  /** Only collections without compiler render demand may later be served with sample rows. */
+  it('remembers the result shape only for documents without render demand', () => {
+    const runtime = createRuntime();
+    const plain = personalDataHandlersDocument();
+    const demanded = personalDataHandlersDocument();
+    runtime.register(demanded, ['data.vcUserRelations.[]'], []);
+    const plainValue = { data: {} };
+    const demandedValue = { data: {} };
+
+    runtime.remember(plainValue, () => plain);
+    runtime.remember(demandedValue, () => demanded);
+
+    expect(runtime.evidence(plainValue)).toMatchObject({
+      operationName: 'EditPersonalDataHandlersModalForm',
+      shape: { fields: { vcUserRelations: { kind: 'object' } }, kind: 'object' },
+      typed: false,
+    });
+    expect(runtime.evidence(demandedValue)).toBeUndefined();
+    expect(runtime.evidence({ data: {} })).toBeUndefined();
+  });
+});
+
 /** Creates one GraphQL operation with a single connection-bearing root field. */
 function documentWithRoot(alias: string): object {
   return {
@@ -135,10 +224,12 @@ function personalDataHandlersDocument(): object {
 /** Evaluates the generated browser runtime in a minimal isolated registry harness. */
 function createRuntime(): {
   associate: (factoryResult: unknown, document: object) => unknown;
+  evidence: (fallback: object) => unknown;
   fallback: (fallback: unknown, readDocument: () => unknown, readOptions: () => unknown) => unknown;
   overlay: (fallback: unknown, readDocument: () => unknown) => unknown;
   paths: (document: object) => readonly string[];
   register: (document: object, paths: readonly string[], demands: readonly unknown[]) => unknown;
+  remember: (fallback: object, readDocument: () => unknown) => unknown;
   usage: (renderer: object, paths: readonly string[], demands: readonly unknown[]) => unknown;
 } {
   const context: { __runtime?: Record<string, (...args: never[]) => unknown> } = {};
@@ -173,10 +264,12 @@ function createRuntime(): {
     ${createPreviewInspectorHookGraphqlRuntimeSource()}
     globalThis.__runtime = {
       associate: registerPreviewInspectorGraphqlFixedRenderer,
+      evidence: readPreviewInspectorHookGraphqlRowEvidence,
       fallback: createPreviewInspectorHookGraphqlFallback,
       register: registerPreviewInspectorGraphqlRenderPropUsage,
       paths: (document) => previewInspectorHookGraphqlRenderPropUsages.get(document) ?? [],
       overlay: overlayPreviewInspectorHookGraphqlLiteralDemands,
+      remember: rememberPreviewInspectorHookGraphqlRowEvidence,
       usage: registerPreviewInspectorGraphqlFixedRendererUsage,
     };
   `,
@@ -185,6 +278,7 @@ function createRuntime(): {
   if (context.__runtime === undefined) throw new Error('runtime did not initialize');
   return context.__runtime as unknown as {
     associate: (factoryResult: unknown, document: object) => unknown;
+    evidence: (fallback: object) => unknown;
     fallback: (
       fallback: unknown,
       readDocument: () => unknown,
@@ -193,6 +287,7 @@ function createRuntime(): {
     overlay: (fallback: unknown, readDocument: () => unknown) => unknown;
     paths: (document: object) => readonly string[];
     register: (document: object, paths: readonly string[], demands: readonly unknown[]) => unknown;
+    remember: (fallback: object, readDocument: () => unknown) => unknown;
     usage: (renderer: object, paths: readonly string[], demands: readonly unknown[]) => unknown;
   };
 }

@@ -85,12 +85,15 @@ function readPreviewInspectorNeuralAssistanceBlockers() {
   }
   try {
     const summary = readPreviewInspectorActiveBlockerSummary();
+    // A '&&' default without branch proof would open unrelated UI beside the target.
+    const proven = typeof createPreviewInspectorConditionProofFilter === 'function'
+      ? createPreviewInspectorConditionProofFilter() : () => true;
     const conditionBlockers =
       typeof readPreviewInspectorRenderConditions === 'function' &&
       typeof createPreviewInspectorConditionTreeNode === 'function'
         ? readPreviewInspectorRenderConditions()
             .map(createPreviewInspectorConditionTreeNode)
-            .filter((node) => node?.blocksCurrentTarget === true)
+            .filter((node) => node?.blocksCurrentTarget === true && proven(node.condition))
             .map((node) => ({ ...node, blocker: node.condition, blockerKind: 'render-condition' }))
         : [];
     const active = [
@@ -329,7 +332,7 @@ function applyPreviewInspectorNeuralAssistanceBlocker(
       return { action: 'runtime-global-retry', changed };
     }
     if (node?.blockerKind === 'render-condition') {
-      const condition = node.condition ?? node.blocker;
+      let condition = node.condition ?? node.blocker;
       const state = previewInspectorSession.targetReachabilityByKey?.get?.(
         condition?.reachabilityKey,
       );
@@ -344,6 +347,9 @@ function applyPreviewInspectorNeuralAssistanceBlocker(
         typeof readPreviewInspectorTargetPathEvidence === 'function'
           ? readPreviewInspectorTargetPathEvidence(descriptor, candidate, state)
           : undefined;
+      condition = evidence === undefined || typeof readPreviewInspectorSourceFirstInstanceOverlay !== 'function'
+        ? condition : readPreviewInspectorSourceFirstInstanceOverlay(condition, state, evidence);
+      if (condition === undefined) return { action: 'render-condition-recommendation', changed: false };
       const requiredValue = evidence !== undefined &&
         typeof readPreviewInspectorTargetConditionValue === 'function'
           ? readPreviewInspectorTargetConditionValue(condition, evidence)
@@ -377,7 +383,7 @@ function applyPreviewInspectorNeuralAssistanceBlocker(
     }
     if (node?.blockerKind === 'data-request') {
       const changed = typeof smartFillPreviewInspectorDataPayload === 'function'
-        ? smartFillPreviewInspectorDataPayload(node.blocker?.id) === true
+        ? smartFillPreviewInspectorDataPayload(node.blocker?.id, true) === true
         : false;
       return { action: 'data-payload-recommendation', changed };
     }
@@ -455,7 +461,9 @@ function finishPreviewInspectorNeuralAssistanceRequest(sequence, result) {
       sweepRecord !== undefined
       ? createPreviewInspectorNeuralExplorationPlan(sweepRecord)
       : undefined;
-    const settlement = continued === true || remainingExploration !== undefined ||
+    // Restoring the best checkpoint now would let the pending verification sample the restored
+    // state and reject a real success; promotion or rejection settles the sweep afterwards.
+    const settlement = verifyingOutput || continued === true || remainingExploration !== undefined ||
       typeof result.sweepKey !== 'string'
       ? undefined
       : settlePreviewInspectorNeuralSuccessfulPaths(result.sweepKey);
@@ -567,7 +575,7 @@ function beginPreviewInspectorNeuralAssistanceRequest(requestedBy = 'user', opti
   schedulePreviewInspectorNeuralAssistanceFrame(() => {
     if (!isPreviewInspectorNeuralAssistanceRequestCurrent(sequence)) { releaseUnappliedChoice(); return; }
     try {
-      const preparedSummary = readPreviewInspectorNeuralAssistanceBlockers();
+      const preparedSummary = keepPreviewInspectorReachedTargetUiStateBlockers(readPreviewInspectorNeuralAssistanceBlockers(), before);
       const preparedBlocker = selectPreviewInspectorNeuralAssistanceBlocker(
         preparedSummary,
         readPreviewInspectorNeuralAssistanceReachability(),
@@ -585,7 +593,7 @@ function beginPreviewInspectorNeuralAssistanceRequest(requestedBy = 'user', opti
       schedulePreviewInspectorNeuralAssistanceFrame(() => {
         if (!isPreviewInspectorNeuralAssistanceRequestCurrent(sequence)) { releaseUnappliedChoice(); return; }
         try {
-          const current = readPreviewInspectorNeuralAssistanceBlockers();
+          const current = keepPreviewInspectorReachedTargetUiStateBlockers(readPreviewInspectorNeuralAssistanceBlockers(), before);
           const reachability = readPreviewInspectorNeuralAssistanceReachability();
           const blocker = current.active.find((node) =>
             readPreviewInspectorNeuralAssistanceBlockerIdentity(node) === preparedIdentity,

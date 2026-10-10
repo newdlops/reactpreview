@@ -372,6 +372,11 @@ function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
 }
 /** Selects the branch that continues toward the target using compiler-issued gate evidence only. */
 function readPreviewInspectorTargetConditionValue(condition, evidence) {
+  /* The compiler saw the selected target rendered inside this exact returned branch. */
+  if (condition?.targetBranchEvidence === 'selected-target') {
+    if (condition.targetBranch === 'truthy') return true;
+    if (condition.targetBranch === 'falsy') return false;
+  }
   const coherentNeuralValue = evaluatePreviewInspectorNeuralRenderStateExpression(
     condition,
     condition?.scalarExpression,

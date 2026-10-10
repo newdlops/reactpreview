@@ -44,7 +44,7 @@ describe('preview runtime store snapshot fallback', () => {
     );
 
     expect(transformed).toContain('"enabled": false');
-    expect(transformed).toContain('"label": "label"');
+    expect(transformed).toContain('"label": "Label"');
     expect(transformed).not.toContain('"renderGuardPaths"');
   });
 

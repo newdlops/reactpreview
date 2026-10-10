@@ -114,7 +114,7 @@ describe.each([false, true])(
       const fixture = await createFixture(collection, '', false, pipeline);
       const rows = fixture.run();
       expect(rows?.length).toBeGreaterThan(0);
-      expect(rows?.[0]).toMatchObject({ name: 'name', manager: 'name', requestor: 'fullName' });
+      expect(rows?.[0]).toMatchObject({ name: 'Name', manager: 'Name', requestor: 'Full name' });
       expect(fixture.metadata[0]?.requiredPaths?.join(' ')).toContain('fund.gp.name');
     });
 

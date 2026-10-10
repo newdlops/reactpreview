@@ -655,6 +655,46 @@ describe('Preview Inspector target output runtime source', () => {
     ).toBe(false);
   });
 
+  /** SkuDetailModal's timeline sat outside an overflow-clip page section that cannot clip its fixed modal. */
+  it('accepts hosts in a fixed overlay unless an ancestor contains the overlay and clips it', () => {
+    const sectionStyle: Record<string, string> = {
+      display: 'block',
+      opacity: '1',
+      overflowX: 'clip',
+      overflowY: 'clip',
+      position: 'static',
+      visibility: 'visible',
+    };
+    const clippingSection = {
+      getBoundingClientRect: () => ({ bottom: 1340, left: 30, right: 721, top: 614 }),
+      parentElement: null,
+      style: sectionStyle,
+    };
+    const fixedOverlay = {
+      getBoundingClientRect: () => ({ bottom: 469, left: 0, right: 756, top: 0 }),
+      parentElement: clippingSection,
+      style: { display: 'block', opacity: '1', position: 'fixed', visibility: 'visible' },
+    };
+    const ownedHost = {
+      getBoundingClientRect: () => ({ bottom: 441, left: 127, right: 620, top: 127 }),
+      inside: true,
+      isConnected: true,
+      nodeType: 1,
+      parentElement: fixedOverlay,
+    };
+    const resolve = (): boolean =>
+      hasResolvedOutput(
+        [],
+        { kind: 'function', name: 'Target' },
+        { includePlan: false, ownedHost },
+      );
+
+    expect(resolve()).toBe(true);
+    // A transformed section becomes the overlay's containing block, so its clip applies again.
+    sectionStyle.transform = 'translateZ(0px)';
+    expect(resolve()).toBe(false);
+  });
+
   /** A wide authored table remains valid output when a narrow positive-size pane clips its badge. */
   it('accepts an exact target host clipped only by a genuinely overflowing layout pane', () => {
     const clippingParent = {

@@ -1,10 +1,19 @@
 /** Generates live page-owner verification and neural Page Execution context recovery. */
 import { createPreviewInspectorPageExecutionPreparationRuntimeSource } from './previewInspectorPageExecutionPreparationRuntimeSource';
 
+import { createPreviewInspectorPageExecutionOwnerProofRuntimeSource } from './previewInspectorPageExecutionOwnerProofRuntimeSource';
+
+export {
+  PREVIEW_INSPECTOR_EXECUTION_ROOT_BRIDGE_KEY,
+  PREVIEW_INSPECTOR_EXECUTION_SURFACES_KEY,
+  PREVIEW_INSPECTOR_PAGE_EXECUTION_KEY,
+} from './previewInspectorPageExecutionOwnerProofRuntimeSource';
+
 /** Joins compiler/live-owner evidence with the correlated preparation transport. */
 export function createPreviewInspectorPageExecutionContextRuntimeSource(): string {
   return String.raw`
 ${createPreviewInspectorPageExecutionPreparationRuntimeSource()}
+${createPreviewInspectorPageExecutionOwnerProofRuntimeSource()}
 const previewInspectorFullPageExecutionFidelities = new Set([
   'route-page-authentic',
   'route-page-sliced',
@@ -155,6 +164,28 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
   const expectedOwnerNames = applicationPath.filter((name) =>
     isPreviewInspectorPageExecutionOwnerAnchor(name, targetExportName));
   const observedOwnerNames = collectPreviewInspectorPageExecutionAncestorNames(state);
+  // Only a full-page artifact's bridge proves its authored page root; target-only and contextual
+  // executions also render through a bridge.
+  const fullPageExecution = previewInspectorFullPageExecutionFidelities.has(fidelity);
+  // A target mounted beside the authentic page (closed modal content) has sibling owners.
+  const detachedOwners = fullPageExecution &&
+    readPreviewInspectorDetachedTargetPlacement(candidate) !== undefined
+    ? collectPreviewInspectorDetachedExecutionOwners(state)
+    : undefined;
+  const executionRootMounted = fullPageExecution && (
+    isPreviewInspectorExecutionRootMountedAboveTarget(state) ||
+    detachedOwners?.bridgeMounted === true
+  );
+  const mountedSurfaceKeys = fullPageExecution
+    ? new Set([
+        ...collectPreviewInspectorMountedExecutionSurfaceKeys(state),
+        ...(detachedOwners?.keys ?? []),
+      ])
+    : new Set();
+  const isMountedOwnerReference = (sourcePath, exportName) => (
+    executionRootMounted &&
+    isPreviewInspectorExecutionRootReference(execution, sourcePath, exportName)
+  ) || mountedSurfaceKeys.has(createPreviewInspectorExecutionSurfaceKey(sourcePath, exportName));
   const rootStep = Number.isSafeInteger(candidate?.rootStepIndex)
     ? candidate?.renderPath?.steps?.[candidate.rootStepIndex]
     : undefined;
@@ -164,7 +195,10 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
     (execution?.pageRootExportName === undefined ||
       execution.pageRootExportName === candidate?.root?.exportName);
   const pageRootNames = [];
+  // A default export's declared name (RootLayout, MyApp) is what React mounts; the file name
+  // (layout, _app) only remains an alias for roots whose name the compiler could not prove.
   for (const name of [
+    execution?.pageRootComponentName,
     execution?.pageRootExportName,
     ...(samePageRoot ? [
       candidate?.root?.exportName,
@@ -184,6 +218,7 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
   }
   const executionRootName = [
     execution?.executionRootExportName,
+    execution?.executionRootComponentName,
     readPreviewInspectorPageExecutionSourceName(execution?.executionRootSourcePath),
     readPreviewInspectorPageExecutionSourceName(candidate?.root?.sourcePath),
   ].find((name) => isPreviewInspectorPageExecutionOwnerAnchor(name, targetExportName));
@@ -191,23 +226,34 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
     .map(normalizePreviewInspectorPageExecutionOwnerName).filter(Boolean));
   const matchesObserved = (expected) => observedOwnerIdentities.has(
     normalizePreviewInspectorPageExecutionOwnerName(expected));
-  const pageRootObserved = pageRootNames.length === 0
-    ? observedOwnerNames.length > 0
-    : pageRootNames.some(matchesObserved);
-  const executionRootObserved = executionRootName === undefined || matchesObserved(executionRootName);
+  const pageRootObserved =
+    isMountedOwnerReference(execution?.pageRootSourcePath, execution?.pageRootExportName) || (
+      pageRootNames.length === 0
+        ? observedOwnerNames.length > 0
+        : pageRootNames.some(matchesObserved)
+    );
+  const executionRootObserved = executionRootName === undefined ||
+    matchesObserved(executionRootName) || executionRootMounted ||
+    isMountedOwnerReference(execution?.executionRootSourcePath, execution?.executionRootExportName);
   // Static outer owners/layouts are a contract, not alternate aliases for an inner content root.
   // Siblings are not ancestors; their placement remains compiler-owned.
-  const pageFrameAliases = (Array.isArray(candidate?.virtualPage?.shells)
+  const pageFrames = (Array.isArray(candidate?.virtualPage?.shells)
     ? candidate.virtualPage.shells : [])
     .filter((shell) => ['owner', 'wrapper'].includes(shell?.relation))
-    .map((shell) => [shell?.root?.exportName,
-      readPreviewInspectorPageExecutionSourceName(shell?.root?.sourcePath)]
-      .filter((name) => isPreviewInspectorPageExecutionOwnerAnchor(name, targetExportName)))
-    .filter((aliases) => aliases.length > 0)
+    .map((shell) => ({
+      aliases: [shell?.root?.exportName,
+        readPreviewInspectorPageExecutionSourceName(shell?.root?.sourcePath)]
+        .filter((name) => isPreviewInspectorPageExecutionOwnerAnchor(name, targetExportName)),
+      root: shell?.root,
+    }))
+    .filter((frame) => frame.aliases.length > 0)
     .slice(0, 24);
-  const pageFrameNames = pageFrameAliases.map((aliases) => aliases[0]);
-  const missingPageFrameNames = pageFrameAliases
-    .filter((aliases) => !aliases.some(matchesObserved)).map((aliases) => aliases[0]);
+  const pageFrameNames = pageFrames.map((frame) => frame.aliases[0]);
+  const missingPageFrameNames = pageFrames
+    .filter((frame) =>
+      !isMountedOwnerReference(frame.root?.sourcePath, frame.root?.exportName) &&
+      !frame.aliases.some(matchesObserved))
+    .map((frame) => frame.aliases[0]);
   const pageFrameObserved = missingPageFrameNames.length === 0;
   const matchedOwnerNames = expectedOwnerNames.filter(matchesObserved);
   const missingOwnerNames = [...new Set([
@@ -224,7 +270,16 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
     state?.pageRootCommitted === true && state?.targetHasOutput === true &&
     state?.targetDirectElementOutput === true &&
     (state?.targetMounted === true || state?.targetWasMounted === true);
-  const contextComplete = state?.directTarget === true ||
+  // The selected file is the page root its entry renders (an App under main.tsx). Its target-only
+  // execution is then the whole page: the entry's providers are emulated for every page alike.
+  const samePath = (left, right) => typeof left === 'string' && typeof right === 'string' &&
+    left.replaceAll('\\', '/') === right.replaceAll('\\', '/');
+  const targetIsPageRoot = fidelity === 'target-only' && execution?.standaloneTarget !== true &&
+    pageCandidateComplete && pageFrames.length === 0 &&
+    execution?.executionRootSurfaceId === execution?.runtimeTargetSurfaceId &&
+    candidate?.root?.exportName === (candidate?.target?.exportName ?? targetExportName) &&
+    samePath(candidate?.root?.sourcePath, candidate?.target?.sourcePath ?? state?.targetSourcePath);
+  const contextComplete = state?.directTarget === true || targetIsPageRoot ||
     pageCandidateComplete && pageLevel && !componentOnly && pageRootObserved &&
       executionRootObserved && pageFrameObserved;
   return Object.freeze({
@@ -234,6 +289,7 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
     componentOnly,
     contextComplete,
     executionCandidateId: execution?.id,
+    executionRootMounted,
     executionRootName,
     executionRootObserved,
     fidelity,
@@ -250,6 +306,7 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
     pageFrameNames: Object.freeze(pageFrameNames),
     pageRootNames: Object.freeze(pageRootNames.slice(0, 8)),
     pageRootObserved,
+    targetIsPageRoot,
     transientTarget,
   });
 }
@@ -539,12 +596,14 @@ function settlePreviewInspectorNeuralPageExecutionContextOutcome(
 /**
  * Turns component-only output into a repair recipe, then replays it through a finite neural search
  * over compiler-proven full-page artifacts. The same recipe never restarts an exhausted cycle.
+ * After a replayed full page failed, its own context observation no longer ends the search.
  */
 function requestPreviewInspectorNeuralPageExecutionContextRecovery(
   descriptor,
   candidate,
   state,
   snapshot,
+  afterFailedFullPage = false,
 ) {
   if (typeof isPreviewInspectorNeuralAssistancePaused === 'function' &&
     isPreviewInspectorNeuralAssistancePaused()) return false;
@@ -570,7 +629,7 @@ function requestPreviewInspectorNeuralPageExecutionContextRecovery(
     state,
   );
   state.pageExecutionContextObservation = observation;
-  if (observation.contextComplete) return false;
+  if (observation.contextComplete && !afterFailedFullPage) return false;
   const records = initializePreviewInspectorPageExecutionContextRecoveryRecords();
   const key = createPreviewInspectorPageExecutionContextRecoveryKey(state);
   let record = records.get(key);
@@ -586,6 +645,11 @@ function requestPreviewInspectorNeuralPageExecutionContextRecovery(
       status: 'searching',
     };
     records.set(key, record);
+  }
+  // The verified component-only artifact is where a failed full-page replay returns.
+  if (observation.componentOnly === true && state.targetHasOutput === true &&
+    typeof descriptor?.inspector?.pageExecutionCandidateId === 'string') {
+    record.componentOutputExecutionCandidateId ??= descriptor.inspector.pageExecutionCandidateId;
   }
   if (!observation.pageCandidateComplete) {
     record.status = 'exhausted';
@@ -630,6 +694,9 @@ function requestPreviewInspectorNeuralPageExecutionContextRecovery(
     observation,
   );
   if (selected?.execution?.id === undefined) {
+    if (requestPreviewInspectorPageExecutionComponentOutputReturn(
+      descriptor, candidate, state, record,
+    )) return true;
     record.status = 'exhausted';
     state.pageExecutionContextRecoveryRequested = true;
     state.status = 'page-context-incomplete';
@@ -662,7 +729,34 @@ function continuePreviewInspectorNeuralPageExecutionContextRecovery(descriptor, 
     candidate,
     state,
     record.recipeSnapshot,
+    true,
   );
+}
+
+/**
+ * Brings back the verified component-only artifact once every full-page replay failed, instead of
+ * leaving the last blocked full page on screen. The host admits it once as a restore of an artifact
+ * it already committed; a rejected or repeated return leaves the search where it stopped.
+ */
+function requestPreviewInspectorPageExecutionComponentOutputReturn(
+  descriptor,
+  candidate,
+  state,
+  record,
+) {
+  const executionId = record?.componentOutputExecutionCandidateId;
+  if (
+    typeof executionId !== 'string' || record.componentOutputReturnRequested === true ||
+    descriptor?.inspector?.pageExecutionCandidateId === executionId
+  ) return false;
+  const requested = postPreviewInspectorPageExecutionCandidate(
+    descriptor,
+    candidate,
+    executionId,
+    { record, state, restore: true },
+  );
+  if (requested) record.componentOutputReturnRequested = true;
+  return requested;
 }
 
 /** Restores the inner success recipe after the host commits the requested full-page artifact. */

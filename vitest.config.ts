@@ -7,6 +7,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
+    /** Keeps every test's temporary workspaces inside one run-scoped directory removed at teardown. */
+    globalSetup: ['test/support/vitestTemporaryRoot.ts'],
     include: ['test/**/*.test.ts'],
     mockReset: true,
     restoreMocks: true,

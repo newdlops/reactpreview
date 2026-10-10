@@ -70,10 +70,15 @@ function createV6Runtime(options: CreatePreviewInspectorRouteExecutionRuntimeSou
   const { recipe } = options;
   const routePattern = createPreviewInspectorV6RoutePattern(recipe.pattern);
   const routeHref = createPreviewInspectorRouteHref(recipe.pathname, recipe.searchParams);
+  // A content root that owns its `<Routes>` is mounted at a splat, so its own Routes select (and
+  // redirect between) branches while the root stays mounted, as under the application's router.
+  const outerPattern =
+    recipe.mounts[0]?.contextPattern ??
+    (recipe.contentRootOwnsRoutes === true ? '/*' : recipe.pattern);
   const nested =
     options.routeSurfaceLocals.length === 0
       ? `React.createElement(Route, { path: ${JSON.stringify(
-          createPreviewInspectorV6RoutePattern(recipe.mounts[0]?.contextPattern ?? recipe.pattern),
+          createPreviewInspectorV6RoutePattern(outerPattern),
         )}, element: ${options.renderedPage} })`
       : options.routeSurfaceLocals
           .slice()

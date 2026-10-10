@@ -730,6 +730,10 @@ function recordPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
   if (hasPreviewInspectorVerifiedTargetOutput(snapshot.detail)) {
     completePreviewCommit();
   }
+  // A reached page may now replace its empty REST lists with verified rows (one attempt per revision).
+  if (typeof observePreviewInspectorRestCollectionFill === 'function') {
+    observePreviewInspectorRestCollectionFill(snapshot.detail);
+  }
 }
 `;
 }

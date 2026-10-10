@@ -13,6 +13,9 @@ const PREVIEW_INSPECTOR_HEALTH_ERROR_ROOT_LIMIT = 64;
 const PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT = 4_000;
 const PREVIEW_INSPECTOR_HEALTH_ERROR_CHAIN_MS = 5_000;
 const PREVIEW_INSPECTOR_HEALTH_ERROR_ASSISTANCE_FRAME_LIMIT = 6;
+// Snapshots describe the current state: a return to an earlier state (A -> B -> A) must reach the
+// host again, so they are deduplicated only against the latest snapshot of the same event.
+const previewInspectorRuntimeHealthStateSnapshotEvents = new Set(['page-composition-snapshot']);
 const previewInspectorRuntimeHealthDeferredAssistanceEvents = new Set([
   'runtime-error-cascade',
   'runtime-error-fallback',
@@ -59,6 +62,9 @@ function initializePreviewInspectorRuntimeHealthState() {
   }
   if (!Number.isSafeInteger(previewInspectorSession.runtimeHealthSequence)) {
     previewInspectorSession.runtimeHealthSequence = 0;
+  }
+  if (!(previewInspectorSession.runtimeHealthLatestSnapshots instanceof Map)) {
+    previewInspectorSession.runtimeHealthLatestSnapshots = new Map();
   }
 }
 
@@ -167,10 +173,21 @@ function recordPreviewInspectorRuntimeHealth(candidate = {}) {
   } catch {
     fingerprint = String(previewEntryRevision) + ':' + category + ':' + event;
   }
-  if (previewInspectorSession.runtimeHealthFingerprints.has(fingerprint)) return undefined;
+  const snapshotKey = previewInspectorRuntimeHealthStateSnapshotEvents.has(event)
+    ? category + '\0' + event
+    : undefined;
+  if (snapshotKey !== undefined) {
+    if (previewInspectorSession.runtimeHealthLatestSnapshots.get(snapshotKey) === fingerprint) {
+      return undefined;
+    }
+  } else if (previewInspectorSession.runtimeHealthFingerprints.has(fingerprint)) return undefined;
   previewInspectorSession.runtimeHealthSequence += 1;
   const eventId = 'runtime-health-' + String(previewInspectorSession.runtimeHealthSequence);
-  previewInspectorSession.runtimeHealthFingerprints.set(fingerprint, eventId);
+  if (snapshotKey !== undefined) {
+    previewInspectorSession.runtimeHealthLatestSnapshots.set(snapshotKey, fingerprint);
+  } else {
+    previewInspectorSession.runtimeHealthFingerprints.set(fingerprint, eventId);
+  }
   if (previewInspectorSession.runtimeHealthFingerprints.size > PREVIEW_INSPECTOR_HEALTH_RECORD_LIMIT) {
     previewInspectorSession.runtimeHealthFingerprints.delete(
       previewInspectorSession.runtimeHealthFingerprints.keys().next().value,

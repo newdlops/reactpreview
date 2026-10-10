@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { createPreviewReduxBridgePlugin } from '../../../src/adapters/esbuild/previewReduxBridgePlugin';
+import { createPreviewSampleDateApiExpression } from '../../../src/adapters/esbuild/previewSampleDateRuntimeSource';
 import {
   FAKE_REACT_REDUX_MARKER,
   installFakeReactReduxPackage,
@@ -137,6 +138,41 @@ describe('createPreviewReduxBridgePlugin', () => {
         frozenSlice: true,
         isSuspended: false,
         status: 'active: read-only static store with target-inferred neutral state',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Seeded timestamps and date text land on the preview's current day; other text is kept. */
+  it('places canonical sample dates in automatic state on the current day', async () => {
+    const projectRoot = await createTemporaryProject('redux-automatic-dates-preview-');
+
+    try {
+      await installFakeReactReduxPackage(projectRoot);
+      const context = await executeReduxBridgeFixture(
+        projectRoot,
+        [
+          "import { createReduxPreviewElement } from 'react-preview:redux';",
+          "const element = createReduxPreviewElement('target', { configuration: undefined });",
+          'globalThis.__reduxBridgeResult = element.props.store.getState().callBlock.report;',
+        ].join('\n'),
+        {
+          callBlock: {
+            report: {
+              createdAt: '2026-01-15T09:00:00.000Z',
+              dataAggregatedAt: { value: Date.parse('2026-01-15T09:00:00.000Z') },
+              name: '2026-01-15 release',
+            },
+          },
+        },
+        `${createPreviewSampleDateApiExpression()}.baseOverride = new Date(2026, 9, 6, 12);`,
+      );
+
+      expect(JSON.parse(JSON.stringify(context.__reduxBridgeResult))).toEqual({
+        createdAt: '2026-10-06T09:00:00.000Z',
+        dataAggregatedAt: { value: Date.parse('2026-10-06T09:00:00.000Z') },
+        name: '2026-01-15 release',
       });
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
@@ -355,12 +391,15 @@ async function createTemporaryProject(prefix: string): Promise<string> {
  *
  * @param projectRoot Nearest package root used by the bridge's optional dependency lookup.
  * @param source JavaScript fixture that records serializable assertions on `globalThis`.
+ * @param automaticState Host-generated neutral state passed to the bridge plugin.
+ * @param prelude Script run in the VM before the bundle, for example to pin the sample day.
  * @returns Context containing values committed by the generated fixture.
  */
 async function executeReduxBridgeFixture(
   projectRoot: string,
   source: string,
   automaticState?: Parameters<typeof createPreviewReduxBridgePlugin>[0]['automaticState'],
+  prelude?: string,
 ): Promise<Context> {
   const result = await build({
     absWorkingDir: projectRoot,
@@ -398,6 +437,7 @@ async function executeReduxBridgeFixture(
   };
   sandbox.globalThis = sandbox;
   const context = createContext(sandbox);
+  if (prelude !== undefined) runInContext(prelude, context, { timeout: 10_000 });
   runInContext(javascript, context, { timeout: 10_000 });
   return context;
 }

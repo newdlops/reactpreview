@@ -403,6 +403,53 @@ describe('createReactContextHookFallbackTransform', () => {
       replacements: [],
     });
   });
+
+  /**
+   * A leaf printed only through an untagged template string would read "undefined차", so it gets
+   * its key label; a leaf rendered as a JSX child (shown as nothing) and tagged templates stay
+   * value-free.
+   */
+  it('labels a leaf printed only through an untagged template string', () => {
+    const source = [
+      `import { useHistoryContext } from './history-context';`,
+      'export function Summary() {',
+      '  const { data: { investment: { round, memo, fragment } } } = useHistoryContext();',
+      "  const rows = [{ key: 'round', cell: `${round}차` }];",
+      '  return <p title={rows[0].cell}>{memo}{gql`${fragment}`}</p>;',
+      '}',
+    ].join('\n');
+
+    const declarations = createReactContextHookFallbackTransform(
+      '/workspace/summary.tsx',
+      source,
+    ).declarations;
+
+    expect(declarations).toEqual([
+      'const __reactPreviewContextHookFallback0 = Object.freeze({ "data": Object.freeze({ "investment": Object.freeze({ "round": "Round" }) }) });',
+    ]);
+  });
+
+  /** Member reads get the same label; a path other code uses as an object stays an object. */
+  it('labels template-printed member reads without overriding object evidence', () => {
+    const source = [
+      `import { useHistoryContext } from './history-context';`,
+      'export function Summary() {',
+      '  const ctx = useHistoryContext();',
+      '  const investment = ctx.data.investment;',
+      '  const label = `${investment.round}차 ${ctx.data.memo} ${investment.stage}`;',
+      '  return <p title={label}>{investment.stage.name}</p>;',
+      '}',
+    ].join('\n');
+
+    const declarations = createReactContextHookFallbackTransform(
+      '/workspace/member.tsx',
+      source,
+    ).declarations;
+
+    expect(declarations).toEqual([
+      'const __reactPreviewContextHookFallback0 = Object.freeze({ "data": Object.freeze({ "investment": Object.freeze({ "round": "Round", "stage": Object.freeze({}) }), "memo": "Memo" }) });',
+    ]);
+  });
 });
 
 /** Applies generated source ranges right-to-left and appends their stable module declarations. */

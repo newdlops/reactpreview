@@ -23,7 +23,7 @@ describe('Page Inspector data runtime source', () => {
     expect(cloneJson(runtime.generate(shape))).toEqual({
       publicInvestorRelations: {
         companyInfo: {
-          name: 'name',
+          name: 'Name',
           profileLogo: { url: 'https://example.com/preview/1' },
         },
       },
@@ -60,9 +60,9 @@ describe('Page Inspector data runtime source', () => {
     const automatic = cloneJson(runtime.resolve(metadata, {}));
     expect(automatic).toEqual({
       employees: [
-        { active: true, id: 'preview-1', name: 'name', salary: 1 },
-        { active: true, id: 'preview-2', name: 'name', salary: 2 },
-        { active: true, id: 'preview-3', name: 'name', salary: 3 },
+        { active: true, id: 'preview-1', name: 'Name', salary: 1 },
+        { active: true, id: 'preview-2', name: 'Name', salary: 2 },
+        { active: true, id: 'preview-3', name: 'Name', salary: 3 },
       ],
     });
     expect(cloneJson(runtime.requests())[0]).toMatchObject({ mode: 'auto' });
@@ -71,7 +71,7 @@ describe('Page Inspector data runtime source', () => {
     expect(cloneJson(runtime.requests())[0]).toMatchObject({
       mode: 'smart',
       payload: {
-        employees: [{ active: true, id: 'preview-1', name: 'name', salary: 1 }],
+        employees: [{ active: true, id: 'preview-1', name: 'Name', salary: 1 }],
       },
     });
 
@@ -228,12 +228,12 @@ describe('Page Inspector data runtime source', () => {
           },
           {
             appointmentDirectorType: 'PREVIEW',
-            date: '2026-01-16T09:00:00.000Z',
+            date: '2026-01-14T09:00:00.000Z',
             eventType: 'PREVIEW',
           },
           {
             appointmentDirectorType: 'PREVIEW',
-            date: '2026-01-17T09:00:00.000Z',
+            date: '2026-01-13T09:00:00.000Z',
             eventType: 'PREVIEW',
           },
         ],
@@ -275,11 +275,7 @@ describe('Page Inspector data runtime source', () => {
     const document = graphqlOperationDocument('HistoryPanel', source);
     runtime.registerGraphqlDemand(
       document,
-      [
-        'data.history.events.[]',
-        'data.history.events.[].date',
-        'data.history.events.[].eventType',
-      ],
+      ['data.history.events.[]', 'data.history.events.[].date', 'data.history.events.[].eventType'],
       ['appointed', 'ended', 'co-ceo'].map((value) => ({
         path: 'data.history.events.[].eventType',
         value,
@@ -311,7 +307,7 @@ describe('Page Inspector data runtime source', () => {
   });
 
   // prettier-ignore
-  it.each([['authored-page', undefined, 'corridor-auto', []], ['file-components', undefined, 'auto', ['value', 'value', 'value']], ['file-components', 'page:Target', 'corridor-auto', []]])('uses %s with active key %s', (scenario, activeKey, profile, payload) => {
+  it.each([['authored-page', undefined, 'corridor-auto', []], ['file-components', undefined, 'auto', ['Value', 'Value', 'Value']], ['file-components', 'page:Target', 'corridor-auto', []]])('uses %s with active key %s', (scenario, activeKey, profile, payload) => {
     const runtime = evaluateDataRuntime(undefined, activeKey, scenario);
     const metadata: unknown = JSON.parse('{"id":"profile-race","kind":"graphql","label":"ProfileRace","shape":{"items":{"kind":"string"},"kind":"array"}}');
     expect(cloneJson(runtime.resolve(metadata, []))).toEqual(payload);
@@ -345,11 +341,11 @@ describe('Page Inspector data runtime source', () => {
       shape: { items: { kind: 'string' }, kind: 'array' },
     };
 
-    expect(cloneJson(runtime.resolve(metadata, []))).toEqual(['value', 'value', 'value']);
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual(['Value', 'Value', 'Value']);
     runtime.target('page:Target');
     expect(cloneJson(runtime.resolve(metadata, []))).toEqual([]);
     runtime.target(undefined);
-    expect(cloneJson(runtime.resolve(metadata, []))).toEqual(['value', 'value', 'value']);
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual(['Value', 'Value', 'Value']);
   });
 
   /** Uses compact field keys for Auto text while leaving deliberate Lorem generation explicit. */
@@ -377,9 +373,9 @@ describe('Page Inspector data runtime source', () => {
     );
 
     expect(payload).toEqual({
-      address: 'address',
-      description: 'description',
-      [longKey]: `${longKey.slice(0, 31)}…`,
+      address: 'Address',
+      description: 'Description',
+      [longKey]: 'This field name would otherwise…',
     });
   });
 
@@ -417,12 +413,12 @@ describe('Page Inspector data runtime source', () => {
     expect(payload).toEqual({
       called: false,
       currentPage: 1,
-      initialPage: 'initialPage',
+      initialPage: 'Initial page',
       metadata: {},
       results: [],
       siblingItems: [{}, {}, {}],
       sum: 0,
-      title: 'title',
+      title: 'Title',
       totalSum: 0,
     });
   });
@@ -446,7 +442,7 @@ describe('Page Inspector data runtime source', () => {
       ),
     );
 
-    expect(payload).toEqual({ called: false, currentPage: 1, initialPage: 'initialPage', sum: 0 });
+    expect(payload).toEqual({ called: false, currentPage: 1, initialPage: 'Initial page', sum: 0 });
   });
 
   /** Reuses an unchanged response object so application memo/effect dependencies can settle. */
@@ -544,7 +540,7 @@ describe('Page Inspector data runtime source', () => {
         isDeleted: false,
         isLegalServicePartner: true,
         isTaxServicePartner: false,
-        name: 'name',
+        name: 'Name',
       },
       user: { isLegalPartnerStaff: false },
     });
@@ -573,7 +569,7 @@ describe('Page Inspector data runtime source', () => {
     };
 
     expect(cloneJson(runtime.resolve(metadata, {}, requestContext))).toEqual({
-      companyWithDeletionStatus: { id: '42', name: 'name' },
+      companyWithDeletionStatus: { id: '42', name: 'Name' },
     });
     runtime.set(
       'company-shell',
@@ -833,9 +829,9 @@ describe('Page Inspector data runtime source', () => {
     await expect(response.json()).resolves.toEqual({
       data: {
         staff: [
-          { id: 'preview-1', isActive: true, name: 'name' },
-          { id: 'preview-2', isActive: true, name: 'name' },
-          { id: 'preview-3', isActive: true, name: 'name' },
+          { id: 'preview-1', isActive: true, name: 'Name' },
+          { id: 'preview-2', isActive: true, name: 'Name' },
+          { id: 'preview-3', isActive: true, name: 'Name' },
         ],
       },
     });
@@ -857,9 +853,9 @@ describe('Page Inspector data runtime source', () => {
     await expect(response.json()).resolves.toEqual({
       data: {
         legalPartnersForCompanyCreate: [
-          { id: 'preview-1', isRecommendedForCompanyCreate: false, name: 'name' },
-          { id: 'preview-2', isRecommendedForCompanyCreate: false, name: 'name' },
-          { id: 'preview-3', isRecommendedForCompanyCreate: false, name: 'name' },
+          { id: 'preview-1', isRecommendedForCompanyCreate: false, name: 'Name' },
+          { id: 'preview-2', isRecommendedForCompanyCreate: false, name: 'Name' },
+          { id: 'preview-3', isRecommendedForCompanyCreate: false, name: 'Name' },
         ],
       },
     });
@@ -884,7 +880,7 @@ describe('Page Inspector data runtime source', () => {
       data: {
         vcmInvestorCompanyFeeds: Array.from({ length: 3 }, () => ({
           ir: {
-            investorsUnderIrReview: Array.from({ length: 3 }, () => ({ name: 'name' })),
+            investorsUnderIrReview: Array.from({ length: 3 }, () => ({ name: 'Name' })),
           },
         })),
       },
@@ -911,9 +907,9 @@ describe('Page Inspector data runtime source', () => {
       data: {
         rightToConsentOrConsultList: {
           objectList: [
-            { id: 'preview-1', title: 'title' },
-            { id: 'preview-2', title: 'title' },
-            { id: 'preview-3', title: 'title' },
+            { id: 'preview-1', title: 'Title' },
+            { id: 'preview-2', title: 'Title' },
+            { id: 'preview-3', title: 'Title' },
           ],
           pageInfo: { count: 1, hasNext: false },
         },
@@ -963,21 +959,21 @@ describe('Page Inspector data runtime source', () => {
     expect(cloneJson(request.response)).toEqual([
       {
         active: true,
-        description: 'description',
+        description: 'Description',
         id: 'preview-1',
-        name: 'name',
+        name: 'Name',
       },
       {
         active: true,
-        description: 'description',
+        description: 'Description',
         id: 'preview-2',
-        name: 'name',
+        name: 'Name',
       },
       {
         active: true,
-        description: 'description',
+        description: 'Description',
         id: 'preview-3',
-        name: 'name',
+        name: 'Name',
       },
     ]);
   });
@@ -1231,7 +1227,7 @@ describe('Page Inspector data runtime source', () => {
     expect(cloneJson(runtime.requests())[0]).toMatchObject({
       mode: 'seed',
       payload: {},
-      suggestedPayload: { profile: { active: true, name: 'name' } },
+      suggestedPayload: { profile: { active: true, name: 'Name' } },
     });
     expect(cloneJson(runtime.paths(metadata.shape))).toEqual(['profile.active', 'profile.name']);
   });
@@ -1335,6 +1331,8 @@ function resetPreviewInspectorGeneratedRuntimeFallbackValues() {
 }
 ${createPreviewGeneratedListRuntimeSource()}
 ${createPreviewInspectorDataRuntimeSource()}
+// Generated rows count back from the preview's current day; pin that day for stable payloads.
+previewInspectorSampleDates.baseOverride = new Date(2026, 0, 15, 12);
 ${createPreviewInspectorNeuralResidualRuntimeSource()}
 ${createPreviewInspectorHookGraphqlRuntimeSource()}
 globalThis.__dataRuntime = {

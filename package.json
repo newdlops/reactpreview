@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Preview React files in their authored page context with an inspector, without running a development server.",
-  "version": "0.1.1524",
+  "version": "0.1.1601",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
@@ -135,6 +135,12 @@
           "default": true,
           "scope": "resource",
           "description": "Reuse the nearest .storybook/preview module's global decorators when no explicit setupFile is configured. Storybook server and main configuration are never executed."
+        },
+        "reactPreview.remoteStylesheets": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "Let ready previews load HTTPS stylesheets the project links, such as Google Fonts, Pretendard, or CDN themes, so web fonts render as in the app. Stylesheets cannot run scripts. Turn this off to keep the strict policy that loads styles only from the extension."
         }
       }
     }

@@ -5,6 +5,7 @@
  */
 import type { PreviewStaticModuleResolver } from '../previewStaticModuleResolver';
 import type { PreviewLocalTargetExportInstrumentation } from './previewLocalTargetExportInstrumentation';
+import type { PreviewTypeOracleView } from '../typeOracle/previewTypeOracle';
 
 /** Immutable transformer configuration for one compilation request. */
 export interface PreviewSourceTransformerOptions {
@@ -37,10 +38,14 @@ export interface PreviewSourceTransformerOptions {
   readonly instrumentGraphqlDocuments?: boolean;
   /** Whether render-critical custom hooks may receive visible, user-toggleable static fallbacks. */
   readonly instrumentRuntimeHookFallbacks?: boolean;
+  /** Build-scoped declared-type oracle; hook fallbacks gain type-correct values when present. */
+  readonly typeOracle?: PreviewTypeOracleView;
   /** Whether failing React effects may be logged and isolated from otherwise valid page output. */
   readonly instrumentRuntimeEffectIsolation?: boolean;
   /** Exact selected target bindings whose same-module references need the Inspector boundary. */
   readonly localTargetExportInstrumentation?: PreviewLocalTargetExportInstrumentation;
+  /** Offsets where owner modules render the selected target, keyed by normalized owner path. */
+  readonly selectedTargetOccurrences?: ReadonlyMap<string, readonly number[]>;
   /** Resolver used only to trace an interpolated GraphQL fragment to authored workspace source. */
   readonly graphqlModuleResolver?: Pick<PreviewStaticModuleResolver, 'resolve'>;
   /** Dirty-editor source lookup consulted before the GraphQL catalog reads an on-disk module. */

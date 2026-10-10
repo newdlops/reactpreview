@@ -441,9 +441,24 @@ export function createPreviewInspectorPageExecutionCandidates(
         )
       : candidates;
   return Object.freeze(
-    deduplicateCandidates(topologyCandidates).map((candidate) =>
+    deduplicateCandidates(topologyCandidates.filter(hasAuthenticRuntimeTarget)).map((candidate) =>
       attachOptionalSurfaces(candidate, options.plan),
     ),
+  );
+}
+
+/**
+ * Rejects a candidate whose runtime-target role is a virtual slice. The target always loads through
+ * the target facade, so a slice of that same export never enters the graph and frontier
+ * verification discards the build; a page that is itself the target yields such sliced variants.
+ */
+function hasAuthenticRuntimeTarget(candidate: PreviewInspectorPageExecutionCandidate): boolean {
+  const target = candidate.criticalSurfaces.find(
+    (surface) => surface.id === candidate.runtimeTargetSurfaceId,
+  );
+  return (
+    target?.strategy !== 'selected-export-slice' &&
+    target?.strategy !== 'inner-local-component-slice'
   );
 }
 

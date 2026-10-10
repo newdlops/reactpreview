@@ -13,7 +13,10 @@ import {
   createPreviewGlobalPackageBridgePlugin,
   type PreviewGlobalPackageBridgePlan,
 } from './globalPackageBridge';
-import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
+import {
+  createPreviewNodeBuiltinPlugin,
+  PREVIEW_NODE_PATH_GLOBAL_DEFINES,
+} from './previewNodeBuiltinPlugin';
 import { PREVIEW_BROWSER_OUTPUT_OPTIONS } from './previewBrowserOutputOptions';
 
 interface PreviewVendorDemand {
@@ -24,7 +27,7 @@ interface PreviewVendorDemand {
 }
 
 /** Invalidates persisted vendor outputs whenever the browser-module closure contract changes. */
-const PREVIEW_VENDOR_BUILD_SCHEMA = 7;
+const PREVIEW_VENDOR_BUILD_SCHEMA = 9;
 
 export interface PreviewVendorBuildOutput {
   readonly chunks: readonly PreviewBundleChunk[];
@@ -320,7 +323,7 @@ async function buildVendorOutput(
     absWorkingDir: options.workspaceRoot,
     bundle: true,
     chunkNames: 'chunks/vendor/shared/[hash]',
-    define: { 'process.env.NODE_ENV': '"development"' },
+    define: { ...PREVIEW_NODE_PATH_GLOBAL_DEFINES, 'process.env.NODE_ENV': '"development"' },
     entryNames: 'chunks/vendor/entries/[name]-[hash]',
     entryPoints: Object.fromEntries(
       options.demands.map((demand, index) => [

@@ -3,7 +3,13 @@
  * The boundary supplies stable plain state and inert dispatch semantics. It never imports reducers
  * or executes store bootstrap; optional nested values come only from bounded selector syntax and
  * use falsey neutral leaves so the preview does not opt into privileged application branches.
+ * Date-named leaves are the exception: they hold the canonical sample date, placed here on the
+ * preview's current day like every other generated date.
  */
+import {
+  createPreviewSampleDateApiExpression,
+  PREVIEW_CANONICAL_SAMPLE_EPOCH_MILLIS,
+} from './previewSampleDateRuntimeSource';
 
 /** Resolved project module required to build the optional Redux preview boundary. */
 export interface PreviewReduxRuntimeSourceOptions {
@@ -46,13 +52,31 @@ import * as ReactRedux from ${encodedModulePath};
 
 const BLOCKED_STATE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const EMPTY_STATIC_STATE = Object.freeze({});
-const HOST_AUTOMATIC_STATE = freezeStaticValue(${encodedAutomaticState});
+const previewReduxSampleDates = ${createPreviewSampleDateApiExpression()};
+const HOST_AUTOMATIC_STATE = freezeStaticValue(
+  rebaseStaticSampleDates(${encodedAutomaticState}, 0),
+);
 const MAX_REGISTERED_PATHS = 256;
 const MAX_STATE_PATH_DEPTH = 16;
 const MAX_STATE_KEY_LENGTH = 128;
 const registeredStatePaths = new Map();
 let cachedAutomaticState = HOST_AUTOMATIC_STATE;
 let previewRuntimeStatus = 'available: static Redux provider has not been composed yet';
+
+/** Moves canonical sample dates (ISO text or epoch milliseconds) onto the current day. */
+function rebaseStaticSampleDates(value, depth) {
+  if (typeof value === 'string') return previewReduxSampleDates.rebase(value);
+  if (value === ${String(PREVIEW_CANONICAL_SAMPLE_EPOCH_MILLIS)}) {
+    return Date.parse(previewReduxSampleDates.dateTime(0));
+  }
+  if (value === null || typeof value !== 'object' || depth > 16) return value;
+  if (Array.isArray(value)) return value.map((item) => rebaseStaticSampleDates(item, depth + 1));
+  const result = {};
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (!BLOCKED_STATE_KEYS.has(key)) result[key] = rebaseStaticSampleDates(nestedValue, depth + 1);
+  }
+  return result;
+}
 
 /** Recursively freezes host-generated JSON so target dispatch and mutation cannot change it. */
 function freezeStaticValue(value) {

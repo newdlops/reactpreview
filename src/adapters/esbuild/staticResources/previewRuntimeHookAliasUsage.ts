@@ -26,7 +26,8 @@ import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemanti
 import {
   isPreviewRuntimeHookEmptyRenderableJsxValue,
   isPreviewRuntimeHookMutableRefJsxValue,
-  isPreviewRuntimeHookRenderedJsxValue,
+  createPreviewRuntimeHookRenderedTextExpression,
+  isPreviewRuntimeHookTextValue,
 } from './previewRuntimeHookDirectUsage';
 import { collectPreviewRuntimeHookStateAliases } from './previewRuntimeHookStateAlias';
 
@@ -926,14 +927,9 @@ function normalizeAliasUsage(
       : undefined;
   const mutableRef = isPreviewRuntimeHookMutableRefJsxValue(expression);
   const emptyRenderable = isPreviewRuntimeHookEmptyRenderableJsxValue(expression);
-  const rendered = isPreviewRuntimeHookRenderedJsxValue(expression);
-  const renderedFallback = rendered
-    ? inferPreviewRuntimeSemanticFallback(terminal ?? '')
-    : undefined;
+  const rendered = isPreviewRuntimeHookTextValue(expression);
   const renderedExpression = rendered
-    ? renderedFallback?.kind === 'string' || renderedFallback?.kind === 'number'
-      ? renderedFallback.expression
-      : JSON.stringify(terminal ?? 'value')
+    ? createPreviewRuntimeHookRenderedTextExpression(terminal)
     : undefined;
   return Object.freeze({
     called: !collection && !stringReceiver && called,

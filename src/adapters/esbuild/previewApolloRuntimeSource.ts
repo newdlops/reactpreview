@@ -3,6 +3,7 @@
  * Keeping this source separate from resolver policy makes the no-network behavior auditable and
  * lets future GraphQL adapters evolve without expanding the central compiler implementation.
  */
+import { PREVIEW_TYPED_GRAPHQL_SHAPE_RUNTIME_SOURCE } from './previewTypedGraphqlShapeRuntimeSource';
 
 /** Resolved project modules required to build an Apollo preview boundary. */
 export interface PreviewApolloRuntimeSourceOptions {
@@ -558,19 +559,31 @@ function createStaticApolloShape(document, operationName) {
   return { fields, kind: 'object' };
 }
 
+${PREVIEW_TYPED_GRAPHQL_SHAPE_RUNTIME_SOURCE}
+
 /** Builds shared request metadata for editable Page Inspector GraphQL payloads. */
 function createInspectorApolloRequestMetadata(operation, setupContext) {
-  const seedData = createStaticApolloData(operation.query, operation.operationName);
+  const typedShape = readPreviewTypedGraphqlShape(operation.operationName);
+  const selectionShape = createStaticApolloShape(operation.query, operation.operationName);
+  const shape = typedShape === undefined
+    ? selectionShape
+    : mergePreviewTypedGraphqlShape(selectionShape, typedShape, 0);
+  const staticSeed = createStaticApolloData(operation.query, operation.operationName);
+  const seedData = typedShape === undefined
+    ? staticSeed
+    : applyPreviewTypedGraphqlSeed(staticSeed, shape, 0);
   const selectedOperation = selectOperation(operation.query, operation.operationName);
   const operationKind = String(selectedOperation?.operation ?? 'query').toUpperCase();
   return {
     metadata: {
-      evidence: 'GraphQL selection, aliases, fragments, and field-name inference',
+      evidence: typedShape === undefined
+        ? 'GraphQL selection, aliases, fragments, and field-name inference'
+        : 'Declared TypeScript operation result, GraphQL selection, aliases, and fragments',
       kind: 'graphql',
       label: (setupContext.documentName || 'GraphQL') + ' · ' + (operation.operationName || 'Anonymous operation'),
       method: operationKind,
       operationName: operation.operationName ?? '',
-      shape: createStaticApolloShape(operation.query, operation.operationName),
+      shape,
       sourcePath: setupContext.documentName,
     },
     seedData,

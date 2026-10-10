@@ -22,8 +22,8 @@ React 컴포넌트가 실제 페이지 안에서 어떻게 보이는지 VS Code�
   Auto·Smart·JSON 값으로 프리뷰 상태를 조정할 수 있습니다.
 - **스타일과 자산 재사용**: 프로젝트의 CSS, CSS Modules, Sass, Tailwind, styled-components theme,
   이미지·폰트와 public asset을 가능한 범위에서 그대로 사용합니다.
-- **서버 없는 격리 실행**: 앱의 백엔드나 개발 서버를 시작하지 않고, 외부 네트워크가 차단된 VS Code
-  웹뷰에서 번들을 실행합니다.
+- **서버 없는 격리 실행**: 앱의 백엔드나 개발 서버를 시작하지 않고, fetch·WebSocket 같은 외부 연결이
+  차단된 VS Code 웹뷰에서 번들을 실행합니다. 웹 폰트 CSS 같은 HTTPS stylesheet는 설정으로 끌 수 있습니다.
 
 ## 설치
 

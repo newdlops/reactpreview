@@ -6,6 +6,11 @@
  * nearest concrete page checkpoint. This avoids evaluating unrelated bootstraps while preserving
  * the route, omitted shell path, current-file instrumentation, global styles, and framework shells.
  */
+import {
+  completePreviewAutomaticProps,
+  completePreviewTypedListShape,
+  type PreviewTypedPropValue,
+} from '../typeOracle/previewTypedComponentProps';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
@@ -19,6 +24,7 @@ import type {
   PreviewInspectorComponentReference,
 } from './previewInspectorAncestorPlan';
 import type { PreviewInspectorPageCandidate } from './previewInspectorAncestorTypes';
+import { createPreviewInspectorAutomaticPropsSampleDateStatements } from './previewInspectorAutomaticPropsSampleDates';
 import {
   createPreviewInspectorDirectTargetSpecifier,
   PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER,
@@ -49,6 +55,7 @@ import type { PreviewInspectorPageExecutionCandidate } from './previewInspectorP
 import type { PreviewInspectorExecutionRootModuleContract } from './previewInspectorExecutionRootModuleContract';
 import { canBundlePreviewInspectorDirectTargetDefinitions } from './previewInspectorDirectTargetBundling';
 import type { PreviewInspectorTargetModuleContract } from './previewInspectorTargetModuleContract';
+import { createPreviewInspectorPageExecutionCandidateSummaries } from './previewInspectorPageExecutionCandidateSummary';
 const INSPECTOR_ROOT_PATH = 'selected-ancestor-root';
 const INSPECTOR_RENDER_BOOTSTRAP_NAMESPACE = 'react-preview-inspector-render-bootstrap';
 const INSPECTOR_RENDER_BOOTSTRAP_SPECIFIER_PREFIX = 'react-preview:inspector-render-bootstrap/';
@@ -86,6 +93,8 @@ export interface PreviewInspectorRootPluginOptions {
   readonly targetInference?: PreviewInferredExportProps;
   /** Prepared-source target identity shared with the exact facade and PageExecution edge. */
   readonly targetModuleContract?: PreviewInspectorTargetModuleContract;
+  /** Typed values for required target props that usage literals left missing. */
+  readonly targetTypedProps?: Readonly<Record<string, PreviewTypedPropValue>> | undefined;
   /** Exact page-corridor theme imported before any lazy authored root begins rendering. */
   readonly themeImport?: PreviewThemeImportSelection;
 }
@@ -128,6 +137,7 @@ export function createPreviewInspectorRootPlugin(
         ...(options.pageExecutionCandidates === undefined ? {} : { pageExecutionCandidates: options.pageExecutionCandidates }),
         plan: options.plan,
         renderBootstrapSpecifiersByCandidateId,
+        targetTypedProps: options.targetTypedProps,
         ...(options.runtimeOwnershipTarget === undefined
           ? {}
           : { runtimeOwnershipTarget: options.runtimeOwnershipTarget }),
@@ -330,6 +340,7 @@ export interface PreviewInspectorRootSourceOptions {
   /** One persisted caller-path choice that may produce an executable loader. */
   readonly selectedPageCandidateId?: string;
   readonly targetInference?: PreviewInferredExportProps;
+  readonly targetTypedProps?: Readonly<Record<string, PreviewTypedPropValue>> | undefined;
   readonly themeImport?: PreviewThemeImportSelection;
 }
 
@@ -403,11 +414,26 @@ export function createPreviewInspectorRootSource(
       id: candidate.id,
       ...(candidate.renderPath === undefined ? {} : { renderPath: candidate.renderPath }),
       root: candidate.root,
-      rootAutomaticProps: candidate.rootAutomaticProps,
+      // A target-only execution mounts the target itself as the root, so it needs the same
+      // declared-type props the contextual target element receives (StatusChip's `status`).
+      rootAutomaticProps:
+        executionCandidate?.fidelity === 'target-only'
+          ? completePreviewAutomaticProps(
+              candidate.rootAutomaticProps,
+              options.targetTypedProps,
+              candidate.rootInference?.shape,
+            )
+          : candidate.rootAutomaticProps,
       ...(candidate.rootInference === undefined
         ? {}
         : {
-            rootInferredPropShape: candidate.rootInference.shape,
+            rootInferredPropShape:
+              executionCandidate?.fidelity === 'target-only'
+                ? completePreviewTypedListShape(
+                    candidate.rootInference.shape,
+                    options.targetTypedProps,
+                  )
+                : candidate.rootInference.shape,
             rootInferredProps: candidate.rootInference.provenance,
           }),
       ...(candidate.nextAppLayoutChain === undefined
@@ -443,8 +469,11 @@ export function createPreviewInspectorRootSource(
             },
           }),
       stopReason: candidate.stopReason,
-      targetAutomaticProps:
+      targetAutomaticProps: completePreviewAutomaticProps(
         executionCandidate?.browserCandidate.targetAutomaticProps ?? candidate.targetAutomaticProps,
+        options.targetTypedProps,
+        runtimeTargetInference?.shape,
+      ),
       ...(executionCandidate?.targetPageTabKeys === undefined ||
       executionCandidate.targetPageTabKeys.length === 0
         ? {}
@@ -586,30 +615,10 @@ export function createPreviewInspectorRootSource(
   const primaryRootIsTarget =
     path.normalize(runtimeOwnershipTarget.sourcePath) === path.normalize(plan.root.sourcePath) &&
     runtimeOwnershipTarget.exportName === plan.root.exportName;
-  const pageExecutionCandidateSummaries = options.pageExecutionCandidates?.map((candidate) => {
-    const executionRoot = candidate.criticalSurfaces.find(
-      (surface) => surface.id === candidate.executionRootSurfaceId,
-    );
-    return {
-      authoredOwnerDepth: candidate.browserCandidate.renderPath?.steps.length ?? 0,
-      executionRootExportName: executionRoot?.exportName,
-      executionRootSourcePath: executionRoot?.sourcePath,
-      executionRootSurfaceId: candidate.executionRootSurfaceId,
-      fidelity: candidate.fidelity,
-      id: candidate.id,
-      nestedMountCount: candidate.routeRecipe?.mounts.length ?? 0,
-      ownsGeneratedRouter:
-        candidate.routeRecipe !== undefined &&
-        !candidate.routeRecipe.rootOwnsRouter &&
-        (candidate.routeRecipe.kind === 'react-router-v5' ||
-          candidate.routeRecipe.kind === 'react-router-v6'),
-      pageRootExportName: candidate.browserCandidate.root.exportName,
-      pageRootSourcePath: candidate.browserCandidate.root.sourcePath,
-      runtimeTargetSurfaceId: candidate.runtimeTargetSurfaceId,
-      standaloneTarget: candidate.standaloneTarget,
-      targetRole: candidate.routeRecipe?.targetRole ?? 'element',
-    };
-  });
+  const pageExecutionCandidateSummaries = createPreviewInspectorPageExecutionCandidateSummaries(
+    options.pageExecutionCandidates,
+    (sourcePath) => readRenderBootstrapSource(options, sourcePath),
+  );
   const descriptor = {
     automaticProps: {},
     displayName: options.displayName ?? runtimeOwnershipTarget.exportName,
@@ -661,7 +670,11 @@ export function createPreviewInspectorRootSource(
         : { routeSelectionResolution: plan.routeSelectionResolution }),
       stopReason: plan.stopReason,
       target: runtimeOwnershipTarget,
-      targetAutomaticProps: runtimeOwnershipDiffersFromAnalysis ? {} : plan.targetAutomaticProps,
+      targetAutomaticProps: completePreviewAutomaticProps(
+        runtimeOwnershipDiffersFromAnalysis ? {} : plan.targetAutomaticProps,
+        options.targetTypedProps,
+        runtimeTargetInference?.shape,
+      ),
       ...(runtimeTargetInference === undefined
         ? {}
         : { targetInferredPropShape: runtimeTargetInference.shape }),
@@ -1021,6 +1034,9 @@ export function createPreviewInspectorRootSource(
       ...directTargetDefinitions,
     ].join(',')}]);`,
     `const __reactPreviewInspectorDescriptor = ${JSON.stringify(descriptor)};`,
+    ...createPreviewInspectorAutomaticPropsSampleDateStatements(
+      '__reactPreviewInspectorDescriptor',
+    ),
     '/** Delegates candidate selection and Suspense loading to the entry-owned Inspector runtime. */',
     'function __reactPreviewInspectorRoot(props) {',
     "  const api = globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')];",

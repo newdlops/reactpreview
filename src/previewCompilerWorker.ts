@@ -5,6 +5,7 @@
 import path from 'node:path';
 import { parentPort, workerData } from 'node:worker_threads';
 import { EsbuildPreviewCompiler } from './adapters/esbuild/esbuildPreviewCompiler';
+import { trustPreviewSystemCertificates } from './adapters/node/previewSystemCertificateTrust';
 import type { PreviewCompilerWorkerBootstrap } from './adapters/worker/previewCompilerWorkerClient';
 import { PreviewCompilerWorkerServer } from './adapters/worker/previewCompilerWorkerServer';
 
@@ -14,6 +15,8 @@ if (parentPort === null) {
 
 const workerPort = parentPort;
 const bootstrap = readWorkerBootstrap(workerData);
+// Package downloads in this thread do not see VS Code's main-thread certificate patching.
+if (bootstrap.trustSystemCertificates !== false) trustPreviewSystemCertificates();
 const server = new PreviewCompilerWorkerServer(
   {
     close: () => {
@@ -34,11 +37,14 @@ server.start();
 function readWorkerBootstrap(value: unknown): PreviewCompilerWorkerBootstrap {
   if (typeof value !== 'object' || value === null) return Object.freeze({});
   const record = value as Readonly<Record<string, unknown>>;
+  const adapterLearningRoot = normalizeAbsolutePath(record.adapterLearningRoot);
   const bundledNodeModulesPath = normalizeAbsolutePath(record.bundledNodeModulesPath);
   const managedDependencyStoreRoot = normalizeAbsolutePath(record.managedDependencyStoreRoot);
   return Object.freeze({
+    ...(adapterLearningRoot === undefined ? {} : { adapterLearningRoot }),
     ...(bundledNodeModulesPath === undefined ? {} : { bundledNodeModulesPath }),
     ...(managedDependencyStoreRoot === undefined ? {} : { managedDependencyStoreRoot }),
+    ...(record.trustSystemCertificates === false ? { trustSystemCertificates: false } : {}),
   });
 }
 

@@ -550,6 +550,35 @@ describe('Preview Inspector condition runtime source', () => {
     expect(harness.resolveCondition('other-candidate-gate', true, metadata)).toBe(true);
   });
 
+  /** Generated REST rows never open VirtualPage guards; guards opened before the rows stay open. */
+  it('keeps guards first seen while REST rows are served on their authored branch', () => {
+    const sourcePath = '/workspace/sku/SkuTab.tsx';
+    const harness = createConditionRuntimeHarness({}, vi.fn(), {
+      descriptors: [{ inspector: {} }],
+      fallbackValuesEnabled: true,
+      selectedPageCandidate: { id: 'candidate-a', virtualPage: { shells: [] } },
+    });
+    const metadata = {
+      expression: '<GradeBadge> gate: !grade || !(grade in GRADE_COLOR)',
+      kind: 'early-return',
+      ownerName: 'GradeBadge',
+      sourcePath,
+      targetBranch: 'falsy',
+    };
+    harness.registerVirtualPageSource(sourcePath);
+    expect(harness.resolveCondition('shell-gate', true, metadata)).toBe(false);
+
+    harness.session.restCollectionFillServing = true;
+    expect(harness.resolveCondition('row-gate', true, metadata)).toBe(true);
+    expect(harness.resolveCondition('shell-gate', true, metadata)).toBe(false);
+    expect(harness.readConditions().find((condition) => condition.id === 'row-gate')).toMatchObject(
+      { autoOverride: undefined, effectiveEnabled: true },
+    );
+
+    harness.session.restCollectionFillServing = false;
+    expect(harness.resolveCondition('later-gate', true, metadata)).toBe(false);
+  });
+
   /** Reverts only the automatic gate that causally introduced a fatal page-render failure. */
   it('rolls back and rejects a failed target-guided condition without touching user state', () => {
     const harness = createConditionRuntimeHarness({}, vi.fn());

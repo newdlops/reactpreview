@@ -5,6 +5,7 @@ import { createPreviewApolloBridgePlugin } from '../../../src/adapters/esbuild/p
 import { createPreviewContextBridgePlugin } from '../../../src/adapters/esbuild/previewContextBridgePlugin';
 import { createPreviewFormikBridgePlugin } from '../../../src/adapters/esbuild/previewFormikBridgePlugin';
 import { createPreviewDragDropBridgePlugin } from '../../../src/adapters/esbuild/previewDragDropBridgePlugin';
+import { createPreviewReactQueryBridgePlugin } from '../../../src/adapters/esbuild/previewReactQueryBridgePlugin';
 import { createPreviewReduxBridgePlugin } from '../../../src/adapters/esbuild/previewReduxBridgePlugin';
 import { createPreviewRouterBridgePlugin } from '../../../src/adapters/esbuild/previewRouterBridgePlugin';
 import { createPreviewThemeBridgePlugin } from '../../../src/adapters/esbuild/previewThemeBridgePlugin';
@@ -48,6 +49,11 @@ const FIXTURES: readonly ProviderBridgeFixture[] = [
     createPlugin: () => createPreviewDragDropBridgePlugin({ projectRoot: PROJECT_ROOT }),
     label: 'Drag and drop',
     specifier: 'react-preview:drag-drop',
+  },
+  {
+    createPlugin: () => createPreviewReactQueryBridgePlugin({ projectRoot: PROJECT_ROOT }),
+    label: 'React Query',
+    specifier: 'react-preview:react-query',
   },
   {
     createPlugin: () => createPreviewReduxBridgePlugin({ projectRoot: PROJECT_ROOT }),

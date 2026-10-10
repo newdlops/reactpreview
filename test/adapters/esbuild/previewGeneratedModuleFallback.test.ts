@@ -9,6 +9,7 @@ import {
   createPreviewGeneratedModuleFallbackPlugin,
   preparePreviewGeneratedBarrelFallback,
 } from '../../../src/adapters/esbuild/previewGeneratedModuleFallback';
+import { createPreviewSampleDateApiExpression } from '../../../src/adapters/esbuild/previewSampleDateRuntimeSource';
 import { PreviewSourceTransformer } from '../../../src/adapters/esbuild/staticResources/previewSourceTransformer';
 import { createWorkspaceSourcePlugin } from '../../../src/adapters/esbuild/workspaceSourcePlugin';
 
@@ -45,7 +46,7 @@ describe('generated module preview fallback', () => {
           '  propertyCursor = propertyCursor?.parent;',
           '  callCursor = callCursor?.();',
           '}',
-          "console.log(Timestamp.fromJSON({}).seconds, propertyCursor, callCursor, 'unknown' in Timestamp);",
+          "console.log(Timestamp.fromJSON({}).seconds, propertyCursor, callCursor, 'unknown' in Timestamp, `${Timestamp.fromJSON({}).name}`);",
         ].join('\n'),
         plugins: [
           createVirtualResolutionPlugin('@scope/proto', virtualPath),
@@ -61,7 +62,69 @@ describe('generated module preview fallback', () => {
         vm.runInNewContext(result.outputFiles?.[0]?.text ?? '', { console: consoleFixture });
       }).not.toThrow();
       expect(consoleFixture.log).toHaveBeenCalledOnce();
-      expect(consoleFixture.log.mock.calls[0]?.slice(1)).toEqual([undefined, undefined, false]);
+      // A contract field called `name` renders as empty text, never as the neutral's own name.
+      expect(consoleFixture.log.mock.calls[0]?.slice(1)).toEqual([undefined, undefined, false, '']);
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  /**
+   * Protobuf wrappers answer from the field holding them: a Timestamp read as
+   * `dataAggregatedAt.value` is today's epoch milliseconds and a count wrapper is 0.
+   */
+  it('gives date and count wrappers a value from their field name', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-generated-wrapper-'));
+    const physicalPath = path.join(workspaceRoot, 'shared', 'proto', 'index.ts');
+    const virtualPath = path.join(
+      workspaceRoot,
+      '.yarn',
+      '__virtual__',
+      'proto-1',
+      '1',
+      'shared',
+      'proto',
+      'index.ts',
+    );
+    try {
+      await mkdir(path.join(path.dirname(physicalPath), 'proto'), { recursive: true });
+      await writeFile(physicalPath, "export * from './generated';", 'utf8');
+      await writeFile(
+        path.join(path.dirname(physicalPath), 'proto', 'report.proto'),
+        'message Report {}',
+        'utf8',
+      );
+      const result = await buildPreviewFixture({
+        entrySource: [
+          "import { Report } from '@scope/proto';",
+          'const report = Report.fromObject({});',
+          'console.log(',
+          '  report.dataAggregatedAt.value,',
+          '  report.cancelled.rideCancelCount.value,',
+          '  `${report.reason.value}`,',
+          '  report.callBanStatus === report.callBanStatus,',
+          ');',
+        ].join('\n'),
+        plugins: [
+          createVirtualResolutionPlugin('@scope/proto', virtualPath),
+          createWorkspacePlugin(workspaceRoot),
+        ],
+        workspaceRoot,
+      });
+      const consoleFixture = { log: vi.fn(), warn: vi.fn() };
+      const context = vm.createContext({ console: consoleFixture });
+      vm.runInContext(
+        `${createPreviewSampleDateApiExpression()}.baseOverride = new Date(2026, 9, 6, 12);`,
+        context,
+      );
+      vm.runInContext(result.outputFiles?.[0]?.text ?? '', context);
+
+      expect(consoleFixture.log.mock.calls[0]).toEqual([
+        Date.parse('2026-10-06T09:00:00.000Z'),
+        0,
+        '',
+        true,
+      ]);
     } finally {
       await rm(workspaceRoot, { force: true, recursive: true });
     }

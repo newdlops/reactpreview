@@ -364,7 +364,9 @@ function normalizePreviewInspectorConditionMetadata(metadata) {
     ...(source.synchronousContinuation === true ? { synchronousContinuation: true } : {}),
     ...(['navigation', 'overlay'].includes(source.role) ? { role: source.role } : {}),
     ...(scalarExpression === undefined ? {} : { scalarExpression }),
+    ...(source.stateBound === true ? { stateBound: true } : {}),
     ...(targetBranch === undefined ? {} : { targetBranch }),
+    ...(source.targetBranchEvidence === 'selected-target' ? { targetBranchEvidence: 'selected-target' } : {}),
     truthyLabel: readText('truthyLabel', 'visible'),
   };
 }
@@ -636,6 +638,7 @@ function didPreviewInspectorConditionChange(previous, next) {
     'sourcePath',
     'synchronousContinuation',
     'targetBranch',
+    'targetBranchEvidence',
     'truthyLabel',
   ]) {
     if (previous[name] !== next[name]) return true;
@@ -772,6 +775,12 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
     rememberPreviewInspectorDirectTargetCondition(conditionId);
     autoOverrides.set(conditionId, directContinuation);
     autoOverride = directContinuation;
+  }
+  // A chosen 'tab === "members"' fixes tab for sibling comparisons such as 'tab === "overview"';
+  // a manual choice also decides a condition the automatic search forced.
+  if (override === undefined && outcomeOverride === undefined) {
+    autoOverride = readPreviewInspectorScalarCoherentOverride(normalizedMetadata, autoOverride !== undefined) ??
+      autoOverride;
   }
   const applicableOverrides = readPreviewInspectorApplicableConditionOverrides(conditionId, authoredValue, normalizedMetadata, override, outcomeOverride, autoOverride);
   const effectiveEnabled = applicableOverrides.outcomeOverride ?? applicableOverrides.manualOverride ?? applicableOverrides.autoOverride ?? authoredEnabled;

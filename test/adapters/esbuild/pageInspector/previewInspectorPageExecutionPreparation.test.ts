@@ -290,6 +290,40 @@ describe('page execution preparation recovery', () => {
     expect(result).toEqual({ status: 'page-context-incomplete', exhausted: false, output: true });
   });
 
+  /** A target with its own output settles its value search instead of searching forever. */
+  it('settles a searching requirement search when preparation stops after target output', () => {
+    const result: unknown = vm.runInNewContext(`
+      const React = { Component: class {} };
+      const previewInspectorSession = {
+        minimumRequirementSearchByKey: new Map([['page', { pass: 1, status: 'searching' }]]),
+      };
+      let notifications = 0;
+      function notifyPreviewInspector() { notifications += 1; }
+      function schedulePreviewInspectorTreeRefresh() {}
+      function readPreviewInspectorRuntimeFallbacks() { return []; }
+      function readPreviewInspectorDataRequests() { return []; }
+      ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+      const state = { exhausted: false, key: 'page', status: 'reached' };
+      function hasMountedPreviewInspectorTarget() { return true; }
+      function hasPreviewInspectorTargetRenderError() { return false; }
+      function hasPreviewInspectorTargetHostOutput() { return true; }
+      function isPreviewInspectorPageExecutionPreparationBlocked() { return true; }
+      evaluatePreviewInspectorTargetReachability({}, {}, state);
+      ({
+        exhausted: state.exhausted,
+        notifications,
+        search: previewInspectorSession.minimumRequirementSearchByKey.get('page').status,
+        status: state.status,
+      });
+    `);
+    expect(result).toEqual({
+      exhausted: false,
+      notifications: 1,
+      search: 'settled',
+      status: 'page-context-incomplete',
+    });
+  });
+
   it('keeps progress on one absolute settlement deadline', async () => {
     expect(
       await scenario(`

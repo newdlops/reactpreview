@@ -13,6 +13,9 @@ import {
   PREVIEW_RUNTIME_CALL_RESULT_MARKER_KEY,
   PREVIEW_RUNTIME_PROMISE_RESULT_MARKER_KEY,
 } from '../staticResources/previewRuntimeCallableFallback';
+import { createPreviewSampleDateApiExpression } from '../previewSampleDateRuntimeSource';
+import { PREVIEW_DATE_RANGE_ENDPOINT_PATTERN } from '../previewDateRangeEndpoint';
+import { createPreviewSampleLabelRuntimeSource } from '../previewSampleLabel';
 
 /** Text stored in editable JSON wherever the preview runtime inferred a no-op callback. */
 export const PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL = '[Preview no-op function]';
@@ -29,6 +32,8 @@ export const PREVIEW_INSPECTOR_PROMISE_RESULT_TEMPLATE_KEY = '[Preview generated
 /** Creates browser helpers for editable fallback templates and safe runtime materialization. */
 export function createPreviewInspectorBlockerValueRuntimeSource(): string {
   return String.raw`
+const previewInspectorBlockerSampleDates = ${createPreviewSampleDateApiExpression()};
+${createPreviewSampleLabelRuntimeSource('previewInspectorBlockerSampleLabel')}
 const PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL = ${JSON.stringify(PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL)};
 const PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL = ${JSON.stringify(PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL)};
 const PREVIEW_INSPECTOR_CALL_RESULT_TEMPLATE_KEY = ${JSON.stringify(PREVIEW_INSPECTOR_CALL_RESULT_TEMPLATE_KEY)};
@@ -98,13 +103,12 @@ function copyPreviewInspectorBlockerValueForJson(value, state, depth = 0) {
 
 /** Creates a deterministic preview record for a collection whose item fields remain unknown. */
 function createPreviewInspectorRequiredPathCollectionItem() {
-  return { id: 'preview-1', name: 'name' };
+  return { id: 'preview-1', name: 'Name' };
 }
 
 /** Keeps a generated text leaf visibly tied to its key without expanding application layout. */
 function createPreviewInspectorRequiredPathKeyText(propertyName) {
-  const key = String(propertyName).trim() || 'value';
-  return key.length <= 32 ? key : key.slice(0, 31) + '…';
+  return previewInspectorBlockerSampleLabel(propertyName, 'Value');
 }
 
 /** Infers a type-compatible, visibly synthetic leaf from property-name and call evidence. */
@@ -137,7 +141,10 @@ function createPreviewInspectorRequiredPathLeaf(propertyName, callable) {
   }
   if (name === 'id' || name.endsWith('id') || name === 'uuid') return 'preview-1';
   if (name.includes('email')) return 'preview@example.invalid';
-  if (/(?:date|time|timestamp|createdat|updatedat)$/u.test(name)) return '2026-01-15T09:00:00.000Z';
+  if (/(?:date|time|timestamp|createdat|updatedat)$/u.test(name)) {
+    return previewInspectorBlockerSampleDates.dateTime(0);
+  }
+  if (${PREVIEW_DATE_RANGE_ENDPOINT_PATTERN}.test(rawName)) return previewInspectorBlockerSampleDates.day(0);
   if (/^(?:avatar|image|photo|picture|thumbnail)(?:url|uri|href|src)$/u.test(name)) return '';
   if (/(?:url|uri|href|link)$/u.test(name)) return 'https://example.invalid/preview/1';
   /* Image/data adapters commonly call String methods on src without requiring a valid URL. */

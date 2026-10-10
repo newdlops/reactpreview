@@ -8,6 +8,8 @@ import type { PreviewVendorModuleCacheBackend } from './previewVendorModuleBuild
 
 /** Optional compiler policy overrides used by production bootstrap and deterministic tests. */
 export interface EsbuildPreviewCompilerOptions {
+  /** Global-storage directory for verified per-package-version adapter strategies. */
+  readonly adapterLearningRoot?: string;
   /** Extension-packaged node_modules containing the compatible baseline React runtime. */
   readonly bundledNodeModulesPath?: string;
   /** Persistent global-storage directory used for immutable cross-workspace package environments. */

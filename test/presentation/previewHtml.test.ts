@@ -41,6 +41,53 @@ describe('createPreviewHtml', () => {
     expect(html).not.toContain('react-preview-headless-bridge');
   });
 
+  /** Ready documents keep pages from navigating out of the preview; status documents have no guard. */
+  it('installs the nonce-authorized navigation guard before the entry module', () => {
+    const html = createPreviewHtml(CSP_SOURCE, {
+      documentName: 'Card.tsx',
+      kind: 'ready',
+      runtimeRevision: 7,
+      runtimeToken: '7:guard',
+      scriptUri: 'vscode-webview://unit-test/entry.js',
+    });
+    const guardIndex = html.indexOf('Kept the preview open');
+
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeLessThan(html.indexOf('type="module" src='));
+    expect(html).toContain("navigation.addEventListener('navigate'");
+    expect(html).toContain("event.navigationType !== 'push' && event.navigationType !== 'replace'");
+    expect(
+      createPreviewHtml(CSP_SOURCE, {
+        documentName: 'Card.tsx',
+        kind: 'loading',
+        stage: 'bundling-modules',
+      }),
+    ).not.toContain('Kept the preview open');
+  });
+
+  /** Admits HTTPS stylesheets (web-font CSS) only for ready documents with the setting on. */
+  it('adds HTTPS to style-src only when remote stylesheets are enabled', () => {
+    const ready = {
+      documentName: 'Card.tsx',
+      kind: 'ready' as const,
+      scriptUri: 'vscode-webview://unit-test/entry.js',
+    };
+
+    expect(createPreviewHtml(CSP_SOURCE, { ...ready, remoteStylesheets: true })).toContain(
+      `style-src ${CSP_SOURCE} &#39;unsafe-inline&#39; https:;`,
+    );
+    expect(createPreviewHtml(CSP_SOURCE, ready)).toContain(
+      `style-src ${CSP_SOURCE} &#39;unsafe-inline&#39;;`,
+    );
+    expect(
+      createPreviewHtml(CSP_SOURCE, {
+        kind: 'loading',
+        documentName: 'Card.tsx',
+        stage: 'bundling-modules',
+      }),
+    ).toContain(`style-src ${CSP_SOURCE} &#39;unsafe-inline&#39;;`);
+  });
+
   /** Rehomes authored iframe routes only when the compiler proved an exact loopback app origin. */
   it('allows root-relative iframe documents from a loopback public application origin', () => {
     const html = createPreviewHtml(CSP_SOURCE, {

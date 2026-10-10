@@ -168,6 +168,31 @@ function readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback) {
   return completion;
 }
 
+/** Query packages whose successful hooks own their loading, error, and data lifecycle. */
+const PREVIEW_INSPECTOR_LIVE_QUERY_MODULES = new Set(['@tanstack/react-query', 'react-query']);
+
+/** Recognizes a TanStack/React Query result object, including one returned by a custom wrapper. */
+function isPreviewInspectorQueryResultShape(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    typeof value.refetch === 'function' && typeof value.status === 'string' &&
+    typeof value.isFetching === 'boolean' && typeof value.dataUpdatedAt === 'number';
+}
+
+/**
+ * Reports whether a successful hook value came from a live Query client.
+ * Its data arrives through authored query functions and the preview data boundary, so completing
+ * absent fields during loading would replace the authored state with shape-blind placeholders.
+ * A thrown hook (for example a missing QueryClientProvider) still uses the ordinary fallback.
+ */
+function isPreviewInspectorLiveQueryResult(metadata, value) {
+  if (value === null || value === undefined) return false;
+  if (PREVIEW_INSPECTOR_LIVE_QUERY_MODULES.has(metadata.moduleSpecifier)) return true;
+  if (Array.isArray(value)) {
+    return value.length > 0 && value.every(isPreviewInspectorQueryResultShape);
+  }
+  return isPreviewInspectorQueryResultShape(value);
+}
+
 /** Removes a stale fallback record once the real hook starts producing a usable value. */
 function clearPreviewInspectorRuntimeFallback(metadata) {
   initializePreviewInspectorRuntimeFallbackState();
@@ -192,11 +217,26 @@ function resolvePreviewInspectorRuntimeHook(
   readHookIdentity,
   inheritedResolutionFrame,
 ) {
+  // A store its own module creates (a toast list) is that module's state. Filling it elsewhere
+  // would add sample notifications to every page that mounts the host beside its content, so it
+  // runs exactly as authored, without fallback bookkeeping, unless its module is the opened file.
+  if (
+    rawMetadata?.moduleSpecifier === 'local-store' &&
+    typeof readHook === 'function' &&
+    !isPreviewInspectorSelectedTargetModule(rawMetadata.sourcePath)
+  ) {
+    return readHook();
+  }
   const metadata = scopePreviewInspectorRuntimeFallbackMetadata(
     normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata),
     readGraphqlDocument,
     readGraphqlOptions,
   );
+  // A guard pass only advances the selected corridor; an off-corridor sibling keeps its own state.
+  const offCorridorGuard = metadata.renderGuardPaths.length > 0 &&
+    typeof isPreviewInspectorRuntimeHookOwnerOnTargetCorridor === 'function' &&
+    !hasPreviewInspectorRuntimeFallbackOverride(metadata.id) &&
+    !isPreviewInspectorRuntimeHookOwnerOnTargetCorridor(metadata);
   if (
     metadata.id.length === 0 ||
     typeof readHook !== 'function' ||
@@ -260,9 +300,18 @@ function resolvePreviewInspectorRuntimeHook(
   const retainedLocalUiController = failure === undefined
     ? rememberPreviewInspectorLocalUiController(metadata, value)
     : undefined;
+  /*
+   * Off the corridor, an authored scalar (a popup atom's false) is the page's real state and keeps
+   * its branch. Objects and callables still take the guard pass: a static store bridge serves an
+   * inert callable or empty record for an unread path, and those placeholders are always truthy.
+   */
+  const guardMetadata = offCorridorGuard && failure === undefined && value !== null &&
+    value !== undefined && typeof value !== 'object' && typeof value !== 'function'
+    ? { ...metadata, renderGuardPaths: [] }
+    : metadata;
   const completionMetadata = retainedLocalUiController === undefined || manualOverride
-    ? metadata
-    : protectPreviewInspectorLocalUiVisibilityGuard(metadata, retainedLocalUiController);
+    ? guardMetadata
+    : protectPreviewInspectorLocalUiVisibilityGuard(guardMetadata, retainedLocalUiController);
   /*
    * A proven React-local visibility controller already supplies a coherent false state and the
    * authored callback that can change it. Protect only that exact false leaf from a truthy
@@ -284,12 +333,26 @@ function resolvePreviewInspectorRuntimeHook(
     clearPreviewInspectorRuntimeFallback(completionMetadata);
     return value;
   }
-  const compilerFallback = readPreviewInspectorRuntimeFallbackValue(
+  if (
+    failure === undefined &&
+    !manualOverride &&
+    (completionMetadata.typedOnly === true ||
+      isPreviewInspectorLiveQueryResult(completionMetadata, value))
+  ) {
+    // A typed-only site exists solely to replace a thrown hook with its declared result type.
+    clearPreviewInspectorRuntimeFallback(completionMetadata);
+    return value;
+  }
+  const cachedFallback = readPreviewInspectorRuntimeFallbackValue(
     completionMetadata,
     createFallback,
     readGraphqlDocument,
     readGraphqlOptions,
   );
+  // A verified collection fill serves sample rows beside the cached value, never inside it.
+  const compilerFallback = typeof readPreviewInspectorCollectionFillHookValue === 'function'
+    ? readPreviewInspectorCollectionFillHookValue(completionMetadata.id, cachedFallback)
+    : cachedFallback;
   const semanticValueRecommendation = manualOverride ||
     !shouldUsePreviewInspectorRuntimeSemanticValueRecommendation(
       completionMetadata,

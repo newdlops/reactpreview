@@ -8,6 +8,8 @@
  */
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import type { PreviewTypedCallValue } from '../typeOracle/previewTypeOracle';
+import { createPreviewRuntimeHookTypedMetadata } from './previewRuntimeHookTypedFallback';
 
 const INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
 
@@ -33,6 +35,8 @@ export interface ReactContextHookRuntimeReplacementOptions {
   readonly sourcePath: string;
   /** Original source offset used to disambiguate repeated calls on the same line. */
   readonly start: number;
+  /** Declared-type value of the hook call; corrects generated leaves the type rules out. */
+  readonly typed?: PreviewTypedCallValue;
 }
 
 /**
@@ -72,6 +76,7 @@ export function createReactContextHookRuntimeReplacement(
       : { renderGuardPaths: options.renderGuardPaths }),
     requiredPaths: options.requiredPaths,
     sourcePath: normalizedSourcePath,
+    ...createPreviewRuntimeHookTypedMetadata(options.typed, false, options.requiredPaths),
   };
   const api = `globalThis[Symbol.for(${JSON.stringify(INSPECTOR_API_SYMBOL)})]`;
   const identityArguments =

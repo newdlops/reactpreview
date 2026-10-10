@@ -4,6 +4,9 @@
  * overlays real usage, setup, and Inspector values without evaluating project factories or types.
  */
 import { createPreviewGeneratedListRuntimeSource } from './previewGeneratedListRuntimeSource';
+import { createPreviewSampleDateApiExpression } from './previewSampleDateRuntimeSource';
+import { PREVIEW_DATE_RANGE_ENDPOINT_PATTERN } from './previewDateRangeEndpoint';
+import { createPreviewSampleLabelRuntimeSource } from './previewSampleLabel';
 
 /** Global symbol key carried by generated React component props through editable Inspector JSON. */
 export const PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY = 'react-file-preview.automatic-component-prop';
@@ -26,6 +29,8 @@ export function createPreviewAutomaticPropsRuntimeSource(): string {
   return String.raw`
 ${generatedListRuntimeSource}
 
+const previewAutomaticPropsSampleDates = ${createPreviewSampleDateApiExpression()};
+${createPreviewSampleLabelRuntimeSource('previewAutomaticPropsSampleLabel')}
 const PREVIEW_AUTOMATIC_PROP_MAX_DEPTH = 12;
 const PREVIEW_AUTOMATIC_PROP_MAX_NODES = 256;
 const PREVIEW_AUTOMATIC_COMPONENT_MARKER = Symbol.for(${JSON.stringify(PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY)});
@@ -45,6 +50,8 @@ const PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY = (() => {
 const PREVIEW_AUTOMATIC_EXACT_CHILD_REGISTRY = new WeakMap();
 const PREVIEW_AUTOMATIC_RENDERED_COLLECTION_DECISIONS = new WeakSet();
 const blockedPreviewAutomaticPropNames = new Set(['__proto__', 'constructor', 'prototype']);
+const PREVIEW_AUTOMATIC_TEXT_SLOT_NAME_PATTERN =
+  /(?:label|title|text|description|caption|heading|message|content|name|placeholder)$/iu;
 
 /** Remembers direct primitive children whose authored syntax proved one exact accepted value. */
 function registerPreviewAutomaticExactChildren(value, names) {
@@ -302,14 +309,16 @@ function createPreviewAutomaticRenderedCollectionPlan(node, fieldName) {
 function createPreviewAutomaticRenderedCollectionString(fieldName, itemIndex) {
   const name = String(fieldName).replaceAll('_', '').toLowerCase();
   if (/(?:at|on|date|datetime|time)$/u.test(name)) {
-    return new Date(Date.UTC(2026, 0, 15 + Math.min(10, itemIndex), 9)).toISOString();
+    return previewAutomaticPropsSampleDates.dateTime(Math.min(10, itemIndex));
+  }
+  if (${PREVIEW_DATE_RANGE_ENDPOINT_PATTERN}.test(String(fieldName))) {
+    return previewAutomaticPropsSampleDates.day(Math.min(10, itemIndex));
   }
   if (name.endsWith('id') || name === 'uuid') return 'preview-id';
   if (name.includes('email')) return 'preview@example.invalid';
   if (name.endsWith('url') || name.endsWith('uri')) return 'https://example.invalid/';
   if (name.endsWith('status')) return 'PREVIEW';
-  const value = String(fieldName || 'Preview');
-  return value.length <= 32 ? value : value.slice(0, 31) + '…';
+  return previewAutomaticPropsSampleLabel(fieldName);
 }
 
 /** Materializes one validated shape node under fixed depth and aggregate node budgets. */
@@ -335,6 +344,13 @@ function materializePreviewAutomaticPropNode(
       const plan = renderedCollection
         ? createPreviewAutomaticRenderedCollectionPlan(node, fieldName || 'rows')
         : undefined;
+      // Bounded authored index reads (finals[k] with k: 0 | 1 | 2 | 3) need that many items.
+      const minItems = Number.isSafeInteger(node.minItems) && node.minItems > 0
+        ? node.minItems
+        : undefined;
+      const requestedCount = minItems === undefined
+        ? plan?.rowCount
+        : Math.max(plan?.rowCount ?? readPreviewGeneratedListSampleCount(), minItems);
       const items = createPreviewGeneratedList((itemIndex) =>
         materializePreviewAutomaticStringListItem(
           node.items,
@@ -349,7 +365,7 @@ function materializePreviewAutomaticPropNode(
           fieldName,
           itemIndex,
         ),
-        plan?.rowCount,
+        requestedCount,
       );
       return items.filter((item) => item !== undefined);
     }
@@ -363,7 +379,16 @@ function materializePreviewAutomaticPropNode(
       Object.defineProperty(component, PREVIEW_AUTOMATIC_COMPONENT_MARKER, { value: true });
       return Object.freeze(component);
     }
-    case 'element': return React.createElement('div', { 'data-react-preview-generated-child': '' });
+    case 'element': {
+      // React content shown as text: a compiler label for a directly rendered children prop, or
+      // the key label of a text-named slot (label, title, description, ...). Other slots (icon,
+      // footer, ...) keep an empty placeholder element.
+      if (typeof node.value === 'string' && node.value.length > 0) return node.value;
+      if (PREVIEW_AUTOMATIC_TEXT_SLOT_NAME_PATTERN.test(String(fieldName))) {
+        return previewAutomaticPropsSampleLabel(fieldName);
+      }
+      return React.createElement('div', { 'data-react-preview-generated-child': '' });
+    }
     case 'function': return function previewAutomaticNoop() { return undefined; };
     case 'graphql-document': return createPreviewAutomaticGraphqlDocument(node, budget, depth + 1);
     case 'null': return null;
@@ -376,14 +401,20 @@ function materializePreviewAutomaticPropNode(
     }
     case 'string': {
       const candidates = readPreviewAutomaticScalarCandidates(node);
-      return candidates[itemIndex % candidates.length] ??
+      const candidate = candidates[itemIndex % candidates.length];
+      // Typed list rows carry per-row canonical dates as candidates; they land on recent days too.
+      if (candidate !== undefined) return previewAutomaticPropsSampleDates.rebase(candidate);
+      return candidate ??
         (typeof node.value === 'string'
-          ? node.value
+          ? previewAutomaticPropsSampleDates.rebase(node.value)
           : renderedCollectionItem
             ? createPreviewAutomaticRenderedCollectionString(fieldName, itemIndex)
             : '');
     }
     case 'object': {
+      // A prop declared as Map/Set needs the real collection API ('promoWeeks?.has(week)').
+      if (node.collection === 'map') return new Map();
+      if (node.collection === 'set') return new Set();
       const result = {};
       const properties = isPreviewAutomaticPropRecord(node.properties) ? node.properties : {};
       for (const [name, childNode] of readPreviewAutomaticPropEntries(properties)) {

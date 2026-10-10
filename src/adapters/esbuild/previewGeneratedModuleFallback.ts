@@ -9,6 +9,8 @@ import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin }
 import ts from 'typescript';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
+import { createPreviewSampleDateApiExpression } from './previewSampleDateRuntimeSource';
+import { createPreviewSemanticScalarNameKindSource } from './staticResources/previewRuntimeHookSemantics';
 import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
 
 const GENERATED_FALLBACK_NAMESPACE = 'react-preview-generated-module-fallback';
@@ -201,35 +203,58 @@ function generatedSourceExists(resolveDirectory: string, moduleSpecifier: string
   return candidates.some(isFile);
 }
 
-/** Produces a browser-safe value whose property and call chains terminate after a fixed depth. */
+/**
+ * Produces a browser-safe value whose property and call chains terminate after a fixed depth.
+ * Each neutral remembers the field that produced it, so a protobuf-style `{ value }` wrapper can
+ * answer from that field's name: `dataAggregatedAt.value` is today's epoch milliseconds and
+ * `rideCancelCount.value` is 0, where one shared neutral rendered "1970. 1. 1." and an empty count.
+ */
 function createGeneratedNeutralModuleSource(label: string, exportNames: readonly string[]): string {
   return [
     '/** Render-only neutral replacement for an unavailable generated project module. */',
     'const maximumNeutralDepth = 8;',
-    'const neutralByDepth = [];',
-    'const readNeutral = (depth) => {',
-    '  if (neutralByDepth[depth] !== undefined) return neutralByDepth[depth];',
-    '  const readNext = () => depth < maximumNeutralDepth ? readNeutral(depth + 1) : undefined;',
-    '  const callable = function ReactPreviewGeneratedContractNeutral() { return readNext(); };',
+    // Field names make neutrals distinct; past this bound a depth shares one unnamed neutral.
+    'const maximumNamedNeutrals = 512;',
+    createPreviewSemanticScalarNameKindSource('readGeneratedWrapperKind'),
+    `const readSampleEpochMillis = () => Date.parse(${createPreviewSampleDateApiExpression()}.dateTime(0));`,
+    // The Page Inspector JSX adapter renders a registered neutral as nothing instead of a function.
+    "const neutralRegistryKey = Symbol.for('newdlops.react-file-preview.generated-neutral');",
+    'const neutralRegistry = globalThis[neutralRegistryKey] instanceof WeakSet ? globalThis[neutralRegistryKey] : (globalThis[neutralRegistryKey] = new WeakSet());',
+    'const neutralByKey = new Map();',
+    'const readNeutral = (depth, fieldName) => {',
+    "  const key = depth + '\\0' + (neutralByKey.size < maximumNamedNeutrals ? fieldName : '');",
+    '  if (neutralByKey.has(key)) return neutralByKey.get(key);',
+    '  const readNext = (nextName) => depth < maximumNeutralDepth ? readNeutral(depth + 1, nextName) : undefined;',
+    "  const callable = function ReactPreviewGeneratedContractNeutral() { return readNext(''); };",
     '  const neutral = new Proxy(callable, {',
-    '  apply() { return readNext(); },',
-    '  construct() { return readNext() ?? Object.create(null); },',
+    "  apply() { return readNext(''); },",
+    "  construct() { return readNext('') ?? Object.create(null); },",
     '  get(target, property, receiver) {',
     "    if (property === '__esModule') return false;",
     "    if (property === 'then') return undefined;",
     "    if (property === 'toJSON') return () => ({});",
     '    if (property === Symbol.iterator) return () => [][Symbol.iterator]();',
     "    if (property === Symbol.toPrimitive) return (hint) => hint === 'string' ? '' : 0;",
+    // A contract field called `name` is text: rendering it must show nothing, not the neutral
+    // function's own name, and an empty string (unlike a callable) is a valid React child.
+    "    if (property === 'name') return '';",
+    // A `{ value }` wrapper (protobuf Timestamp, Int32Value) means what its field name says.
+    "    if (property === 'value') {",
+    '      const kind = readGeneratedWrapperKind(fieldName);',
+    "      if (kind === 'date') return readSampleEpochMillis();",
+    "      if (kind === 'number') return 0;",
+    '    }',
     '    if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);',
-    '    return readNext();',
+    "    return readNext(typeof property === 'string' ? property : '');",
     '  },',
     '  has(target, property) { return Reflect.has(target, property); },',
     '  set() { return true; },',
     '  });',
-    '  neutralByDepth[depth] = neutral;',
+    '  neutralByKey.set(key, neutral);',
+    '  neutralRegistry.add(neutral);',
     '  return neutral;',
     '};',
-    'const neutral = readNeutral(0);',
+    "const neutral = readNeutral(0, '');",
     `for (const exportName of ${JSON.stringify(exportNames)}) {`,
     "  if (!Object.hasOwn(neutral, exportName) && exportName !== 'default') {",
     '    Object.defineProperty(neutral, exportName, { configurable: true, enumerable: true, get: () => neutral });',

@@ -91,6 +91,14 @@ function readPreviewInspectorVirtualPageShellContinuation(
   ) {
     return undefined;
   }
+  // Generated REST rows are not part of the bootstrap: a guard first seen while they are served
+  // (often a row helper such as "!grade || !(grade in COLORS)") keeps its authored branch.
+  if (
+    typeof isPreviewInspectorRestCollectionFillServing === 'function' &&
+    isPreviewInspectorRestCollectionFillServing()
+  ) {
+    return undefined;
+  }
   const descriptor = findSelectedPreviewInspectorDescriptor();
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   const shells = candidate?.virtualPage?.shells;

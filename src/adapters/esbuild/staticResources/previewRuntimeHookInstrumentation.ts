@@ -20,18 +20,25 @@ import {
 } from './previewRuntimeHookCallResult';
 import { createPreviewRuntimeCallableFallbackExpression } from './previewRuntimeCallableFallback';
 import {
+  collectPreviewRuntimeStoreFactoryNames,
+  readPreviewRuntimeLocalHookDeclaration,
+} from './previewRuntimeHookLocalStore';
+import {
   createPreviewRuntimeHookDirectUsageFallback,
   isPreviewRuntimeHookEmptyRenderableJsxValue,
   isPreviewRuntimeHookCallableJsxValue,
   isPreviewRuntimeHookMutableRefJsxValue,
-  isPreviewRuntimeHookRenderedJsxValue,
+  createPreviewRuntimeHookRenderedTextExpression,
+  isPreviewRuntimeHookTextValue,
 } from './previewRuntimeHookDirectUsage';
 import {
   inferPreviewRuntimeHookCollectionLengthGuardPassValue,
   inferPreviewRuntimeHookExpressionLiteralGuardPassFallback,
   inferPreviewRuntimeHookExpressionThrowGuardPassFallback,
   inferPreviewRuntimeHookGuardPassFallback,
+  inferPreviewRuntimeHookTargetExitFallback,
 } from './previewRuntimeHookGuardValue';
+import { registerPreviewSelectedTargetNames } from './previewSelectedTargetExit';
 import {
   inferPreviewRuntimeHookCallableSmartValue,
   readPreviewRuntimeHookAliasUsagePaths,
@@ -86,6 +93,14 @@ import {
   previewRuntimeFunctionShadowsName as functionShadowsName,
 } from './previewRuntimeHookSyntax';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
+import {
+  hasPreviewRuntimeStorageReadText,
+  PREVIEW_RUNTIME_STORAGE_READ_MODULE,
+  readPreviewRuntimeStorageReadBinding,
+} from './previewRuntimeStorageRead';
+// prettier-ignore
+import { createPreviewRuntimeHookTypedMetadata, PREVIEW_RUNTIME_HOOK_TYPED_ONLY_FALLBACK, type PreviewRuntimeHookTypedCallResolver } from './previewRuntimeHookTypedFallback';
+import type { PreviewTypedCallValue } from '../typeOracle/previewTypeOracle';
 import { inferPreviewRuntimeHookSpreadItemFallback } from './previewRuntimeHookSpreadItem';
 import {
   createPreviewGeneratedListExpression,
@@ -184,6 +199,8 @@ interface PreviewRuntimeHookFallback extends PreviewRuntimeHookArrayLengthConstr
   readonly smartPathValueExpressions?: readonly PreviewRuntimeHookSmartPathValueExpression[];
   /** Property paths whose absence would stop rendering at this exact hook edge. */
   readonly requiredPaths?: readonly string[];
+  /** Takes an early return that renders the selected target; declared types must not override. */
+  readonly targetExit?: true;
 }
 /** Shared scalar/container fallback shape used while recursively walking one binding pattern. */
 interface PreviewRuntimeHookValueFallback {
@@ -221,6 +238,10 @@ interface PreviewRuntimeHookCandidate {
   readonly hook: PreviewRuntimeHookBinding;
   /** Static fallback selected from local syntax. */
   readonly fallback: PreviewRuntimeHookFallback;
+  /** Declared result-type value, when the analysis program resolved the call. */
+  readonly typed?: PreviewTypedCallValue;
+  /** True when only the declared type (no local syntax evidence) justified instrumentation. */
+  readonly typedOnly?: boolean;
 }
 
 /** Compiler-proven semantic family for one hook-result value leaf. */
@@ -262,8 +283,11 @@ export function createPreviewRuntimeHookReplacements(
   importedHelperItemFallback?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
   importedHelperPropertyFallback?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
   importedCollectionCallbackItemFallback?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
+  resolveTypedCall?: PreviewRuntimeHookTypedCallResolver,
+  selectedTargetNames?: ReadonlySet<string>,
 ): readonly PreviewSourceReplacement[] {
-  if (!isJavaScriptLikeSource(sourcePath) || !sourceText.includes('use')) {
+  const readsStorage = hasPreviewRuntimeStorageReadText(sourceText);
+  if (!isJavaScriptLikeSource(sourcePath) || (!sourceText.includes('use') && !readsStorage)) {
     return [];
   }
   const sourceFile = ts.createSourceFile(
@@ -276,6 +300,7 @@ export function createPreviewRuntimeHookReplacements(
   if (hasParseDiagnostics(sourceFile)) {
     return [];
   }
+  registerPreviewSelectedTargetNames(sourceFile, selectedTargetNames);
   if (childPropDemands !== undefined && childPropDemands.size > 0) {
     childPropDemandsBySourceFile.set(sourceFile, childPropDemands);
   }
@@ -295,10 +320,11 @@ export function createPreviewRuntimeHookReplacements(
     );
   }
   const inventory = collectRuntimeHookInventory(sourceFile);
-  if (inventory.direct.size === 0 && inventory.namespaces.size === 0) {
+  if (inventory.direct.size === 0 && inventory.namespaces.size === 0 && !readsStorage) {
     return [];
   }
-  const candidates = collectRuntimeHookCandidates(sourceFile, sourceText, inventory).slice(
+  // prettier-ignore
+  const candidates = collectRuntimeHookCandidates(sourceFile, sourceText, inventory, resolveTypedCall).slice(
     0,
     MAX_HOOKS_PER_MODULE,
   );
@@ -352,6 +378,7 @@ export function collectPreviewRuntimeHookProjectionEvidence(
 function collectRuntimeHookInventory(sourceFile: ts.SourceFile): PreviewRuntimeHookInventory {
   const direct = new Map<string, PreviewRuntimeHookBinding>();
   const namespaces = new Map<string, PreviewRuntimeHookNamespace>();
+  const storeFactoryNames = collectPreviewRuntimeStoreFactoryNames(sourceFile);
   for (const statement of sourceFile.statements) {
     if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
       const moduleSpecifier = statement.moduleSpecifier.text;
@@ -384,36 +411,14 @@ function collectRuntimeHookInventory(sourceFile: ts.SourceFile): PreviewRuntimeH
       }
       continue;
     }
-    const localName = readTopLevelHookDeclarationName(statement);
-    if (localName !== undefined) {
-      direct.set(localName, { hookName: localName, moduleSpecifier: 'local' });
-    }
+    const localHook = readPreviewRuntimeLocalHookDeclaration(
+      statement,
+      storeFactoryNames,
+      CUSTOM_HOOK_PATTERN,
+    );
+    if (localHook !== undefined) direct.set(localHook.hookName, localHook);
   }
   return { direct, namespaces };
-}
-
-/** Reads a conventional top-level local hook declaration without following assigned expressions. */
-function readTopLevelHookDeclarationName(statement: ts.Statement): string | undefined {
-  if (
-    ts.isFunctionDeclaration(statement) &&
-    statement.name !== undefined &&
-    CUSTOM_HOOK_PATTERN.test(statement.name.text)
-  ) {
-    return statement.name.text;
-  }
-  if (!ts.isVariableStatement(statement)) return undefined;
-  for (const declaration of statement.declarationList.declarations) {
-    if (
-      ts.isIdentifier(declaration.name) &&
-      CUSTOM_HOOK_PATTERN.test(declaration.name.text) &&
-      declaration.initializer !== undefined &&
-      (ts.isArrowFunction(declaration.initializer) ||
-        ts.isFunctionExpression(declaration.initializer))
-    ) {
-      return declaration.name.text;
-    }
-  }
-  return undefined;
 }
 
 /** Visits hook calls in source order and retains only calls with a bounded inferred fallback. */
@@ -421,22 +426,35 @@ function collectRuntimeHookCandidates(
   sourceFile: ts.SourceFile,
   sourceText: string,
   inventory: PreviewRuntimeHookInventory,
+  resolveTypedCall?: PreviewRuntimeHookTypedCallResolver,
 ): readonly PreviewRuntimeHookCandidate[] {
   const candidates: PreviewRuntimeHookCandidate[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && node.questionDotToken === undefined) {
-      const hook = readRuntimeHookBinding(node.expression, inventory);
+      // A storage parse in render code is a render input like a hook result.
+      const hook =
+        readRuntimeHookBinding(node.expression, inventory) ??
+        readPreviewRuntimeStorageReadBinding(node);
       if (
         hook !== undefined &&
         !isPreviewRuntimeLazyQueryHook(hook.hookName) &&
         findNearestRuntimeFunction(node) !== undefined
       ) {
         const fallback = inferRuntimeHookFallback(node, hook, sourceFile, sourceText);
-        if (fallback !== undefined) {
+        // A declared type must not turn the value that takes the target branch truthy again.
+        const typed =
+          fallback?.targetExit === true
+            ? undefined
+            : resolveTypedCall?.(node, sourceFile, fallback?.requiredPaths ?? []);
+        if (fallback !== undefined || typed !== undefined) {
           candidates.push({
             call: node,
-            fallback: applyPreviewRuntimeHookArrayLengthConstraints(node, fallback),
+            fallback:
+              fallback === undefined
+                ? PREVIEW_RUNTIME_HOOK_TYPED_ONLY_FALLBACK
+                : applyPreviewRuntimeHookArrayLengthConstraints(node, fallback),
             hook,
+            ...(typed === undefined ? {} : { typed, typedOnly: fallback === undefined }),
           });
         }
       }
@@ -728,6 +746,10 @@ function createBindingFallback(
     if (jsxComponent !== undefined) return withOverlayStateDemand(jsxComponent);
     const usageShape = createIdentifierUsageFallback(binding, sourceFile, callResultDepth);
     if (usageShape !== undefined) return withOverlayStateDemand(usageShape);
+    const targetExit = inferPreviewRuntimeHookTargetExitFallback(binding);
+    if (targetExit !== undefined) {
+      return withOverlayStateDemand({ ...targetExit, requiredPaths: ['<root>'] });
+    }
     const semantic = inferPreviewRuntimeSemanticFallback(binding.text);
     const guardPass =
       semantic?.kind === 'boolean' ? inferPreviewRuntimeHookGuardPassFallback(binding) : undefined;
@@ -1023,14 +1045,9 @@ function createIdentifierUsageFallback(
         const terminalCallable = terminalCalled || isPreviewRuntimeHookCallableJsxValue(node);
         const terminalMutableRef = isPreviewRuntimeHookMutableRefJsxValue(node);
         const terminalEmptyRenderable = isPreviewRuntimeHookEmptyRenderableJsxValue(node);
-        const terminalRendered = isPreviewRuntimeHookRenderedJsxValue(node);
-        const renderedFallback = terminalRendered
-          ? inferPreviewRuntimeSemanticFallback(usagePath.names.at(-1) ?? '')
-          : undefined;
+        const terminalRendered = isPreviewRuntimeHookTextValue(node);
         const renderedExpression = terminalRendered
-          ? renderedFallback?.kind === 'string' || renderedFallback?.kind === 'number'
-            ? renderedFallback.expression
-            : JSON.stringify(usagePath.names.at(-1) ?? 'value')
+          ? createPreviewRuntimeHookRenderedTextExpression(usagePath.names.at(-1))
           : undefined;
         const callResultFallback =
           terminalCalled && !collection && ts.isCallExpression(node.parent)
@@ -1593,6 +1610,8 @@ function createRuntimeHookReplacement(
     fallbackLabel: candidate.fallback.label,
     hookName: candidate.hook.hookName,
     id: createRuntimeHookIdentity(sourcePath, candidate, occurrence),
+    // `useX.getState()`/facade calls may run outside render; `Hooks.useFoo()` stays a hook call.
+    ...(candidate.hook.hookName.includes('.') ? { invocation: 'member' as const } : {}),
     line: location.line + 1,
     moduleSpecifier: candidate.hook.moduleSpecifier,
     ...(ownerName === undefined ? {} : { ownerName }),
@@ -1611,6 +1630,11 @@ function createRuntimeHookReplacement(
     requiredPaths: candidate.fallback.requiredPaths ?? ['<root>'],
     ...(semanticValueDemand === undefined ? {} : { semanticValueDemand }),
     sourcePath: path.normalize(sourcePath),
+    ...createPreviewRuntimeHookTypedMetadata(
+      candidate.typed,
+      candidate.typedOnly === true,
+      candidate.fallback.requiredPaths,
+    ),
   };
   const api = `globalThis[Symbol.for(${JSON.stringify(INSPECTOR_API_SYMBOL)})]`;
   const metadataExpression =
@@ -1709,6 +1733,8 @@ function readPreviewRuntimeHookIdentityExpression(
   sourceFile: ts.SourceFile,
   sourceText: string,
 ): string {
+  // Every storage parse calls the same JSON.parse; sharing state by that identity would mix keys.
+  if (candidate.hook.moduleSpecifier === PREVIEW_RUNTIME_STORAGE_READ_MODULE) return 'undefined';
   const contextArgument = candidate.call.arguments[0];
   if (
     candidate.hook.moduleSpecifier === 'react' &&

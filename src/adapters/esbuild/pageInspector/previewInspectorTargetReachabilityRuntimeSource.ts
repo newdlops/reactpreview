@@ -266,6 +266,25 @@ function hasReachedPreviewInspectorPageCorridor(state) {
     (typeof hasPreviewInspectorCompletePageExecutionContext !== 'function' ||
       hasPreviewInspectorCompletePageExecutionContext(state));
 }
+/**
+ * Ends the value search once the target's own output is handed to the page-context lane. The
+ * host-side page-execution retry decides the remaining context; without this the search stays
+ * "searching" forever when that retry is blocked or never answered. It is not marked exhausted.
+ */
+function settlePreviewInspectorRequirementSearchForPageContext(state) {
+  if (
+    state.targetHasOutput !== true ||
+    typeof readPreviewInspectorMinimumRequirementSearch !== 'function' ||
+    typeof settlePreviewInspectorMinimumRequirementSearch !== 'function'
+  ) return false;
+  try {
+    if (readPreviewInspectorMinimumRequirementSearch(state)?.status !== 'searching') return false;
+    settlePreviewInspectorMinimumRequirementSearch(state);
+    return true;
+  } catch {
+    return false;
+  }
+}
 /** Evaluates one settled commit and advances at most one path gate. */
 function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state) {
   state.targetMounted = hasMountedPreviewInspectorTarget(state);
@@ -275,6 +294,8 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   state.targetHasOutput = targetRenderError
     ? false
     : hasPreviewInspectorTargetHostOutput(state);
+  // Real application CSS can make a shell fill the window above a target mounted after it.
+  if (state.targetHasOutput === true) revealPreviewInspectorReachedTargetViewport(state);
   if (
     state.targetHasOutput === true &&
     typeof recordPreviewInspectorNeuralSuccessfulPath === 'function'
@@ -287,7 +308,8 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     typeof isPreviewInspectorNeuralPageExecutionContextTransitionPending === 'function' &&
     isPreviewInspectorNeuralPageExecutionContextTransitionPending(state)
   ) {
-    if (state.status !== 'recovering-page-context') {
+    const searchSettled = settlePreviewInspectorRequirementSearchForPageContext(state);
+    if (state.status !== 'recovering-page-context' || searchSettled) {
       state.status = 'recovering-page-context';
       notifyPreviewInspector();
       schedulePreviewInspectorTreeRefresh();
@@ -299,6 +321,10 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     isPreviewInspectorPageExecutionPreparationBlocked(state)
   ) {
     state.status = 'page-context-incomplete';
+    if (settlePreviewInspectorRequirementSearchForPageContext(state)) {
+      notifyPreviewInspector();
+      schedulePreviewInspectorTreeRefresh();
+    }
     return;
   }
   if (
@@ -371,7 +397,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   if (
     (state.targetMounted || state.targetWasMounted) &&
     !state.targetHasOutput &&
-    state.overlayVisibilityAttempted !== true
+    state.overlayVisibilityAttempted !== true && !isPreviewInspectorOverlayRevealDeferred(state)
   ) {
     state.overlayVisibilityAttempted = true;
     const visibilityPath = typeof autoRevealPreviewInspectorOverlayTarget === 'function'
@@ -471,7 +497,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     if (
       state.pageRootCommitted === true &&
       state.targetMounted !== true && state.targetWasMounted !== true &&
-      (Array.isArray(state.rejectedConditions) ? state.rejectedConditions.length : 0) > 0
+      hasPreviewInspectorTargetRevealingRejectedCondition(state)
     ) {
       /*
        * A compiler-proven target-local branch already committed without revealing this target and

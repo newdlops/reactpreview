@@ -12,6 +12,7 @@ import {
 } from './previewPluginProtocol';
 import { createPreviewNextAppNavigationRuntimeSource } from './previewNextAppNavigationRuntimeSource';
 import { createPreviewNextPagesRouterContextRuntimeSource } from './previewNextPagesRouterContextRuntimeSource';
+import type { PreviewNextI18nConfig } from './previewNextConfigI18n';
 import { createPreviewNextPagesRouterRuntimeSource } from './previewNextPagesRouterRuntimeSource';
 import { createPreviewRouterRuntimeSource } from './previewRouterRuntimeSource';
 
@@ -31,6 +32,8 @@ export interface PreviewRouterBridgePluginOptions {
   readonly enabled: boolean;
   /** Whether a selected Next App filesystem route requires its bootstrap-owned navigation hooks. */
   readonly nextAppEnabled?: boolean;
+  /** Literal Pages Router locale settings read from the project's `next.config.*`. */
+  readonly nextPagesI18n?: PreviewNextI18nConfig;
   /** Nearest package root from which the target itself resolves react-router-dom. */
   readonly projectRoot: string;
 }
@@ -158,7 +161,7 @@ export function createPreviewRouterBridgePlugin(options: PreviewRouterBridgePlug
       /** Loads the static Pages Router without importing Next's missing application bootstrap. */
       function loadNextPagesRouter(): OnLoadResult {
         return {
-          contents: createPreviewNextPagesRouterRuntimeSource(),
+          contents: createPreviewNextPagesRouterRuntimeSource(options.nextPagesI18n),
           loader: 'js',
           resolveDir: options.projectRoot,
         };

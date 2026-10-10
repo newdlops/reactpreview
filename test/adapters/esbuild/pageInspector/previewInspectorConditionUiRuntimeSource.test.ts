@@ -134,6 +134,37 @@ describe('Preview Inspector condition UI runtime source', () => {
     expect(source).toContain('setPreviewInspectorRenderConditionOverride(condition.id, !enabled)');
   });
 
+  /** 'tab === "overview"' turned off by a forced members tab used to look like authored code. */
+  it('marks a condition whose value an automatic branch fixes', () => {
+    const runtime = createConditionUiRuntime(
+      [
+        {
+          authoredEnabled: true,
+          effectiveEnabled: false,
+          expression: "tab === 'overview'",
+          falsyLabel: 'hidden',
+          id: 'overview',
+          kind: 'logical-and',
+          line: 10,
+          sourcePath: '/workspace/Page.tsx',
+          truthyLabel: '<p>',
+        },
+      ],
+      { coherenceSources: { overview: ["tab === 'members' ON"] }, descriptors: [] },
+    );
+    const snapshot = runtime.attachConditions({
+      roots: [componentNode('page', 'Page', '/workspace/Page.tsx', 2)],
+    });
+
+    expect(snapshot.roots[0]?.children[0]?.props).toMatchObject({
+      fixedBy: "tab === 'members' ON",
+      mode: 'value-fixed',
+    });
+    expect(createPreviewInspectorConditionUiRuntimeSource()).toContain(
+      "'Value fixed by ' + fixedBy",
+    );
+  });
+
   /** Keeps every static chain guard under its owner even before short-circuit evaluation reaches it. */
   it('attaches short-circuited logical guards as stable read-only tree switches', () => {
     const staticConditions = [
@@ -450,6 +481,8 @@ function createConditionUiRuntime(
         previewInspectorSession.conditionOnTargetPath === true;
       const readPreviewInspectorTargetConditionValue = () =>
         previewInspectorSession.conditionTargetValue;
+      const readPreviewInspectorScalarCoherenceSources = (condition) =>
+        previewInspectorSession.coherenceSources?.[condition.id] ?? [];
       ${createPreviewInspectorConditionUiRuntimeSource()}
       globalThis.__conditionUiRuntime = {
         attachConditions: attachPreviewInspectorConditionsToSnapshot,

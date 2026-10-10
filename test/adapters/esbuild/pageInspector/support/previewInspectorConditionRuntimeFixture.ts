@@ -8,6 +8,7 @@ interface ConditionRuntimeHarness {
   readonly rememberDirectOwner: (exportName: string, ownerName: string) => void;
   readonly readChoices: () => readonly Record<string, unknown>[];
   readonly readConditions: () => readonly Record<string, unknown>[];
+  readonly readCoherenceSources: (condition: Record<string, unknown>) => readonly string[];
   readonly readControllableConditions: () => readonly Record<string, unknown>[];
   readonly readConsoleEntries: () => readonly Record<string, unknown>[];
   readonly readFallbackValuesEnabled: () => boolean;
@@ -83,6 +84,8 @@ export function createConditionRuntimeHarness(
         previewInspectorSession.descriptors?.[0];
       const readSelectedPreviewInspectorPageCandidate = () =>
         previewInspectorSession.selectedPageCandidate;
+      const isPreviewInspectorRestCollectionFillServing = () =>
+        previewInspectorSession.restCollectionFillServing === true;
       const readPreviewInspectorTargetPathEvidence = (_descriptor, _candidate, state) => ({
         paths: new Set(state?.synchronousEvidencePaths ?? []),
       });
@@ -107,6 +110,7 @@ export function createConditionRuntimeHarness(
         },
         readChoices: readPreviewInspectorRenderChoices,
         readConditions: readPreviewInspectorRenderConditions,
+        readCoherenceSources: readPreviewInspectorScalarCoherenceSources,
         readControllableConditions: readPreviewInspectorControllableRenderConditions,
         readConsoleEntries: () => recordedConsoleEntries.slice(),
         readFallbackValuesEnabled: readPreviewInspectorFallbackValuesEnabled,

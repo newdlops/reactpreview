@@ -183,6 +183,51 @@ function canRequestPreviewInspectorMountedTransparentChildrenFallback(state, dec
 }
 
 /**
+ * Reports whether a session-rejected gate is proven to render the target in one of its branches.
+ * Only such a gate shows that the page cannot reveal the target through it. A sibling gate with
+ * the same expression (a table header \`hasTrend && <th>\` next to the row cell that renders the
+ * target) proves nothing about the rows that data filling can still create.
+ */
+function hasPreviewInspectorTargetRevealingRejectedCondition(state) {
+  const targetName = state?.targetExportName;
+  if (typeof targetName !== 'string' || !/^[A-Za-z_$][\w$]*$/u.test(targetName)) return false;
+  const namesTarget = new RegExp('(?:^|[^\\w$])' + targetName.replaceAll('$', '\\$') + '(?![\\w$])', 'u');
+  return (Array.isArray(state.rejectedConditions) ? state.rejectedConditions : []).some((gate) => {
+    const record = previewInspectorSession.renderConditions?.get?.(gate?.id) ??
+      previewInspectorSession.renderConditionDefinitions?.get?.(gate?.id);
+    return record?.targetBranchEvidence === 'selected-target' ||
+      [record?.truthyLabel, record?.falsyLabel].some((label) =>
+        typeof label === 'string' && namesTarget.test(label));
+  });
+}
+
+/**
+ * Defers the export-wide visibility reveal while an owner-side visibility condition for the target
+ * is still untried. The reveal sets the target's boolean prop for every instance, so a page that
+ * mounts the same modal twice (create and edit) opened both whenever it ran before the condition
+ * search; the owner condition opens exactly one instance. A rejected or manual condition no longer
+ * defers, so the reveal remains the fallback. An open sibling instance keeps it deferred: the
+ * reveal would open the remaining instances beside it before the open one commits its output.
+ */
+function isPreviewInspectorOverlayRevealDeferred(state) {
+  if (typeof state?.targetExportName !== 'string') return false;
+  for (const condition of previewInspectorSession.renderConditions?.values?.() ?? []) {
+    if (
+      condition?.kind === 'overlay-visibility' &&
+      condition.ownerName === state.targetExportName &&
+      condition.reachabilityKey === state.key &&
+      condition.effectiveEnabled !== true &&
+      !previewInspectorSession.renderConditionOverrides?.has?.(condition.id) &&
+      !(typeof isPreviewInspectorTargetGuidedConditionRejected === 'function' &&
+        isPreviewInspectorTargetGuidedConditionRejected(condition.id, state.key)) &&
+      (typeof canPreviewInspectorTargetGuideCondition !== 'function' ||
+        canPreviewInspectorTargetGuideCondition(condition, true))
+    ) return true;
+  }
+  return false;
+}
+
+/**
  * Mounts the selected facade once after the authentic page corridor has conclusively omitted it.
  * The page root remains mounted, so this is contextual recovery rather than target-only mode.
  */

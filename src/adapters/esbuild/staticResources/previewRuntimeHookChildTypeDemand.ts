@@ -1121,9 +1121,11 @@ function mergePropShapes(
   }
   if (primary.kind === 'array') {
     const items = mergePropShapes(primary.items, secondary.items);
+    const minItems = Math.max(primary.minItems ?? 0, secondary.minItems ?? 0);
     return Object.freeze({
       kind: 'array',
       ...(items === undefined ? {} : { items }),
+      ...(minItems === 0 ? {} : { minItems }),
       ...(primary.renderedCollection === true || secondary.renderedCollection === true
         ? { renderedCollection: true as const }
         : {}),

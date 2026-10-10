@@ -474,6 +474,158 @@ describe('collectPreviewMissingDependencyRequirements', () => {
     expect(plan.packageNames).toEqual(['opaque-visual-runtime']);
   });
 
+  /** A server-sounding folder alone (`api/`, `services/`) must not neutralize a browser library. */
+  it('acquires first and keeps only a fallback contract for path-only server evidence', async () => {
+    const clientPath = '/workspace/src/api/client.ts';
+    const formatPath = '/workspace/src/services/format.ts';
+    const envPath = '/workspace/src/api/env.ts';
+    const sourceByPath = new Map([
+      [
+        clientPath,
+        'import axios from "axios"; export const api = axios.create({ baseURL: "/v1" });',
+      ],
+      [formatPath, 'import { get } from "lodash"; export const read = get;'],
+      [envPath, 'import qs from "qs"; export const query = qs.stringify(process.env.FILTER);'],
+    ]);
+    const profile: PreviewDependencyProfile = {
+      ...PROFILE,
+      requirementsByField: {
+        ...PROFILE.requirementsByField,
+        dependencies: {
+          ...PROFILE.requirementsByField.dependencies,
+          axios: '1.7.9',
+          lodash: '4.17.21',
+          qs: '6.13.0',
+        },
+      },
+    };
+    const plan = await createPreviewDependencyResolutionHintPlan(
+      [
+        messageAt('Could not resolve "axios"', clientPath),
+        messageAt('Could not resolve "lodash"', formatPath),
+        messageAt('Could not resolve "qs"', envPath),
+      ],
+      {
+        environment: { identity: 'cold', nodeModulesPaths: [], profile },
+        projectRoot: '/workspace',
+        readSource: (sourcePath) => sourceByPath.get(sourcePath),
+        targetPath: '/workspace/src/pages/InventoryPage.tsx',
+        workspaceRoot: '/workspace',
+      },
+    );
+
+    expect([...plan.packageNames].sort()).toEqual(['axios', 'lodash']);
+    expect(
+      plan.packageContractCandidates.map(({ fallbackOnly, packageName }) => ({
+        fallbackOnly,
+        packageName,
+      })),
+    ).toEqual(
+      expect.arrayContaining([
+        { fallbackOnly: true, packageName: 'axios' },
+        { fallbackOnly: true, packageName: 'lodash' },
+        { fallbackOnly: undefined, packageName: 'qs' },
+      ]),
+    );
+    expect(plan.packageContractCandidates).toHaveLength(3);
+    // The first build must fail on these edges so acquisition can run; a private env read is strong.
+    expect(
+      createPreviewRenderOnlyDependencyResolutionHintPlan(plan).packageContractCandidates.map(
+        (candidate) => candidate.packageName,
+      ),
+    ).toEqual(['qs']);
+  });
+
+  /** Public build-time env names are client code; a private name still marks a server module. */
+  it('acquires first for public process.env reads but not for private ones', async () => {
+    const storePath = '/workspace/lib/store/store.ts';
+    const clientPath = '/workspace/src/lib/apis/axiosInstance.ts';
+    const middlewarePath = '/workspace/src/middleware.ts';
+    const sourceByPath = new Map([
+      [
+        storePath,
+        'import createSagaMiddleware from "redux-saga"; export const dev = process.env.NODE_ENV !== "production"; export const saga = createSagaMiddleware();',
+      ],
+      [
+        clientPath,
+        'import axios from "axios"; export const api = axios.create({ baseURL: process.env.NEXT_PUBLIC_API_BASE_URL });',
+      ],
+      [
+        middlewarePath,
+        'import { jwtVerify } from "jose"; export const key = new TextEncoder().encode(process.env.JWT_SECRET); export const verify = jwtVerify;',
+      ],
+    ]);
+    const profile: PreviewDependencyProfile = {
+      ...PROFILE,
+      requirementsByField: {
+        ...PROFILE.requirementsByField,
+        dependencies: {
+          ...PROFILE.requirementsByField.dependencies,
+          axios: '1.7.9',
+          jose: '5.9.6',
+          'redux-saga': '1.3.0',
+        },
+      },
+    };
+    const plan = await createPreviewDependencyResolutionHintPlan(
+      [
+        messageAt('Could not resolve "redux-saga"', storePath),
+        messageAt('Could not resolve "axios"', clientPath),
+        messageAt('Could not resolve "jose"', middlewarePath),
+      ],
+      {
+        environment: { identity: 'cold', nodeModulesPaths: [], profile },
+        projectRoot: '/workspace',
+        readSource: (sourcePath) => sourceByPath.get(sourcePath),
+        targetPath: '/workspace/src/pages/Home.tsx',
+        workspaceRoot: '/workspace',
+      },
+    );
+
+    expect([...plan.packageNames].sort()).toEqual(['axios', 'redux-saga']);
+    expect(
+      Object.fromEntries(
+        plan.packageContractCandidates.map((candidate) => [
+          candidate.packageName,
+          candidate.fallbackOnly === true,
+        ]),
+      ),
+    ).toEqual({ axios: true, jose: false, 'redux-saga': true });
+  });
+
+  /** Without lock evidence nothing can be acquired, so the path-only contract applies directly. */
+  it('keeps a path-only contract when the lockfile cannot restore the package', async () => {
+    const clientPath = '/workspace/src/api/client.ts';
+    const profile: PreviewDependencyProfile = {
+      ...PROFILE,
+      dependencyPaths: ['/workspace/package.json'],
+      hasReusableLockEvidence: false,
+      lockfileDigests: {},
+      lockfileEvidenceStatus: 'absent',
+      requirementsByField: {
+        ...PROFILE.requirementsByField,
+        dependencies: { ...PROFILE.requirementsByField.dependencies, axios: '1.7.9' },
+      },
+    };
+    const plan = await createPreviewDependencyResolutionHintPlan(
+      [messageAt('Could not resolve "axios"', clientPath)],
+      {
+        environment: { identity: 'manifest-only', nodeModulesPaths: [], profile },
+        projectRoot: '/workspace',
+        readSource: () => 'import axios from "axios"; export const api = axios.create();',
+        targetPath: '/workspace/src/pages/InventoryPage.tsx',
+        workspaceRoot: '/workspace',
+      },
+    );
+
+    expect(plan.packageNames).toEqual([]);
+    expect(plan.packageContractCandidates).toHaveLength(1);
+    expect(plan.packageContractCandidates[0]?.fallbackOnly).toBeUndefined();
+    expect(
+      createPreviewRenderOnlyDependencyResolutionHintPlan(plan).packageContractCandidates,
+    ).toHaveLength(1);
+  });
+
   /** Lets verified model history switch a safe candidate from contract fallback to acquisition. */
   it('changes strategy when neural outcomes outweigh close deterministic preferences', async () => {
     const loggerPath = '/workspace/src/lib/logger.ts';
@@ -704,6 +856,42 @@ describe('collectPreviewMissingDependencyRequirements', () => {
 
     expect(plan?.styleCandidates).toHaveLength(1);
     expect(plan?.styleCandidates[0]?.moduleSpecifier).toContain('pretendard');
+  });
+
+  /** A failed acquisition still leaves the path-only package's neutral contract for the retry. */
+  it('requests a path-only package and keeps its contract when acquisition fails', async () => {
+    const clientPath = '/workspace/src/api/client.ts';
+    const profile: PreviewDependencyProfile = {
+      ...PROFILE,
+      requirementsByField: {
+        ...PROFILE.requirementsByField,
+        dependencies: { ...PROFILE.requirementsByField.dependencies, axios: '1.7.9' },
+      },
+    };
+    const requested: string[][] = [];
+    const plan = await tryAcquirePreviewMissingDependencies({
+      context: {
+        environment: { identity: 'before-acquisition', nodeModulesPaths: [], profile },
+        projectRoot: '/workspace',
+        readSource: () => 'import axios from "axios"; export const api = axios.create();',
+        targetPath: '/workspace/src/pages/InventoryPage.tsx',
+        workspaceRoot: '/workspace',
+      },
+      errors: [messageAt('Could not resolve "axios"', clientPath)],
+      signal: new AbortController().signal,
+      store: {
+        acquireLockedDependencies: (options) => {
+          requested.push([...options.requiredPackageNames]);
+          return Promise.resolve(false);
+        },
+        prepare: () => Promise.reject(new Error('Failed acquisition must not prepare.')),
+      },
+    });
+
+    expect(requested).toEqual([['axios']]);
+    expect(plan?.packageContractCandidates).toEqual([
+      expect.objectContaining({ fallbackOnly: true, packageName: 'axios', sourcePath: clientPath }),
+    ]);
   });
 
   /** Avoids an expensive rebuild when acquisition published no new resolution environment. */

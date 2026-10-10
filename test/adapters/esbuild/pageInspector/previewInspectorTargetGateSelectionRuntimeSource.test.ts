@@ -215,4 +215,127 @@ describe('runtime target-gate selection', () => {
     `),
     ).toEqual({ before: 'first', after: 'first', output: false });
   });
+
+  /** 'focusSku && <div>notice</div>' beside an inbound table must not halt the whole traversal. */
+  it('waits for authored state only on a branch proven to lead to the target', () => {
+    expect(
+      scenario(`
+      const notice = gate('notice', { kind: 'logical-and',
+        ownerName: 'Checkout',
+        sourcePath: '/app/Checkout.tsx', unsafe: true, targetBranch: undefined,
+        truthyLabel: '<div>', falsyLabel: 'hidden' });
+      const pending = () => readPreviewInspectorPendingAuthoredStateGate(descriptor, candidate, state)?.id;
+      const unproven = pending();
+      notice.truthyLabel = '<div: Target>';
+      const labelled = pending();
+      notice.truthyLabel = '<div>';
+      notice.requiresAuthoredState = true;
+      ({ unproven, labelled, authored: pending() });
+    `),
+    ).toEqual({ authored: 'notice', labelled: 'notice', unproven: undefined });
+  });
+
+  /** The target's own '&&' branches are its content and need no further proof. */
+  it('admits the target module branches without label proof', () => {
+    expect(
+      scenario(`
+      gate('promo', { kind: 'logical-and', targetBranch: undefined, truthyLabel: '<span>',
+        falsyLabel: 'hidden' });
+      select()?.condition.id;
+    `),
+    ).toBe('promo');
+  });
+
+  /** Neural assistance keeps proven path branches and the target's own UI-state branches. */
+  it('filters neural condition candidates to proven corridor branches', () => {
+    expect(
+      scenario(`
+      globalThis.findSelectedPreviewInspectorDescriptor = () => descriptor;
+      globalThis.readSelectedPreviewInspectorPageCandidate = () => candidate;
+      previewInspectorSession.targetReachabilityByKey = new Map([[state.key, state]]);
+      const corridorGate = (id, truthyLabel) => gate(id, { kind: 'logical-and', ownerName: 'Checkout',
+        sourcePath: '/app/Checkout.tsx', targetBranch: undefined, truthyLabel, falsyLabel: 'hidden' });
+      const badge = gate('badge', { kind: 'logical-and', targetBranch: undefined, truthyLabel: '<span>',
+        stateBound: true });
+      const sibling = corridorGate('modal', '<InboundModal>');
+      const path = corridorGate('panel', '<div: Target>');
+      const proven = createPreviewInspectorConditionProofFilter();
+      ({ badge: proven(badge), path: proven(path), sibling: proven(sibling) });
+    `),
+    ).toEqual({ badge: true, path: true, sibling: false });
+  });
+
+  /** Forcing 'atRiskDelta !== 0' while the data says 0 rendered "−0"; local UI state stays a choice. */
+  it('keeps the target data branches out of neural candidates', () => {
+    expect(
+      scenario(`
+      globalThis.findSelectedPreviewInspectorDescriptor = () => descriptor;
+      globalThis.readSelectedPreviewInspectorPageCandidate = () => candidate;
+      previewInspectorSession.targetReachabilityByKey = new Map([[state.key, state]]);
+      const comparison = (path) => ({ kind: 'comparison', operator: '!==', path, value: 0 });
+      const delta = gate('delta', { kind: 'logical-and', targetBranch: undefined,
+        truthyLabel: '<span>', scalarExpression: comparison('atRiskDelta') });
+      const tab = gate('tab', { kind: 'logical-and', targetBranch: undefined, truthyLabel: '<div>',
+        scalarExpression: comparison('tab'), stateBound: true });
+      const cogs = gate('cogs', { kind: 'logical-and', targetBranch: undefined, truthyLabel: '<div>' });
+      const proven = createPreviewInspectorConditionProofFilter();
+      ({ cogs: proven(cogs), delta: proven(delta), tab: proven(tab) });
+    `),
+    ).toEqual({ cogs: false, delta: false, tab: true });
+  });
+
+  /** A value a forced sibling fixes is not an independent neural choice. */
+  it('keeps coherence-fixed conditions out of neural candidates', () => {
+    expect(
+      scenario(`
+      globalThis.findSelectedPreviewInspectorDescriptor = () => descriptor;
+      globalThis.readSelectedPreviewInspectorPageCandidate = () => candidate;
+      globalThis.readPreviewInspectorScalarCoherentOverride = (condition) => condition.implied;
+      previewInspectorSession.targetReachabilityByKey = new Map([[state.key, state]]);
+      const overview = gate('overview', { kind: 'logical-and', stateBound: true, implied: false });
+      const billing = gate('billing', { kind: 'logical-and', stateBound: true });
+      const proven = createPreviewInspectorConditionProofFilter();
+      ({ billing: proven(billing), overview: proven(overview) });
+    `),
+    ).toEqual({ billing: true, overview: false });
+  });
+
+  /** 'form && <InboundModal/>' in a corridor owner is a sibling of the target, not its path. */
+  it('opens a corridor owner overlay only when its branch names the target path', () => {
+    expect(
+      scenario(`
+      const modal = gate('form', { kind: 'logical-and', role: 'overlay', ownerName: 'Checkout',
+        sourcePath: '/app/Checkout.tsx', targetBranch: undefined, truthyLabel: '<InboundModal>',
+        falsyLabel: 'hidden' });
+      const sibling = select()?.condition.id;
+      modal.truthyLabel = '<InboundModal: Target>';
+      ({ sibling, containing: select()?.condition.id });
+    `),
+    ).toEqual({ containing: 'form', sibling: undefined });
+  });
+
+  /** '<SkuFormModal open={createOpen}>' and '<SkuFormModal open={!!editing}>' on one page. */
+  it('opens only the source-first owner instance of a repeated overlay target', () => {
+    expect(
+      scenario(`
+      const instance = (id, line) => gate(id, { kind: 'overlay-visibility', role: 'overlay',
+        sourcePath: '/app/Checkout.tsx', line, column: 7 });
+      // The overlay inside the target module is shared by both instances.
+      gate('shared', { kind: 'overlay-visibility', role: 'overlay', ownerName: 'Modal', line: 12 });
+      // Discovery order differs from source order; a rejected earlier instance is skipped.
+      const edit = instance('edit', 77); const create = instance('create', 75); instance('rejected', 70);
+      const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
+      const before = { general: select()?.condition.id, exact: select(true)?.condition.id,
+        redirected: readPreviewInspectorSourceFirstInstanceOverlay(edit, state, evidence)?.id,
+        deferred: isPreviewInspectorOverlayRevealDeferred(state) };
+      create.effectiveEnabled = true;
+      ({ before, open: { general: select()?.condition.id, exact: select(true)?.condition.id,
+        redirected: readPreviewInspectorSourceFirstInstanceOverlay(edit, state, evidence),
+        deferred: isPreviewInspectorOverlayRevealDeferred(state) } });
+    `),
+    ).toEqual({
+      before: { deferred: true, exact: 'create', general: 'create', redirected: 'create' },
+      open: { deferred: true, exact: undefined, general: undefined, redirected: undefined },
+    });
+  });
 });

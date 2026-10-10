@@ -149,7 +149,7 @@ function smartFillPreviewInspectorDataPayloadsForReachability(reachabilityKey, o
     const payloadChanged = current?.mode !== mode ||
       stringifyPreviewInspectorProps(current?.payload) !== stringifyPreviewInspectorProps(payload);
     if (payloadChanged) {
-      const recordChanged = applyPreviewInspectorDataPayloadOverride(record.id, payload, mode);
+      const recordChanged = applyPreviewInspectorDataPayloadOverride(record.id, payload, mode, true);
       changed = recordChanged || changed;
       if (recordChanged) {
         previewInspectorSession.dataPayloadSmartShapeSignatures.set(

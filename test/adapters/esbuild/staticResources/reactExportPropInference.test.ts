@@ -95,7 +95,7 @@ describe('collectReactExportPropInference', () => {
           items: {
             kind: 'object',
             properties: {
-              name: { kind: 'string', value: 'name' },
+              name: { kind: 'string', value: 'Name' },
               stakeholderId: { kind: 'string', value: 'preview-id' },
             },
           },
@@ -151,7 +151,7 @@ describe('collectReactExportPropInference', () => {
             kind: 'object',
             properties: {
               id: { kind: 'string', value: 'preview-id' },
-              name: { kind: 'string', value: 'name' },
+              name: { kind: 'string', value: 'Name' },
             },
           },
           kind: 'array',
@@ -278,7 +278,7 @@ describe('collectReactExportPropInference', () => {
             properties: {
               createdAt: {
                 kind: 'string',
-                value: '2024-01-01T00:00:00.000Z',
+                value: '2026-01-15T09:00:00.000Z',
               },
             },
           },
@@ -670,6 +670,187 @@ describe('collectReactExportPropInference', () => {
     );
   });
 
+  /**
+   * A receiver read only by `length` and an index is the Array a child's declared item contract
+   * proves (SimSheet `r.past[r.past.length - 1]` rendered NaN from an empty sample list).
+   */
+  it.each(['r.past[r.past.length - 1]', 'r.past[0]'])(
+    'accepts a child Array item contract for a receiver read as %s',
+    (read) => {
+      const source = [
+        `import { Cell } from './Cell';`,
+        'export const Sheet = ({ rows }: any) => (',
+        '  <table><tbody>{rows.map((r) => (',
+        `    <tr key={r.id}><td>{String(${read})}</td><Cell row={r} /></tr>`,
+        '  ))}</tbody></table>',
+        ');',
+      ].join('\n');
+      const childPropDemands: PreviewChildPropDemandCatalog = new Map([
+        [
+          'Cell',
+          new Map([
+            [
+              'row',
+              {
+                kind: 'object',
+                properties: { past: { kind: 'array', items: { kind: 'number' } } },
+              },
+            ],
+          ]),
+        ],
+      ]);
+
+      const result = collectReactExportPropInference('/workspace/Sheet.tsx', source, {
+        childPropDemands,
+      });
+
+      expect(result.Sheet?.shape.properties?.rows?.items?.properties?.past).toEqual({
+        kind: 'array',
+        items: { kind: 'number' },
+      });
+    },
+  );
+
+  /**
+   * Generated lists hold three items, so fixed week columns read past the end and rendered NaN
+   * (SimSheet `finals[k]` with `k: 0 | 1 | 2 | 3`, `stocks[k]` in `[0, 1, 2, 3, 4].map`).
+   */
+  it('records how many items bounded index reads reach', () => {
+    const source = [
+      'type Row = { finals: number[]; stocks: number[]; name: string };',
+      'type Props = { rows: Row[]; row: Row; k: 0 | 1 | 2 | 3 };',
+      'export const Sheet = ({ rows, row, k }: Props) => (',
+      '  <table>',
+      '    <tr><td>{row.finals[k]}</td><td>{row.name[0]}</td></tr>',
+      '    {rows.map((r) => <tr key={r.name}>{[0, 1, 2, 3, 4].map((i) => <td key={i}>{r.stocks[i]}</td>)}</tr>)}',
+      '  </table>',
+      ');',
+    ].join('\n');
+
+    const shape = collectReactExportPropInference('/workspace/Sheet.tsx', source).Sheet?.shape;
+
+    expect(shape?.properties?.row?.properties?.finals).toMatchObject({
+      kind: 'array',
+      minItems: 4,
+    });
+    expect(shape?.properties?.rows?.items?.properties?.stocks).toMatchObject({
+      kind: 'array',
+      minItems: 5,
+    });
+    // A literal index may read a string; it never turns a text prop into an Array.
+    expect(shape?.properties?.row?.properties?.name?.kind).toBe('string');
+  });
+
+  /**
+   * A target-only Button rendered an empty placeholder for `children`; a slot the component only
+   * renders as direct content gets the component's label, other uses keep the element.
+   */
+  it('labels a children slot only when it is rendered as direct content', () => {
+    const source = [
+      `import { Children, cloneElement, type ReactNode } from 'react';`,
+      'type Props = { children: ReactNode };',
+      'export function SectionTitle({ children }: Props) { return <h2>{children}</h2>; }',
+      'export function Item(props: Props) { return <li>{props.children}</li>; }',
+      'export function Tabs({ children }: Props) { return <ul>{Children.map(children, (c) => c)}</ul>; }',
+      'export function Slot({ children }: Props) { return cloneElement(children as never, {}); }',
+      'export function Hint({ children }: Props) { return <i title="x">{children}{String(children)}</i>; }',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/ui.tsx', source);
+
+    expect(result.SectionTitle?.shape.properties?.children).toEqual({
+      kind: 'element',
+      value: 'Section title',
+    });
+    expect(result.Item?.shape.properties?.children?.value).toBe('Item');
+    expect(result.Tabs?.shape.properties?.children?.value).toBeUndefined();
+    expect(result.Slot?.shape.properties?.children?.value).toBeUndefined();
+    expect(result.Hint?.shape.properties?.children?.value).toBeUndefined();
+  });
+
+  /**
+   * SegmentedControl's `${active ? 'bg-brand' : it.dot}` rendered `class="… [object Object]"`:
+   * a read used only as template text becomes a string unless other evidence names its kind.
+   */
+  it('infers template-only reads as text without overriding other evidence', () => {
+    const source = [
+      'export const Segments = ({ items, active, meta, count, unit }: any) => (',
+      '  <div>',
+      '    {items.map((it) => (',
+      '      <span key={it.value} className={`dot ${active ? "on" : it.dot}`}>{`${it.count}개`}</span>',
+      '    ))}',
+      '    <b title={"Total " + unit}>{`${count}개`}</b>',
+      '    <em>{meta.lead != null ? `${meta.lead}일` : "—"}</em>',
+      '    <i>{`${meta.owner.name} ${meta.code ?? ""}`}</i>',
+      '    <u>{gql`${meta.fragment}`}</u>',
+      '  </div>',
+      ');',
+    ].join('\n');
+
+    const shape = collectReactExportPropInference('/workspace/Segments.tsx', source).Segments
+      ?.shape;
+
+    expect(shape?.properties?.items?.items?.properties?.dot).toEqual({ kind: 'string' });
+    // An absent leaf stays absent: its authored `!= null` guard must keep the dash.
+    expect(shape?.properties?.unit).toBeUndefined();
+    expect(shape?.properties?.meta?.properties?.lead).toBeUndefined();
+    expect(shape?.properties?.items?.items?.properties?.count?.kind).toBe('number');
+    expect(shape?.properties?.count).toBeUndefined();
+    // The authored `?? ""` fallback already supplies this leaf's text.
+    expect(shape?.properties?.meta?.properties?.code).toMatchObject({ kind: 'string' });
+    expect(shape?.properties?.meta?.properties?.owner?.kind).toBe('object');
+    expect(shape?.properties?.meta?.properties?.fragment?.kind).not.toBe('string');
+  });
+
+  /**
+   * InboundTab's `status: InboundStatus` was dropped, so `STATUS_DOT[r.status]` rendered
+   * "undefined": a declared closed literal union keeps its first member and every member as a row
+   * candidate; open or mixed unions stay unresolved.
+   */
+  it('materializes declared literal unions with every member as a candidate', () => {
+    const source = [
+      "type Status = 'REQUESTED' | 'IN_TRANSIT' | 'DELIVERED';",
+      "type Row = { status: Status; size: 1 | 2 | 3; tag: 'a' | string; mixed: 'a' | 1 };",
+      "export const Table = ({ rows, mode }: { rows: Row[]; mode: 'list' | 'grid' }) => (",
+      '  <ul>{rows.length}{mode}</ul>',
+      ');',
+    ].join('\n');
+
+    const shape = collectReactExportPropInference('/workspace/Table.tsx', source).Table?.shape;
+    const row = shape?.properties?.rows?.items?.properties;
+
+    expect(row?.status).toEqual({
+      candidateValues: ['REQUESTED', 'IN_TRANSIT', 'DELIVERED'],
+      kind: 'string',
+      value: 'REQUESTED',
+    });
+    expect(row?.size).toEqual({ candidateValues: [1, 2, 3], kind: 'number', value: 1 });
+    expect(shape?.properties?.mode).toMatchObject({
+      candidateValues: ['list', 'grid'],
+      value: 'list',
+    });
+    expect(row?.tag).toBeUndefined();
+    expect(row?.mixed).toBeUndefined();
+  });
+
+  /** Only text shown as-is may take a sample label; parsed or interpolated text keeps ''. */
+  it('marks text props read directly as React child content', () => {
+    const source = [
+      'type Props = { title: string; end: string; unit: string };',
+      'const display = (value: string) => value.split("-").join(".");',
+      'export function Header({ title, end, unit }: Props) {',
+      '  return <h1 data-unit={unit}>{title}<small>{display(end)}</small>{`${unit} only`}</h1>;',
+      '}',
+    ].join('\n');
+
+    const properties = collectReactExportPropInference('/workspace/Header.tsx', source).Header
+      ?.shape.properties;
+
+    expect(properties?.title).toEqual({ kind: 'string', renderedText: true });
+    expect(properties?.end).toEqual({ kind: 'string' });
+    expect(properties?.unit).toEqual({ kind: 'string' });
+  });
+
   /** Carries a reached child's item contract through a literal Array element access. */
   it('infers child props forwarded from the first generated collection item', () => {
     const source = [
@@ -741,7 +922,7 @@ describe('collectReactExportPropInference', () => {
       kind: 'object',
       properties: {
         count: { kind: 'number' },
-        title: { kind: 'string' },
+        title: { kind: 'string', renderedText: true },
       },
     });
   });
@@ -826,8 +1007,9 @@ describe('collectReactExportPropInference', () => {
 
     expect(result.Form?.shape.properties).toMatchObject({
       name: { kind: 'string' },
+      // A required closed union takes its first member and keeps every member as a candidate.
+      variant: { candidateValues: ['create', 'edit'], kind: 'string', value: 'create' },
     });
-    expect(result.Form?.shape.properties).not.toHaveProperty('variant');
     expect(result.Form?.shape.properties).not.toHaveProperty('optional');
   });
 
@@ -1116,14 +1298,14 @@ describe('collectReactExportPropInference', () => {
     expect(result.default?.shape.properties?.events).toMatchObject({
       items: {
         properties: {
-          date: { kind: 'string', value: '2024-01-01T00:00:00.000Z' },
+          date: { kind: 'string', value: '2026-01-15T09:00:00.000Z' },
           eventType: {
             candidateValues: ['appointed', 'ended', 'co-ceo'],
             exactValue: true,
             kind: 'string',
             value: 'appointed',
           },
-          kind: { kind: 'string', value: 'kind' },
+          kind: { kind: 'string', value: 'Kind' },
         },
       },
       kind: 'array',
@@ -1149,14 +1331,7 @@ describe('collectReactExportPropInference', () => {
     const result = collectReactExportPropInference('/workspace/TaxTypeBadge.tsx', source);
 
     expect(result.TaxTypeBadge?.shape.properties?.taxType).toEqual({
-      candidateValues: [
-        'heavy_tax',
-        'fixed_tax',
-        'normal_tax',
-        'reduced_tax',
-        'exempted',
-        'none',
-      ],
+      candidateValues: ['heavy_tax', 'fixed_tax', 'normal_tax', 'reduced_tax', 'exempted', 'none'],
       exactValue: true,
       kind: 'string',
       value: 'heavy_tax',

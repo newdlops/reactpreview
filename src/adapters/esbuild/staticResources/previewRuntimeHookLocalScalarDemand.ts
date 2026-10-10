@@ -20,6 +20,7 @@ import {
   inferPreviewRuntimeSemanticFallback,
 } from './previewRuntimeHookSemantics';
 import { collectPreviewRuntimeHookConditionComparisons } from './previewRuntimeHookConditionComparison';
+import { isPreviewSelectedTargetExit } from './previewSelectedTargetExit';
 
 /** Maximum helper-call distance inspected from the component that owns a hook binding. */
 const MAX_LOCAL_CALL_DEPTH = 3;
@@ -264,7 +265,9 @@ function visitReachableNode(
   if (node !== scope && isPreviewRuntimeFunction(node)) return;
   if (ts.isIfStatement(node)) {
     const renderGuard =
-      node.elseStatement === undefined && statementAlwaysExits(node.thenStatement);
+      node.elseStatement === undefined &&
+      statementAlwaysExits(node.thenStatement) &&
+      !isPreviewSelectedTargetExit(node.thenStatement);
     for (const comparison of collectPreviewRuntimeHookConditionComparisons(
       node.expression,
       renderGuard,

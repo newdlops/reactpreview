@@ -5,8 +5,11 @@
  * later authored-page artifact. Compiler-generated values are useful only inside the render
  * corridor that produced them, while explicit user JSON is an intentional cross-remount choice.
  * This runtime therefore expires inferred values at that boundary and lets an application-owned
- * Router remain authoritative after its hooks return successfully.
+ * Router remain authoritative after its hooks return successfully. Generated hook values also
+ * carry the canonical sample date (name-only date fields), placed here on the preview's current day
+ * like every other generated date.
  */
+import { createPreviewSampleDateApiExpression } from '../previewSampleDateRuntimeSource';
 
 /**
  * Creates browser source that scopes automatic hook values to one revision and page perspective.
@@ -19,6 +22,37 @@
 export function createPreviewInspectorRuntimeFallbackScopeRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_ROUTER_HOOK_MODULE_PATTERN = /^react-router(?:-dom)?(?:\/|$)/u;
+const previewInspectorFallbackSampleDates = ${createPreviewSampleDateApiExpression()};
+
+/** Moves canonical sample dates inside one generated plain value onto the current day. */
+function rebasePreviewInspectorFallbackSampleDates(value, depth) {
+  if (typeof value === 'string') return previewInspectorFallbackSampleDates.rebase(value);
+  if (value === null || typeof value !== 'object' || depth > 6) return value;
+  if (Array.isArray(value)) {
+    let changed = false;
+    const items = value.map((item) => {
+      const next = rebasePreviewInspectorFallbackSampleDates(item, depth + 1);
+      if (next !== item) changed = true;
+      return next;
+    });
+    if (!changed) return value;
+    return Object.isFrozen(value) ? Object.freeze(items) : items;
+  }
+  // Plain records only (any realm's Object.prototype or none); proxies and class instances stay.
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== null && Object.getPrototypeOf(prototype) !== null) return value;
+  let result;
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor)) continue;
+    const next = rebasePreviewInspectorFallbackSampleDates(descriptor.value, depth + 1);
+    if (next === descriptor.value) continue;
+    result ??= Object.assign(Object.create(prototype), value);
+    result[key] = next;
+  }
+  if (result === undefined) return value;
+  return Object.isFrozen(value) ? Object.freeze(result) : result;
+}
 
 /** Creates an identity for inferred values that must not cross candidate or artifact boundaries. */
 function createPreviewInspectorRuntimeFallbackScopeKey(candidate, directTarget) {
@@ -143,6 +177,70 @@ function PreviewInspectorRuntimeFallbackScopeBoundary({ children }) {
   return React.createElement(React.Fragment, { key: scopeKey }, children);
 }
 
+/**
+ * Reports whether a hook's owner lies on the selected root-to-target corridor.
+ *
+ * A guard-pass value (a hook boolean forced past 'if (!isOpen) return null') exists to reach the
+ * target. Applied to an unrelated sibling, such as a global popup mounted by the application shell,
+ * it opens UI the page never shows. The owner counts when its module is the target module, or when
+ * the module is on the corridor and the owner name is one of its proven components; same-file
+ * membership alone is not enough because a page often declares several sibling dialogs. Without a
+ * reachability state or corridor evidence the rule stays as authored (true).
+ */
+function isPreviewInspectorRuntimeHookOwnerOnTargetCorridor(metadata) {
+  const key = previewInspectorSession.activeTargetReachabilityKey;
+  const state = typeof key === 'string'
+    ? previewInspectorSession.targetReachabilityByKey?.get?.(key)
+    : undefined;
+  if (
+    state === undefined || state === null || typeof state !== 'object' ||
+    typeof readPreviewInspectorTargetPathEvidence !== 'function' ||
+    typeof findSelectedPreviewInspectorDescriptor !== 'function'
+  ) return true;
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+  if (!(previewInspectorSession.runtimeHookCorridorEvidence instanceof WeakMap)) {
+    previewInspectorSession.runtimeHookCorridorEvidence = new WeakMap();
+  }
+  let cached = previewInspectorSession.runtimeHookCorridorEvidence.get(state);
+  if (cached === undefined || cached.candidate !== candidate) {
+    let evidence;
+    try {
+      evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
+    } catch {
+      evidence = undefined;
+    }
+    cached = { candidate, evidence };
+    previewInspectorSession.runtimeHookCorridorEvidence.set(state, cached);
+  }
+  const evidence = cached.evidence;
+  if (!(evidence?.paths instanceof Set) || evidence.paths.size === 0) return true;
+  const sourcePath = normalizePreviewInspectorReachabilityPath(metadata?.sourcePath);
+  const targetPath = normalizePreviewInspectorReachabilityPath(
+    candidate?.target?.sourcePath ?? descriptor?.inspector?.target?.sourcePath,
+  );
+  if (sourcePath.length > 0 && sourcePath === targetPath) return true;
+  if (!evidence.paths.has(sourcePath)) return false;
+  const ownerName = metadata?.ownerName;
+  return typeof ownerName === 'string' && ownerName.length > 0 && (
+    evidence.names?.has?.(ownerName) === true ||
+    evidence.corridorOwnerNames?.has?.(ownerName) === true ||
+    evidence.localComponentOwnerNames?.has?.(ownerName) === true
+  );
+}
+
+/** Reports whether a source path is the module the user opened, without reading page evidence. */
+function isPreviewInspectorSelectedTargetModule(sourcePath) {
+  const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
+    ? findSelectedPreviewInspectorDescriptor()
+    : undefined;
+  const normalize = typeof normalizePreviewInspectorReachabilityPath === 'function'
+    ? normalizePreviewInspectorReachabilityPath
+    : (value) => (typeof value === 'string' ? value : '');
+  const targetPath = normalize(descriptor?.inspector?.target?.sourcePath);
+  return targetPath.length > 0 && normalize(sourcePath) === targetPath;
+}
+
 /** Reports whether successful router-hook output belongs to the selected application Router. */
 function shouldPreservePreviewInspectorOwnedRouterHookValue(metadata) {
   if (
@@ -187,7 +285,13 @@ function resolvePreviewInspectorScopedRuntimeHook(
   readGraphqlOptions,
   readHookIdentity,
 ) {
-  usePreviewInspectorRuntimeFallbackNeuralSubscription();
+  const createRawFallback = createFallback;
+  createFallback = typeof createRawFallback === 'function'
+    ? () => rebasePreviewInspectorFallbackSampleDates(createRawFallback(), 0)
+    : createRawFallback;
+  // A member call such as a store's getState() can run in an event handler, effect, or HTTP
+  // interceptor. Only a genuine hook invocation may add this render-scoped subscription.
+  if (rawMetadata?.invocation !== 'member') usePreviewInspectorRuntimeFallbackNeuralSubscription();
   const fallbackId = typeof rawMetadata?.id === 'string' ? rawMetadata.id : '';
   if (
     fallbackId.length === 0 ||

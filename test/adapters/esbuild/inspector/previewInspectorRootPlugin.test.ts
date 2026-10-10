@@ -1022,6 +1022,49 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).not.toContain('react-preview:inspector-direct-target/Target');
   });
 
+  /** StatusChip mounted by itself (target-only) received no `status` and threw on `.bg`. */
+  it('completes target-only root props with the declared required prop values', () => {
+    const plan = createPlan({ exportName: 'Target', sourcePath: TARGET_PATH });
+    const browserCandidate = plan.pageCandidates[0];
+    if (browserCandidate === undefined) throw new Error('Expected one page candidate.');
+    const execution = (fidelity: 'page-authentic' | 'target-only') =>
+      ({
+        browserCandidate: { ...browserCandidate, rootAutomaticProps: {} },
+        compositionEdges: [],
+        criticalSurfaces: [],
+        evidenceSourcePaths: [],
+        executionRootContract: {
+          exportName: 'Target',
+          sourcePath: TARGET_PATH,
+          surfaceId: 'target',
+        },
+        executionRootSurfaceId: 'target',
+        fidelity,
+        id: `execution-${fidelity}`,
+        optionalSurfaces: [],
+        runtimeTargetContract: {
+          exportName: 'Target',
+          sourcePath: TARGET_PATH,
+          surfaceId: 'target',
+        },
+        runtimeTargetSurfaceId: 'target',
+        watchSourcePaths: [TARGET_PATH],
+      }) as unknown as PreviewInspectorPageExecutionCandidate;
+    const rootProps = (fidelity: 'page-authentic' | 'target-only'): string => {
+      const pageExecutionCandidate = execution(fidelity);
+      const source = createPreviewInspectorRootSource({
+        pageExecutionCandidate,
+        pageExecutionCandidates: [pageExecutionCandidate],
+        plan,
+        targetTypedProps: { status: 'ok' },
+      });
+      return /"rootAutomaticProps":(\{[^}]*\})/u.exec(source)?.[1] ?? '';
+    };
+
+    expect(rootProps('target-only')).toBe('{"status":"ok"}');
+    expect(rootProps('page-authentic')).toBe('{}');
+  });
+
   /**
    * Parses the emitted descriptor JSON to prove static JSX choices cross the extension-host to
    * webview boundary with condition, source, and component-tree evidence intact.

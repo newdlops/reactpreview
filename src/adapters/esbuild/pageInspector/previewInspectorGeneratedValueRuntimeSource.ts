@@ -10,6 +10,7 @@
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
 import { PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY_KEY } from '../previewAutomaticPropsRuntimeSource';
+import { createPreviewSampleLabelRuntimeSource } from '../previewSampleLabel';
 
 /** Maximum nested object/array depth completed during one hook read. */
 export const PREVIEW_INSPECTOR_GENERATED_VALUE_DEPTH_LIMIT = 12;
@@ -37,6 +38,12 @@ export const PREVIEW_INSPECTOR_ARRAY_LENGTH_SAFE_LIMIT = 4_096;
 export function createPreviewInspectorGeneratedValueRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_GENERATED_VALUE_DEPTH_LIMIT = ${PREVIEW_INSPECTOR_GENERATED_VALUE_DEPTH_LIMIT};
+${createPreviewSampleLabelRuntimeSource('previewInspectorGeneratedKeyLabel')}
+/** Recognizes generated key text: the raw key ('sku_name') or its sample label ('Sku name'). */
+function isPreviewInspectorGeneratedKeyText(value, key) {
+  const name = String(key ?? '');
+  return typeof value === 'string' && (value === name || value === previewInspectorGeneratedKeyLabel(name, 'Value'));
+}
 const PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT = ${PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT};
 const PREVIEW_INSPECTOR_GENERATED_VALUE_PATH_LIMIT = ${PREVIEW_INSPECTOR_GENERATED_VALUE_PATH_LIMIT};
 const PREVIEW_INSPECTOR_ARRAY_LENGTH_MAX = ${PREVIEW_INSPECTOR_ARRAY_LENGTH_MAX};
@@ -350,7 +357,7 @@ function createPreviewInspectorGeneratedDescriptor(value, authoredDescriptor) {
   };
 }
 
-/** Clones one plain record from descriptors so authored accessors are copied but never executed. */
+/** Clones one plain record from descriptors so unreplaced authored accessors are copied, not executed. */
 function clonePreviewInspectorGeneratedRecord(value, descriptors, replacements) {
   let prototype;
   try {
@@ -460,8 +467,7 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
   }
 
   if (
-    typeof authored === 'string' &&
-    authored === String(path.at(-1) ?? '') &&
+    isPreviewInspectorGeneratedKeyText(authored, path.at(-1)) &&
     generated !== null &&
     typeof generated === 'object' &&
     hasPreviewInspectorGeneratedDescendantRequirement(state, path)
@@ -477,8 +483,7 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
   }
 
   if (
-    typeof authored === 'string' &&
-    authored === String(path.at(-1) ?? '') &&
+    isPreviewInspectorGeneratedKeyText(authored, path.at(-1)) &&
     !Object.is(authored, generated) &&
     (generated === null || (typeof generated !== 'object' && typeof generated !== 'function')) &&
     hasPreviewInspectorGeneratedExactRequirement(state, path)
@@ -599,15 +604,41 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
       continue;
     }
     const authoredDescriptor = authoredDescriptors[propertyName];
+    const childPath = [...path, propertyName];
+    const authoredIsAccessor = authoredDescriptor !== undefined &&
+      !Object.prototype.hasOwnProperty.call(authoredDescriptor, 'value');
+    /*
+     * Accessors stay unexecuted unless compiler usage proves the component reads this exact path.
+     * A library result such as SWR's exposes data through getters that also subscribe the caller;
+     * the component would run that getter anyway, and skipping it would leave a loading
+     * undefined in place. Read it once here so the clone carries a data property while the real
+     * getter has still registered its dependency for the later response. Only a nullish read is
+     * replaced: a getter that returns an object (react-hook-form's empty errors) is real state,
+     * and completing inside it would invent branches such as a validation message.
+     */
     if (
-      authoredDescriptor !== undefined &&
-      !Object.prototype.hasOwnProperty.call(authoredDescriptor, 'value')
+      authoredIsAccessor &&
+      (
+        typeof authoredDescriptor.get !== 'function' ||
+        (
+          !hasPreviewInspectorGeneratedExactRequirement(state, childPath) &&
+          !hasPreviewInspectorGeneratedDescendantRequirement(state, childPath)
+        )
+      )
     ) {
       continue;
     }
-    const childPath = [...path, propertyName];
+    let authoredValue = authoredDescriptor?.value;
+    if (authoredIsAccessor) {
+      try {
+        authoredValue = authoredDescriptor.get.call(authored);
+      } catch {
+        continue;
+      }
+      if (authoredValue !== null && authoredValue !== undefined) continue;
+    }
     const child = mergePreviewInspectorGeneratedValue(
-      authoredDescriptor?.value,
+      authoredValue,
       generatedDescriptor.value,
       state,
       childPath,

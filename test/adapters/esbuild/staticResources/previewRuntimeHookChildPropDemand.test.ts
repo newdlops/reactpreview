@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { PreviewRuntimeHookChildPropDemandCatalogBuilder } from '../../../../src/adapters/esbuild/staticResources/previewRuntimeHookChildPropDemand';
 import { createPreviewRuntimeHookReplacements } from '../../../../src/adapters/esbuild/staticResources/previewRuntimeHookInstrumentation';
+import { mergePreviewRuntimeHookChildPropShapes } from '../../../../src/adapters/esbuild/staticResources/previewRuntimeHookChildTypeDemand';
 import { collectReactExportPropInference } from '../../../../src/adapters/esbuild/staticResources/reactExportPropInference';
 
 describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
@@ -105,7 +106,7 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
           kind: 'array',
           items: {
             properties: {
-              meetingDate: { kind: 'string', value: '2024-01-01T00:00:00.000Z' },
+              meetingDate: { kind: 'string', value: '2026-01-15T09:00:00.000Z' },
               meetingType: { kind: 'string', value: 'regular_meeting', exactValue: true },
             },
           },
@@ -148,7 +149,7 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
 
     expect(transformed).toContain('"rides": ((__createPreviewItem)');
     expect(transformed).toContain('react-file-preview.generated-list-runtime');
-    expect(transformed).toContain('Object.freeze({ "id": "preview-id", "name": "name" })');
+    expect(transformed).toContain('Object.freeze({ "id": "preview-id", "name": "Name" })');
     expect(transformed).toContain(
       '"requiredPaths":["data.data","data.data.rides.map()","data.data.rides[].id","data.data.rides[].name"]',
     );
@@ -292,7 +293,7 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     expect(transformed).toContain('"issues": ((__createPreviewItem)');
     expect(transformed).toContain('react-file-preview.generated-list-runtime');
     expect(transformed).toContain('"id": "preview-id"');
-    expect(transformed).toContain('"title": "title"');
+    expect(transformed).toContain('"title": "Title"');
     expect(transformed).toContain('data.project.issues[].title');
   });
 
@@ -491,7 +492,7 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     expect(transformed).toContain('"items": ((__createPreviewItem)');
     expect(transformed).toContain('"children": ((__createPreviewItem)');
     expect(transformed).toContain('"id": "preview-id"');
-    expect(transformed).toContain('"label": "label"');
+    expect(transformed).toContain('"label": "Label"');
     expect(transformed).toContain('"failurePaths":["data.items[]"');
     expect(transformed).toContain('data.items[].children[].label');
   });
@@ -560,7 +561,7 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     expect(transformed).toContain('"companyFeeds": ((__createPreviewItem)');
     expect(transformed).toContain('"__typename": "ClosingFeed"');
     expect(transformed).toContain(
-      '"company": Object.freeze({ "id": "preview-id", "name": "name" })',
+      '"company": Object.freeze({ "id": "preview-id", "name": "Name" })',
     );
     expect(transformed).toContain('"desiredInvestmentAmountCategory": "min"');
     expect(transformed).toContain('"desiredInvestmentAmount": "100000000"');
@@ -760,3 +761,15 @@ function applyReplacements(
   }
   return transformed;
 }
+
+describe('mergePreviewRuntimeHookChildPropShapes', () => {
+  /** A child's usage-only `finals[k]` bound survives the merge with its declared item type. */
+  it('keeps the longest bounded index length beside the declared item contract', () => {
+    expect(
+      mergePreviewRuntimeHookChildPropShapes(
+        { kind: 'array', minItems: 4 },
+        { kind: 'array', items: { kind: 'number' }, minItems: 2 },
+      ),
+    ).toEqual({ kind: 'array', items: { kind: 'number' }, minItems: 4 });
+  });
+});

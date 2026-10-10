@@ -1,20 +1,31 @@
 /**
  * Supplies a tiny browser-rendering surface for selected Next.js modules outside Next's compiler.
  * App, Head, image, and font modules require Next's bootstrap or build transforms even when
- * installed, while the `server-only` marker deliberately throws in a browser. Link defers to
- * normal resolution. Every fallback still requires an inert, workspace-owned manifest that
- * declares Next. It never imports configuration, starts a server, or executes package scripts.
+ * installed, while the `server-only` marker deliberately throws in a browser; `next/headers` and
+ * `next/cache` are server-only APIs, so they always use inert facades. Link, navigation, dynamic,
+ * and server defer to normal resolution (an installed Next or the router bridge) first. Every
+ * fallback still requires an inert, workspace-owned manifest that declares Next. It never imports
+ * configuration, starts a server, or executes package scripts.
  */
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import ts from 'typescript';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import {
+  createNextCacheFallbackSource,
+  createNextDynamicFallbackSource,
+  createNextHeadersFallbackSource,
+  createNextServerFallbackSource,
+} from './previewNextServerFallbackSources';
+import { createPreviewNextAppNavigationRuntimeSource } from './previewNextAppNavigationRuntimeSource';
 import { isFileBackedPreviewNamespace, PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
 
 const NEXT_RENDER_FALLBACK_NAMESPACE = 'react-preview-next-render-fallback';
 const NEXT_RENDER_MODULE_PATTERN =
-  /^(?:next\/(?:(?:app|head)(?:\.js)?|font\/google|image|link(?:\.js)?)|server-only)$/;
+  /^(?:next\/(?:(?:app|cache|dynamic|head|headers|link|navigation|server)(?:\.js)?|font\/google|image)|server-only)$/;
+/** Public modules whose installed implementation (or the router bridge) is preferred when resolvable. */
+const NEXT_INSTALLED_FIRST_PATTERN = /^next\/(?:dynamic|link|navigation|server)(?:\.js)?$/u;
 const MAXIMUM_PACKAGE_MANIFEST_BYTES = 1024 * 1024;
 const MAXIMUM_IMPORTER_BYTES = 2 * 1024 * 1024;
 const PACKAGE_DEPENDENCY_FIELDS = [
@@ -87,7 +98,7 @@ export function createPreviewNextFrameworkFallbackPlugin(
           manifestPromise = findNearestNextManifest(importerDirectory, workspaceRoot);
           manifestByImporterDirectory.set(importerDirectory, manifestPromise);
         }
-        const earlyManifestPath = isNextLinkSpecifier(arguments_.path)
+        const earlyManifestPath = NEXT_INSTALLED_FIRST_PATTERN.test(arguments_.path)
           ? undefined
           : await manifestPromise;
         if (earlyManifestPath !== undefined) {
@@ -132,7 +143,7 @@ export function createPreviewNextFrameworkFallbackPlugin(
           path:
             arguments_.path === 'next/font/google'
               ? `${arguments_.path}?exports=${fontExportNames.join(',')}`
-              : arguments_.path,
+              : arguments_.path.replace(/\.js$/u, ''),
           pluginData: {
             fontExportNames,
             kind: 'react-preview-next-render-fallback',
@@ -255,6 +266,12 @@ function createNextRenderModuleSource(
   fontExportNames: readonly string[],
 ): string | undefined {
   if (moduleSpecifier === 'server-only') return 'export {};';
+  const publicModule = moduleSpecifier.replace(/\.js$/u, '');
+  if (publicModule === 'next/navigation') return createPreviewNextAppNavigationRuntimeSource();
+  if (publicModule === 'next/headers') return createNextHeadersFallbackSource();
+  if (publicModule === 'next/cache') return createNextCacheFallbackSource();
+  if (publicModule === 'next/dynamic') return createNextDynamicFallbackSource();
+  if (publicModule === 'next/server') return createNextServerFallbackSource();
   if (/^next\/app(?:\.js)?$/u.test(moduleSpecifier)) return createNextAppFallbackSource();
   if (/^next\/head(?:\.js)?$/u.test(moduleSpecifier)) return createNextHeadFallbackSource();
   if (moduleSpecifier === 'next/image') return createNextImageFallbackSource();

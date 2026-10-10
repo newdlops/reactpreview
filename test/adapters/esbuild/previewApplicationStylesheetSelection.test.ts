@@ -103,8 +103,53 @@ describe('selectPreviewApplicationStylesheetImports', () => {
       },
     });
 
+    expect(selections).toEqual([{ importerPath: appPath, moduleSpecifier: './fontStyles.css' }]);
+  });
+
+  /** Loads Vite entry CSS (Tailwind layers, tokens) ahead of the page-root wrapper CSS. */
+  it('selects entry CSS first when the render path ends at an unexecuted Vite entry', async () => {
+    const htmlPath = path.join(PROJECT_ROOT, 'index.html');
+    const entryPath = path.join(PROJECT_ROOT, 'src', 'main.tsx');
+    const appPath = path.join(PROJECT_ROOT, 'src', 'App.tsx');
+    const pagePath = path.join(PROJECT_ROOT, 'src', 'pages', 'Dashboard.tsx');
+    const sourceByPath = new Map([
+      [htmlPath, '<script type="module" src="/src/main.tsx"></script>'],
+      [entryPath, "import './index.css';\nimport App from './App';\nrender(<App />);"],
+      [appPath, "import './app.css';\nexport default function App() { return <Dashboard />; }"],
+      [pagePath, 'export default function Dashboard() { return <main />; }'],
+    ]);
+
+    const selections = await selectPreviewApplicationStylesheetImports({
+      projectRoot: PROJECT_ROOT,
+      readSource: ({ sourcePath }) => Promise.resolve(sourceByPath.get(path.normalize(sourcePath))),
+      renderPath: {
+        id: 'dashboard-to-app',
+        steps: [
+          {
+            certainty: 'confirmed',
+            kind: 'component-render',
+            label: 'Dashboard',
+            occurrenceStart: 0,
+            sourcePath: pagePath,
+            wrapperNames: [],
+          },
+          {
+            certainty: 'confirmed',
+            kind: 'component-render',
+            label: 'App',
+            occurrenceStart: 0,
+            sourcePath: appPath,
+            wrapperNames: ['App'],
+          },
+        ],
+      },
+      resolveModule: (moduleSpecifier, consumerPath) =>
+        moduleSpecifier === './App' && consumerPath === entryPath ? appPath : undefined,
+    });
+
     expect(selections).toEqual([
-      { importerPath: appPath, moduleSpecifier: './fontStyles.css' },
+      { importerPath: entryPath, moduleSpecifier: './index.css' },
+      { importerPath: appPath, moduleSpecifier: './app.css' },
     ]);
   });
 });

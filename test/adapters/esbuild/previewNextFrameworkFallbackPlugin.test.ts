@@ -412,7 +412,7 @@ describe('Next framework render fallback', () => {
     ).rejects.toThrow('Could not resolve "next/image"');
   });
 
-  /** Does not generalize manifest evidence to unreviewed framework runtime modules. */
+  /** Does not generalize manifest evidence to unreviewed framework internals. */
   it('keeps unsupported Next runtime imports as hard errors', async () => {
     const projectRoot = await createProject('next-unsupported-', {
       dependencies: { next: '15.5.20' },
@@ -421,7 +421,7 @@ describe('Next framework render fallback', () => {
     await mkdir(path.dirname(entryPath), { recursive: true });
     await writeFile(
       entryPath,
-      "import { redirect } from 'next/navigation'; export default redirect;",
+      "import { redirect } from 'next/dist/client/components/redirect'; export default redirect;",
       'utf8',
     );
 
@@ -429,7 +429,80 @@ describe('Next framework render fallback', () => {
       buildFixture(entryPath, projectRoot, [
         createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
       ]),
-    ).rejects.toThrow('Could not resolve "next/navigation"');
+    ).rejects.toThrow('Could not resolve "next/dist/client/components/redirect"');
+  });
+
+  /** Server-only request, cache, and middleware APIs render with inert values without Next. */
+  it('supplies request, cache, and server facades for a dependency-free Next project', async () => {
+    const projectRoot = await createProject('next-server-apis-', {
+      dependencies: { next: '16.3.0', react: '19.1.0' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await writeFile(
+      entryPath,
+      [
+        "import { cookies, draftMode, headers } from 'next/headers';",
+        "import { revalidatePath, unstable_cache } from 'next/cache';",
+        "import { NextResponse } from 'next/server';",
+        "import dynamic from 'next/dynamic';",
+        'export async function readResult() {',
+        '  const cached = unstable_cache(async (value: number) => value * 2);',
+        '  revalidatePath("/");',
+        '  return {',
+        '    asyncCookies: (await cookies()).getAll(),',
+        '    draft: (await draftMode()).isEnabled,',
+        '    dynamicType: typeof dynamic,',
+        '    header: (await headers()).get("x-test"),',
+        '    responseType: typeof NextResponse.json,',
+        '    syncCookie: cookies().get("session"),',
+        '    value: await cached(21),',
+        '  };',
+        '}',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = await buildFixture(entryPath, projectRoot, [
+      createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+      createReactFixturePlugin(),
+    ]);
+    const exports = executeCommonJs(result.outputFiles[0]?.text ?? '') as {
+      readonly readResult: () => Promise<Record<string, unknown>>;
+    };
+
+    expect(await exports.readResult()).toEqual({
+      asyncCookies: [],
+      draft: false,
+      dynamicType: 'function',
+      header: null,
+      responseType: 'function',
+      syncCookie: undefined,
+      value: 42,
+    });
+  });
+
+  /** App Router navigation uses the preview facade when the project cannot resolve Next. */
+  it('resolves next/navigation to the preview navigation facade without Next', async () => {
+    const projectRoot = await createProject('next-navigation-', {
+      dependencies: { next: '16.3.0' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await writeFile(
+      entryPath,
+      "import { useRouter } from 'next/navigation'; export default useRouter;",
+      'utf8',
+    );
+
+    const result = await buildFixture(entryPath, projectRoot, [
+      createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+      createReactFixturePlugin(),
+    ]);
+
+    expect(Object.keys(result.metafile.inputs)).toContain(
+      'react-preview-next-render-fallback:next/navigation',
+    );
   });
 });
 

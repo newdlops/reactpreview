@@ -1,6 +1,208 @@
 # 변경 기록 보관
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
+이 문서 이후에 옮긴 기록(0.1.1116부터)은 [변경 기록 보관 2](changelog-archive-2.md)에 있습니다.
+
+## 0.1.1115 - 2026-07-21
+
+- Next.js Pages Router의 암묵적인 `pages/_app -> Component` 경계를 복원하고, 선택 route를 모듈 로드 전에 주입해 전역 provider·헤더·사이드바·스타일을 실제 페이지 문맥으로 렌더링
+- 동적 Pages route의 pattern·query, RouterContext, 로컬 navigation 재렌더를 제공해 `useRouter`와 `next/link`가 Next bootstrap 없이도 정적 프리뷰에서 동작
+- hook 결과의 optional collection, 1-hop identity alias, computed JSON scalar와 Array 길이 제약을 정적으로 추적해 `flatMap/map`, 중첩 설문 payload, 음수·과대 배열 길이 오류를 최소값으로 보정
+- `steps[currentStep]` 형태의 고정 JSX 배열을 반환 선택지로 계측하고 현재 target 경로에 맞는 항목을 자동 선택하면서 사용자 스위치로 다른 화면도 확인 가능
+- Node 내장 모듈의 browser shim을 쓰기 가능한 namespace와 로컬 EventEmitter로 보강해 PouchDB 계열의 prototype 확장이 모듈 평가를 중단하지 않도록 수정
+
+## 0.1.1114 - 2026-07-21
+
+- bare Node 내장 모듈 이름은 설치된 browser polyfill을 먼저 해석하고, 없을 때만 안전한 preview shim을 사용하며 enumerable EventEmitter fallback으로 PouchDB 계열의 `Pouch.on` 초기화를 지원
+- target-to-entry render chain 순서를 보존해 앱 shell의 `/*`보다 현재 파일에 가까운 구체 route를 우선하고 HospitalRun·Zuzu의 실제 page URL로 진입
+- 정적 props 타입이 HOC에서 사라져도 mounted facade에서 관찰한 단일 `show/open/visible: false` 값을 안전하게 `true`로 보정하며, 미도달 target은 자동 해결 결과의 remaining blocker에 계속 표시
+- 이미 factory call로 변환되어 JSX가 남지 않은 `node_modules` JavaScript의 낡은 JSX pragma 경고만 제거해 react-spinners 경고 폭주를 줄이고 authored/raw JSX 경고는 유지
+
+## 0.1.1113 - 2026-07-21
+
+- React 16/구형 ReactDOM에서도 Inspector의 선택적 행 UI가 빈 결과를 `null`로 반환해 component tree 전체를 중단하지 않도록 수정
+- 제거된 flowchart에 남아 있던 current-file node locator를 공용 runtime으로 이동하고 setup 없는 번들에도 안전한 browser `global` alias를 target import 전에 제공
+- React Router v5 child Route와 target-near render identity를 우선해 `/patients` 같은 바깥 shell 대신 실제 동적 page 경로를 선택
+- 동일 커밋 오류의 browser/boundary/fallback 중복과 hot rebuild의 동일 esbuild 경고를 한 번만 기록해 Inspector CPU·로그 사용량을 제한
+
+## 0.1.1112 - 2026-07-21
+
+- live Fiber와 authored JSX를 정확한 source occurrence로 대조해 `Modal`/`Modal2`·styled HOC 같은 이름 변환에서도 중복 정적 하위 트리를 제거
+- 정적 outcome과 자손의 거짓 `not mounted` 표기를 없애고 처음 관측되지 않은 JSX만 `output not observed` frontier로 표시
+- 닫힌 modal 아래의 미실행 render callback은 receiver가 실제로 mount되기 전까지 최상위 pending callback blocker로 오인하지 않도록 수정
+
+## 0.1.1111 - 2026-07-21
+
+- component tree 행을 선택하면 실제 mounted Fiber host만 노란 outline으로 강조하고 host 없는 route/blocker/placeholder에서는 이전 강조를 정확히 제거
+- 선택 source의 line/offset을 현재 bundle graph로 재검증해 이미 열린 editor에 whole-line 데코레이터로 표시하며 추정 위치는 별도 스타일로 구분
+- hot reload revision과 단조 sequence, 문서 변경 무효화, panel별 pending/cleanup으로 여러 preview의 코드 표시가 섞이거나 editor focus·scroll을 바꾸지 않도록 격리
+
+초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.
+
+## 0.1.1110 - 2026-07-21
+
+- 함수형 children/render prop의 JSX를 지연 출력으로 식별하고 receiver의 확장된 hook·GraphQL 최소 shape부터 재탐색해 `mounted · no host output` 정착 상태를 통과
+- `show/open/present` 이벤트 경로를 미마운트 상태부터 컴포넌트 트리 placeholder로 표시하고 현재 Fiber의 동일 handler가 확인될 때만 사용자 실행을 허용
+- 0인자 로컬 JSX 반환 함수 호출을 모듈·컴포넌트 scope에서 bounded DFS로 확장하며 async·인자·side effect·cycle은 실행하지 않고 fail closed
+
+## 0.1.1109 - 2026-07-21
+
+- `gql`/`graphql` 태그·호출, `DocumentNode` 타입과 생성 AST 근거를 추적해 GraphQL 문서 export를 React 컴포넌트 대상에서 제외
+- 평가 시 함수·React element·memo/forwardRef/lazy만 target facade로 감싸고 일반 객체 export의 identity를 보존
+- hook과 mutation 문서만 있는 파일은 mutation을 억지로 mount하지 않고 직접 렌더 가능한 React export가 없음을 정확히 보고
+
+## 0.1.1108 - 2026-07-21
+
+- Smart fill이 최상위 `data` 경로만 관찰해도 GraphQL selection으로 생성한 `data/payload/response/result`의 비어 있지 않은 구조를 bounded copy로 보존
+- 이미 처리한 Smart 값은 반복 적용하지 않되 required path signature가 확장된 값만 한 번 다시 탐색해 자동 해결 루프와 신규 경로 누락을 함께 방지
+- 변경할 새 요구사항이 없으면 `settled`로 표시하고 현재 corridor에서 발견된 실제 payload 경로 수를 pass 0부터 정확히 보고
+
+## 0.1.1107 - 2026-07-21
+
+- `{ loading, data, ...result }` 객체 rest가 있는 hook 결과도 하나의 응답 계약으로 추론해 `QueryRenderer`가 값 누락으로 현재 파일의 JSX를 건너뛰지 않도록 수정
+- 동일한 payload frontier는 전체 탐색 종료가 아닌 정착 상태로 처리하고, 현재 파일의 확정 Boolean gate 및 새로 발견된 최소 데이터 탐색을 계속 진행
+- 로더·500 fallback 같은 래퍼 DOM과 authored JSX 출력을 분리하고 실제 출력이 없으면 현재 export 아래 `Expected JSX` 트리와 제한된 payload 요약을 표시
+
+## 0.1.1106 - 2026-07-21
+
+- 사용성이 낮은 Blocker/Render flow graph와 camera·Preview setup 탭을 제거하고 모든 렌더 조작을 하나의 Components tree와 선택 행 상세 화면으로 통합
+- 정적 outcome과 runtime condition을 합쳐 단락 평가 뒤의 `Not reached yet` guard까지 소유 component 아래에 인라인 Boolean switch로 표시
+- 별도 Inspector snapshot 교체와 모든 버튼·토글·선택 뒤 tree/detail/console/document의 가로·세로 스크롤을 안정 좌표로 복원
+
+## 0.1.1105 - 2026-07-21
+
+- 좌·우 결합된 JSX `&&` 체인을 평가 순서대로 펼쳐 미도달 guard까지 독립 Boolean 스위치로 제공하고 별칭·배열·삼항식·`React.createElement`·map callback의 render terminal까지 보수적으로 추적
+- visible/hidden 조합은 하나의 결과로 접고 authored identity와 단락 평가를 보존하며, 강제로 연 뒤의 property guard 예외는 Off switch와 Console warning으로 격리해 다음 값 보정으로 계속 진행
+
+## 0.1.1104 - 2026-07-21
+
+- modal의 선택된 JSX 반환 결과와 자동 visibility DFS가 충돌하지 않게 source identity를 연결하고, 같은 overlay reveal은 page corridor별 한 번만 수행하며 target 내부 오류에서는 추가 gate 탐색과 rollback을 중단
+- 자동 `open/show` prop을 사용자 JSON과 분리된 revision-local layer에 고정하고, 자동 보정 시 건강한 page, Router, Provider, portal과 modal state를 remount하지 않도록 stable key와 error reset signal을 분리
+- cold/direct 및 Storybook decorator component identity를 안정화하고, 사용자 `Remount`만 target child instance를 교체하도록 구분해 모달이 생성·해제를 반복하는 루프를 차단
+
+## 0.1.1103 - 2026-07-21
+
+- 기본 `Preview setup`을 backend/hook/props의 최소값을 준비하는 `Preview data`와 현재 파일의 정적 JSX 반환 후보만 고르는 `Rendered component` 두 항목으로 단순화하고, 자동 데이터 준비를 항목 수와 무관한 한 번의 persistence/render transaction으로 병합
+- 반환 후보가 없거나 하나뿐이면 사용자 선택 없이 authored/fixed 상태로 유지하고, 후보 선택 시 같은 source condition/choice에 남은 수동 override만 정리해 선택 결과가 즉시 적용되도록 개선
+- Router/Provider/Theme, target reachability와 내부 condition 수렴은 읽기 전용 자동 상태로 이동하고, 코드 오류는 Console, 수동 값 편집과 전체 blocker DAG는 접힌 `Advanced diagnostics`에서만 확인하도록 정리
+
+## 0.1.1102 - 2026-07-21
+
+- 현재 파일 export의 `if/else`, 삼항식, `&&`, `switch/case` JSX 반환 후보를 정적으로 분석해 반환
+  결과를 node, 결과를 선택하는 조건 조합을 edge로 표시하고 Resolver에서 한 번에 선택·복원하도록 추가
+- `Main` graph를 compiler-ranked application entry 최단 경로와 현재 파일 반환 선택지만 보이도록 단순화하고,
+  실제 mounted Fiber, 정적 target, unmounted inventory 순서로 `Locate current file` 근거를 우선하도록 수정
+- 반환 결과의 JSX component를 import, local alias, barrel re-export, 일반 HOC와 lazy dynamic import까지 bounded
+  DFS로 확장해 Layout/Header/Sidebar 같은 page 구성 근거와 HMR dependency를 수집하되 scalar prop 분기는 제외
+- condition/choice registry를 outcome별로 다시 정렬하지 않고 snapshot당 한 번만 source identity index로 만들어
+  큰 반환 그래프의 CPU와 임시 배열 할당을 줄임
+
+## 0.1.1101 - 2026-07-20
+
+- Inspector snapshot sanitizer가 의미 없는 실행 권한을 추가하지 않고 `header`와 `article` 레이아웃 경계를
+  보존하도록 해 Blocker Flow가 거대한 타원이나 잘못된 grid로 변형되던 문제를 해결
+- Advanced Blocker Flow를 기본 `Focus` 10개, current-file corridor 중심 `Main` 24개, 전체 bounded graph인
+  `All` 세 범위로 나누고 Advanced 화면의 중복 요약을 제거해 graph와 별도 Resolver에 집중하도록 정리
+- 범위 전환 시 graph를 자동으로 fit하고 기존 pan·선택·Resolver 동기화를 유지하며, graph pane 기본 폭을 52%로
+  조정하고 splitter가 좁은 화면에서는 상하 배치로 반응형 전환되도록 개선
+
+## 0.1.1100 - 2026-07-20
+
+- Advanced Blocker Resolver의 노드를 이름과 의미 아이콘만 남긴 작은 형태로 단순화하고, 현재 파일·직접
+  blocker·확정된 활성 경로는 선명하게 유지하면서 추정·휴면·대기 경로와 비활성 연결선은 흐리게 표시
+- 상세 kind/state/owner/branch 정보는 노드의 접근 가능한 설명과 오른쪽 Inspector에 보존해 캔버스에서는 주요
+  흐름을 한눈에 확인하고 노드를 선택한 뒤 세부 정보와 해결 옵션을 독립적으로 확인하도록 정리
+- 별도 Inspector 탭의 `100%`와 `Fit all` 카메라를 명확히 구분하고, 빈 캔버스를 primary pointer로 자유롭게
+  끌어 이동하는 pan·pointer capture·camera persistence를 추가하되 노드 클릭과 오른쪽 상세 선택은 그대로 유지
+
+## 0.1.1099 - 2026-07-20
+
+- Tailwind 지시어가 있는 workspace CSS만 CSS별 nearest package의 v4 `@tailwindcss/postcss` 또는
+  configuration-free v2/v3 fallback으로 컴파일해 raw `@tailwind utilities` 때문에 utility class가 모두
+  사라지던 문제를 해결하고, dirty TSX 후보도 bounded Oxide scan으로 hot rebuild에 포함
+- PostCSS/Next/Vite/Tailwind config는 실행하지 않으며 nested CSS의 `@plugin`/`@config`, workspace 밖
+  `@source`/import source modifier와 quoted/unquoted `url(...)` import 우회는 preflight에서 차단하고 CSS Modules,
+  재사용 v4 processor 및 bounded style watch evidence를 유지; PnP zero-install은 hook 실행 대신 해결 방법 warning 제공
+- 구형 Babel regenerator bundle이 strict ESM에서 CSP로 금지된 `Function(...)` fallback을 호출하지 않도록
+  target/setup import 전에 writable global runtime slot을 준비하고, 기존 runtime binding과 `unsafe-eval` 차단은 보존
+- React 16.8·17 프로젝트에서는 `useState`/`useEffect` 기반 Context registration 구독으로 전환해 React 18의
+  `useSyncExternalStore`가 없어도 lazy Context provider가 뒤늦게 등록되는 흐름을 유지
+- 실제 `react-dom` runtime manifest와 export map을 기준으로 root API를 선택하고 최신
+  `@types/react-dom/client.d.ts`를 실행 가능한 subpath로 오인하지 않도록 해 React 16·17 프로젝트의
+  `Could not resolve "react-dom/client"` 빌드 실패를 해결
+- blocker trace와 runtime-health 로그에 웹뷰 수명 동안 유지되는 `runtimeSessionId`, content-addressed
+  `artifactId`, hot `runtimeRevision`을 공통 기록해 같은 trace 번호를 가진 다른 탭·reload와 실제 반복 루프를 구분
+- 기본 Blockers 화면을 `Current blocking path → Current blocker → Next action → Fix now` 한 열로 단순화하고,
+  전체 flow graph와 오른쪽 Resolver 및 graph layout 계산은 `Advanced`를 명시적으로 열 때만 생성
+- 좁은 Inspector에서 경로·편집기·버튼이 내부 폭에 맞춰 줄바꿈되도록 보강하고, 중복 condition 제어와 효과 없는
+  재선택 버튼을 제거하며 튜토리얼·선후 관계는 접이식 고급 정보로 이동
+
+## 0.1.1097 - 2026-07-20
+
+- Blocker Resolver의 minimum-requirement 탐색에 revision-local semantic frontier fingerprint를 추가해 동일 상태와
+  A→B→A 진동을 다음 remount 전에 중단하고, terminal 검색을 pass 0으로 자동 재시작하던 무한 루프를 차단
+- 자동 hook/backend pass를 이전 render trace가 정착된 뒤에만 직렬 실행하며 재시작 사이에도 누적 8-pass 상한을
+  유지하고, condition registry가 사라져도 원래 page corridor를 한 번만 재개하도록 attempt identity를 보존
+- hook required-path 집합을 정렬한 signature로 비교해 발견 순서만 달라진 동일 Smart 값이 Auto로 재개방되지 않게
+  하고, Resolver에 cycle/limit 중단 사유·반복 길이·진행 상태와 명시적 retry 경로를 표시
+- 좁은 Inspector에서 graph와 Resolver를 세로 배치하고 카메라를 3열/2열로 축약하며 관계·조건·JSON 편집기를
+  내부 wrap/scroll 처리해 작은 폭과 낮은 높이에서도 컨트롤이 화면 밖으로 벗어나지 않도록 개선
+
+## 0.1.1096 - 2026-07-20
+
+- Blockers를 왼쪽 `Control & render flow` 캔버스와 오른쪽 `Blocker Resolver`로 분리해 선택 block의
+  active/dormant·exact/inferred 상태, owner/source, 선행·후행 관계와 기존 Auto/Smart/branch 편집기를 한 화면에서 확인
+- 별도 Inspector 탭이 소유하는 `−/100%/+/Center/Fit` 카메라를 추가해 preview React를 다시 렌더하지 않고 35~200%로
+  확대·축소하며, snapshot 교체 뒤에도 그래프 중심과 zoom을 보존하고 Inspector 전체 스크롤을 이동하지 않도록 개선
+- `Locate current file`이 단순 component 이름 대신 선택 export·정확한 source·mounted 경계를 모두 확인한 함수 진입점을
+  선택·중앙 정렬하고, 아직 마운트되지 않았으면 가장 가까운 path blocker 또는 정적 current-file 문맥을 안내
+- Resolver에 `Locate → Trace → Resolve → Verify` 가이드를 제공하고 대형 bounded graph에서도 current-file target,
+  active/direct blocker를 우선 보존하며 label·edge·source·HOC/slot 변화가 즉시 layout을 갱신하도록 fingerprint를 강화
+
+## 0.1.1095 - 2026-07-20
+
+- Blockers를 카드 목록 대신 debugger control-flow graph로 표시해 함수 진입, 조건 판단, `true`/`false` 및
+  `case`/`default` 분기, component 호출, return과 합류 지점을 실제 선으로 추적하고 활성·비활성 경로를 구분
+- 정적으로 안전하게 증명한 component-local `switch/case`를 계측해 literal case와 default를 Inspector에서
+  선택·초기화할 수 있게 하고, 동적 case는 오판 없이 읽기 전용으로 유지
+- `memo`, `forwardRef`, `compose`, `with…` 계열 HOC와 `component`/`as`/render prop을 render graph부터
+  Components tree와 Blockers flow까지 보존해 고차 컴포넌트 및 전달된 컴포넌트의 호출 문맥을 명시적으로 표시
+- 프로젝트에 `react-dom/client`가 없으면 legacy `react-dom`의 `render`/`unmountComponentAtNode` adapter를 자동
+  선택해 React 16·17 프로젝트도 확장에 포함된 React 19가 아니라 해당 프로젝트의 module root에서 bundle
+
+## 0.1.1094 - 2026-07-20
+
+- Blockers Render flow에서 선택한 현재 파일 export가 최종 owner인 미해결 blocker만 `CURRENT FILE BLOCKER`
+  배지, 노란 시작선과 상단 개수로 강조해 ancestor·descendant·sibling blocker와 즉시 구분
+- current-file 판정은 단순 component 이름이나 target 상태를 재사용하지 않고 mounted selected export, exact owner
+  ID와 일치하는 source path를 요구해 imported child·정적 inventory·fallback owner 추정의 오탐을 차단
+- blocker의 active/waiting 상태와 기존 선후행 그래프는 그대로 유지하고 텍스트 배지와 접근 가능한 label도 함께
+  제공해 색상에 의존하지 않고 현재 파일 렌더를 직접 막는 지점을 선택·조정 가능
+
+## 0.1.1093 - 2026-07-20
+
+- Inspector의 1차 탐색을 `Components`와 `Blockers` 탭으로 분리하고, Blockers를 단순 오류 목록 대신
+  workspace/app/route에서 현재 파일까지의 `component function → render condition → selected return JSX → child`
+  흐름으로 시각화해 현재 파일 전후의 렌더 문맥과 선행·후행 blocker를 함께 확인하도록 개선
+- compiler가 계측한 `&&`, ternary, early return, overlay visibility에는 authored/effective 상태와 true/false/reset
+  스위치를 flow card에 직접 제공하고, runtime/data blocker도 같은 그래프 안에서 기존 Smart/JSON/retry 편집기를
+  펼치되 명시적인 Reveal 전에는 Components tree 선택과 스크롤을 변경하지 않도록 분리
+- 선택 component 상세를 `Props`, `State`, `Source`, `Payload` debugger로 정리하고 exact owner/source에 귀속된
+  render switch, API·GraphQL payload와 hook fallback만 노출하며 임의 React hook slot은 읽기 전용으로 유지
+- 별도 Inspector 탭 snapshot에서 Components와 Blockers의 독립 가로·세로 스크롤 및 안전한 `hidden` 속성을 보존하고,
+  blocker 완료 이력도 hot revision/view/page/export 단위로 격리해 후보 전환 뒤 오래된 flow가 섞이지 않도록 수정
+
+## 0.1.1092 - 2026-07-20
+
+- 전체 application path에 흔한 `Modal`/`Page`/`Layout` 이름만으로 무관한 overlay 조건을 열지 않고, 선택 target의
+  정확한 owner 또는 root-to-target source 근거가 있는 gate만 자동 통과하도록 target-guided DFS 범위를 제한
+- 자동 JSX gate가 새 fatal runtime 오류를 만들면 해당 preview-only 결정을 authored 값으로 rollback하고 오류 경계도
+  함께 remount해 authored branch를 복구하며, 같은 page 탐색에서 재선택하지 않고 condition/trace identity를 기록
+- `.filter()`/`.map()`/array item access가 정적으로 증명된 정확한 경로에서만 object placeholder를 실제 Array로
+  교정해 `options.filter is not a function` 연쇄를 차단하고, 실제 sibling·설정 object·기존 Array identity는 보존
+- direct artifact, 선택 export, page candidate, hot revision 사이에서 hook/effect 자동 상태를 격리하고 실제 activate된
+  hot entry만 scope를 교체하며, 후보 전환 시 바깥 Provider tree도 remount해 app Router 결과와 새 후보를 이전
+  후보의 provider 값이나 늦은 async effect가 오염하지 않도록 개선
 
 ## 0.1.1091 - 2026-07-20
 

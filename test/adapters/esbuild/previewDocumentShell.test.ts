@@ -102,7 +102,86 @@ describe('parsePreviewDocumentShell', () => {
       'newdlops.react-file-preview',
     );
   });
+
+  /** Keeps only plain HTTPS stylesheet links such as web-font CSS; templates and files are skipped. */
+  it('extracts HTTPS stylesheet links from the project document', () => {
+    const shell = parsePreviewDocumentShell(`<!doctype html><html><head>
+      <link rel="icon" href="%VITE_PUBLIC_URL%/favicon.ico" />
+      <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;700&amp;display=swap" rel="stylesheet">
+      <link rel="preload" as="style" href="https://cdn.jsdelivr.net/npm/pretendard/dist/web/pretendard.css">
+      <link rel="stylesheet" href="%VITE_CDN%/theme.css">
+      <link rel="stylesheet" href="/src/index.css">
+      <link rel="stylesheet" href="http://insecure.example.com/a.css">
+      </head><body><div></div></body></html>`);
+
+    expect(shell).toEqual({
+      bodyAttributes: [],
+      htmlAttributes: [],
+      rootAttributes: [],
+      stylesheetLinks: [
+        'https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;700&display=swap',
+        'https://cdn.jsdelivr.net/npm/pretendard/dist/web/pretendard.css',
+      ],
+    });
+  });
+
+  /** Links stylesheets before the bundle CSS only when the CSP allows them, across hot revisions. */
+  it('links project stylesheets ahead of the bundle and reconciles them', () => {
+    const document = new FakePreviewDocument("style-src vscode-resource: 'unsafe-inline' https:");
+    const bundleStylesheet = document.createElement('link');
+    bundleStylesheet.setAttribute('rel', 'stylesheet');
+    bundleStylesheet.setAttribute('href', 'entry.css');
+    document.head.append(bundleStylesheet);
+    const runtimeContext = { document, mountNode: document.createElement('main') };
+    const withLinks = (...stylesheetLinks: string[]): string =>
+      createPreviewDocumentShellRuntimeSource({
+        bodyAttributes: [],
+        htmlAttributes: [],
+        rootAttributes: [],
+        stylesheetLinks,
+      });
+
+    executeDocumentShellRevision(
+      withLinks('https://a.test/a.css', 'https://b.test/b.css'),
+      runtimeContext,
+    );
+    const first = readLinkHrefs(document);
+    const retained = document.head.children.find(
+      (element) => element.getAttribute('href') === 'https://b.test/b.css',
+    );
+    executeDocumentShellRevision(
+      withLinks('https://b.test/b.css', 'https://c.test/c.css'),
+      runtimeContext,
+    );
+
+    expect(first).toEqual(['https://a.test/a.css', 'https://b.test/b.css', 'entry.css']);
+    expect(readLinkHrefs(document)).toEqual([
+      'https://b.test/b.css',
+      'https://c.test/c.css',
+      'entry.css',
+    ]);
+    expect(
+      document.head.children.find(
+        (element) => element.getAttribute('href') === 'https://b.test/b.css',
+      ),
+    ).toBe(retained);
+    expect(retained?.getAttribute('referrerpolicy')).toBe('no-referrer');
+
+    const strict = new FakePreviewDocument("style-src vscode-resource: 'unsafe-inline'");
+    executeDocumentShellRevision(withLinks('https://a.test/a.css'), {
+      document: strict,
+      mountNode: strict.createElement('main'),
+    });
+    expect(readLinkHrefs(strict)).toEqual([]);
+  });
 });
+
+/** Lists the `href` of every link in the fake document head, in order. */
+function readLinkHrefs(document: FakePreviewDocument): (string | null)[] {
+  return document.head.children
+    .filter((element) => element.tagName === 'link')
+    .map((element) => element.getAttribute('href'));
+}
 
 const PORTAL_HOST_MARKER = 'data-react-preview-portal-host';
 
@@ -119,6 +198,27 @@ class FakePreviewElement {
   public append(child: FakePreviewElement): void {
     child.parent = this;
     this.children.push(child);
+  }
+
+  /** Inserts one child immediately before an existing child, like `Node.insertBefore`. */
+  public insertBefore(child: FakePreviewElement, anchor: FakePreviewElement): void {
+    child.parent = this;
+    this.children.splice(this.children.indexOf(anchor), 0, child);
+  }
+
+  /** Reports attachment to a parent, which the fixtures use as document connection. */
+  public get isConnected(): boolean {
+    return this.parent !== undefined;
+  }
+
+  /** Supports the one stylesheet-link selector used by the generated runtime. */
+  public querySelectorAll(selector: string): FakePreviewElement[] {
+    if (selector !== 'link[rel~="stylesheet"]') return [];
+    return this.children.filter(
+      (element) =>
+        element.tagName === 'link' &&
+        element.getAttribute('rel')?.split(/\s+/u).includes('stylesheet'),
+    );
   }
 
   /** Returns an exact authored/runtime attribute or null like the browser DOM. */
@@ -148,11 +248,23 @@ class FakePreviewElement {
 /** Small document tree that resolves IDs by live element identity in deterministic traversal order. */
 class FakePreviewDocument {
   public readonly documentElement = new FakePreviewElement('html');
+  public readonly head = new FakePreviewElement('head');
   public readonly body = new FakePreviewElement('body');
+  private readonly policy: FakePreviewElement;
 
-  /** Creates the fixed html/body hierarchy required by the document-shell runtime. */
-  public constructor() {
+  /** Creates the fixed html/head/body hierarchy plus the webview CSP meta element. */
+  public constructor(contentSecurityPolicy = "style-src vscode-resource: 'unsafe-inline'") {
+    this.documentElement.append(this.head);
     this.documentElement.append(this.body);
+    this.policy = new FakePreviewElement('meta');
+    this.policy.setAttribute('http-equiv', 'Content-Security-Policy');
+    this.policy.setAttribute('content', contentSecurityPolicy);
+    this.head.append(this.policy);
+  }
+
+  /** Resolves only the CSP meta selector read by the generated runtime. */
+  public querySelector(selector: string): FakePreviewElement | null {
+    return selector === 'meta[http-equiv="Content-Security-Policy"]' ? this.policy : null;
   }
 
   /** Creates one detached element for the generated portal-host adapter. */

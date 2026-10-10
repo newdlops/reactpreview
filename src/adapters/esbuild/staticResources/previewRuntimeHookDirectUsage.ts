@@ -6,6 +6,8 @@
  * nullish default, or rendering a returned scalar—without growing that analyzer to the file limit.
  */
 import ts from 'typescript';
+import { createPreviewSampleLabel } from '../previewSampleLabel';
+import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 import { readPreviewRuntimeCallResultBinding } from './previewRuntimeHookSyntax';
 
 /** Static expression and user-facing description emitted for one proven direct use. */
@@ -32,7 +34,8 @@ type RuntimeFunction =
  * Infers a scalar/callable fallback when an identifier is used without a property receiver.
  *
  * Direct calls become inert functions, control-flow tests become false, nullish coalescing retains
- * the authored default, and direct JSX children receive recognizable text. The scan stays inside
+ * the authored default, and direct JSX children or untagged template interpolations receive
+ * recognizable text instead of an empty object that renders as "[object Object]". The scan stays inside
  * the owning runtime function and ignores nested scopes that shadow the binding name.
  *
  * @param identifier Hook-result binding whose local references provide demand evidence.
@@ -99,7 +102,10 @@ export function createPreviewRuntimeHookDirectUsageFallback(
         else if (!ts.isJsxAttribute(parent.parent) || isChildrenJsxAttribute(parent.parent)) {
           usage.rendered = true;
         }
-      } else if (isRenderedCollectionCallbackValue(node, owner)) {
+      } else if (
+        isRenderedCollectionCallbackValue(node, owner) ||
+        isPreviewRuntimeHookTemplateTextValue(node)
+      ) {
         usage.rendered = true;
       }
     }
@@ -190,9 +196,19 @@ function readPromiseResultDemand(
   return binding === undefined ? {} : { binding };
 }
 
+/** Accepts `${value}` in an untagged template, where the value is converted to text. */
+export function isPreviewRuntimeHookTemplateTextValue(node: ts.Expression): boolean {
+  const parent = unwrapParentNode(node);
+  return (
+    ts.isTemplateSpan(parent) &&
+    ts.isTemplateExpression(parent.parent) &&
+    !ts.isTaggedTemplateExpression(parent.parent.parent)
+  );
+}
+
 /** Bounds a source identifier before exposing it as visible generated component text. */
 function createCompactPreviewKey(identifierName: string): string {
-  return identifierName.length <= 32 ? identifierName : `${identifierName.slice(0, 31)}…`;
+  return createPreviewSampleLabel(identifierName, identifierName);
 }
 
 /** Treats JSX event/callback props as callable demand rather than rendered string content. */
@@ -220,10 +236,12 @@ export function isPreviewRuntimeHookCallableJsxValue(expression: ts.Expression):
  */
 export function isPreviewRuntimeHookMutableRefJsxValue(expression: ts.Expression): boolean {
   const parent = unwrapParentNode(expression);
-  return ts.isJsxExpression(parent) &&
+  return (
+    ts.isJsxExpression(parent) &&
     ts.isJsxAttribute(parent.parent) &&
     ts.isIdentifier(parent.parent.name) &&
-    parent.parent.name.text === 'ref';
+    parent.parent.name.text === 'ref'
+  );
 }
 
 /**
@@ -253,6 +271,27 @@ export function isPreviewRuntimeHookRenderedJsxValue(expression: ts.Expression):
     ts.isJsxExpression(parent) &&
     (!ts.isJsxAttribute(parent.parent) || isChildrenJsxAttribute(parent.parent))
   );
+}
+
+/**
+ * Reports whether this exact expression is shown as text: a rendered JSX child, or a span of an
+ * untagged template literal (`${round}차`, `${vehicle.model} ∙ …`). Without this, an unknown leaf
+ * read only there became `{}` and rendered "[object Object]". Tagged templates (gql`${Fragment}`)
+ * keep their values, which may be documents rather than text.
+ */
+export function isPreviewRuntimeHookTextValue(expression: ts.Expression): boolean {
+  return (
+    isPreviewRuntimeHookRenderedJsxValue(expression) ||
+    isPreviewRuntimeHookTemplateTextValue(expression)
+  );
+}
+
+/** Text for a value shown as-is: its name's text or number rule, otherwise its key label. */
+export function createPreviewRuntimeHookRenderedTextExpression(name: string | undefined): string {
+  const fallback = inferPreviewRuntimeSemanticFallback(name ?? '');
+  return fallback?.kind === 'string' || fallback?.kind === 'number'
+    ? fallback.expression
+    : JSON.stringify(createPreviewSampleLabel(name ?? 'value'));
 }
 
 /** Recognizes React's explicit `children` prop as rendered content rather than an opaque prop. */

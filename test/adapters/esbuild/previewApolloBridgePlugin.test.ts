@@ -231,6 +231,102 @@ describe('createPreviewApolloBridgePlugin', () => {
     }
   });
 
+  /** A declared operation result replaces name-based list guesses, scalar kinds, and literals. */
+  it('overlays a registered declared result shape on the selection shape', async () => {
+    const projectRoot = await createTemporaryProject('apollo-typed-payload-preview-');
+
+    try {
+      await installFakeApolloPackage(projectRoot);
+      const result = await build({
+        bundle: true,
+        define: { 'process.env.NODE_ENV': '"test"' },
+        format: 'iife',
+        globalName: 'ApolloPreviewFixture',
+        logLevel: 'silent',
+        plugins: [createPreviewApolloBridgePlugin({ projectRoot })],
+        stdin: {
+          contents: createStaticResultFixtureSource(),
+          loader: 'js',
+          resolveDir: projectRoot,
+        },
+        platform: 'browser',
+        target: 'es2022',
+        write: false,
+      });
+      const javascript = result.outputFiles[0]?.text;
+      if (javascript === undefined)
+        throw new Error('The Apollo bridge fixture emitted no JavaScript.');
+
+      let observedMetadata: unknown;
+      let observedSeed: unknown;
+      const sandbox: Record<PropertyKey, unknown> = { setTimeout };
+      sandbox[Symbol.for('newdlops.react-file-preview.page-inspector')] = {
+        resolveDataPayload(metadata: unknown, seed: unknown) {
+          observedMetadata = metadata;
+          observedSeed = seed;
+          return seed;
+        },
+      };
+      sandbox[Symbol.for('newdlops.react-file-preview.typed-graphql-documents')] = [
+        [
+          { definitions: [{ kind: 'OperationDefinition', name: { value: 'StaticCompany' } }] },
+          {
+            fields: {
+              company: {
+                fields: { enabled: { kind: 'boolean' }, monthlyPrice: { kind: 'number' } },
+                kind: 'object',
+              },
+              publicInvestorRelations: {
+                fields: {
+                  companyInfo: {
+                    fields: { name: { kind: 'literal', value: 'Declared Co.' } },
+                    kind: 'object',
+                  },
+                },
+                kind: 'object',
+              },
+              recentItems: { fields: { id: { kind: 'string' } }, kind: 'object' },
+            },
+            kind: 'object',
+          },
+        ],
+      ];
+      sandbox.globalThis = sandbox;
+      const context = createContext(sandbox);
+      runInContext(javascript, context, { timeout: 10_000 });
+      await readContextPromise(context, '__apolloStaticResult');
+
+      expect(JSON.parse(JSON.stringify(observedMetadata))).toMatchObject({
+        evidence: 'Declared TypeScript operation result, GraphQL selection, aliases, and fragments',
+        shape: {
+          fields: {
+            company: {
+              fields: { enabled: { kind: 'boolean' }, monthlyPrice: { kind: 'number' } },
+              kind: 'object',
+            },
+            publicInvestorRelations: {
+              fields: {
+                companyInfo: { fields: { name: { kind: 'literal', value: 'Declared Co.' } } },
+              },
+            },
+            recentItems: { fields: { id: { kind: 'string' } }, kind: 'object' },
+          },
+        },
+      });
+      const seed = JSON.parse(JSON.stringify(observedSeed)) as {
+        readonly recentItems: unknown;
+      };
+      expect(seed).toMatchObject({
+        company: { monthlyPrice: 0 },
+        publicInvestorRelations: { companyInfo: { name: 'Declared Co.' } },
+      });
+      // The declared object type overrides the collection-like field name.
+      expect(Array.isArray(seed.recentItems)).toBe(false);
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Routes Apollo variables and error scenarios through the stateful Inspector backend broker. */
   it('uses the virtual backend broker for Apollo response scenarios', async () => {
     const projectRoot = await createTemporaryProject('apollo-virtual-backend-preview-');

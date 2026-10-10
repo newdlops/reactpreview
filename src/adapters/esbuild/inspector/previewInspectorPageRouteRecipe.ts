@@ -89,12 +89,21 @@ export function createRouteRecipe(
           }),
         )
       : [];
+  // An App previewed by itself renders the `<Routes>` declaring the selected branch. A generated
+  // parent Route at that exact path stops matching once an authored `<Navigate>` leaves the branch
+  // (a signed-in App redirecting `/reset-password` to `/dashboard`), which unmounts the whole App.
+  const contentRootOwnsRoutes =
+    mounts.length === 0 &&
+    routeSurfaces.length === 0 &&
+    derivedOwnerRouteSurface === undefined &&
+    path.normalize(location.sourcePath) === contentRootPath;
   const routeExecutionRoot = routeSurfaces[0];
   const executionRootOwnsRouter =
     routeExecutionRoot === undefined || sameSurfaceReference(routeExecutionRoot, candidate.root)
       ? candidate.rootOwnsRouter
       : (doesPreviewInspectorSurfaceOwnRouter(routeExecutionRoot) ?? false);
   return Object.freeze({
+    ...(contentRootOwnsRoutes ? { contentRootOwnsRoutes: true as const } : {}),
     kind: routeRuntime.kind,
     loaderPolicy: 'never-execute',
     mounts: Object.freeze(mounts),

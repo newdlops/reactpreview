@@ -153,11 +153,14 @@ function readOrCreatePreviewInspectorRuntimeFallback(
     exactFallback,
     metadata.requiredPaths,
   );
-  const fallback = overlayPreviewInspectorHookGraphqlLiteralDemands(
-    structuralFallback,
-    readGraphqlDocument,
+  const fallback = mergePreviewInspectorTypedRuntimeFallback(
+    overlayPreviewInspectorHookGraphqlLiteralDemands(structuralFallback, readGraphqlDocument),
+    metadata,
   );
   markPreviewInspectorGeneratedValue(fallback);
+  if (graphqlFallback !== compilerFallback) {
+    rememberPreviewInspectorHookGraphqlRowEvidence(fallback, readGraphqlDocument);
+  }
   if (previewInspectorSession.runtimeFallbackValues.size < PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT) {
     previewInspectorSession.runtimeFallbackValues.set(metadata.id, fallback);
   }

@@ -1078,8 +1078,10 @@ function createPreviewInspectorContextualTargetElement(Component, metadata, role
   const descriptor = findSelectedPreviewInspectorDescriptor();
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   const pathname = candidate?.routeLocation?.pathname;
+  // The facade beside the page has no authored owner to pass props: mount it with the candidate's
+  // usage literals and typed required props so a required closed-set prop is not undefined.
   const targetElement = createPreviewCandidateRouterElement(
-    React.createElement(Component, undefined, children),
+    React.createElement(Component, { ...(candidate?.targetAutomaticProps ?? {}) }, children),
     {
       initialEntry: typeof pathname === 'string' ? pathname : undefined,
       ownsRouter: false,

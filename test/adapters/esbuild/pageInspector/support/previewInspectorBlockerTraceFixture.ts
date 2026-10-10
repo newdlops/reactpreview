@@ -11,7 +11,11 @@ export interface TraceMessage {
       readonly mode: string;
       readonly selectedValue?: unknown;
     };
-    readonly blocker?: { readonly id: string; readonly source?: { readonly sourcePath: string } };
+    readonly blocker?: {
+      readonly id: string;
+      readonly outcome?: string;
+      readonly source?: { readonly sourcePath: string };
+    };
     readonly error?: { readonly message: string };
     readonly event: string;
     readonly result?: {
@@ -41,8 +45,10 @@ interface TraceRuntime {
   readonly rollbackCalls: string[];
   readonly requirementRollbackCalls: string[];
   readonly resumeEffects: string[];
+  readonly restCollectionWithdrawals: string[];
   readonly resumeHandledAtCall: boolean[];
   readonly rollbacks: string[];
+  readonly serveRestCollectionRows: () => void;
   readonly setReachability: (key: string, state: Record<string, unknown>) => void;
   readonly snapshot: (snapshot: Record<string, unknown>) => void;
 }
@@ -158,6 +164,11 @@ export function createTraceRuntime(): TraceRuntime {
       const rollbackPreviewInspectorRequirementAutoDecision = (traceId) => {
         requirementRollbackCalls.push(traceId); return true;
       };
+      const restCollectionWithdrawals = [];
+      const withdrawPreviewInspectorRestCollectionFillAfterError = (fingerprint) => {
+        restCollectionWithdrawals.push(fingerprint);
+        return previewInspectorSession.restCollectionRowsServed === true;
+      };
       const inferPreviewInspectorTargetAutoAttemptReachabilityKey = (candidate) =>
         candidate?.targetReachabilityKey;
       const isPreviewInspectorBlockingNode = (node) => node?.blocker?.mode !== 'assisted';
@@ -172,9 +183,13 @@ export function createTraceRuntime(): TraceRuntime {
         messages,
         rollbackCalls,
         requirementRollbackCalls,
+        restCollectionWithdrawals,
         resumeEffects,
         resumeHandledAtCall,
         rollbacks,
+        serveRestCollectionRows: () => {
+          previewInspectorSession.restCollectionRowsServed = true;
+        },
         setReachability: (key, state) => {
           previewInspectorSession.targetReachabilityByKey.set(key, state);
         },

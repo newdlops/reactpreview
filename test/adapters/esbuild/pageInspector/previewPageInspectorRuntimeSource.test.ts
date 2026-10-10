@@ -200,6 +200,20 @@ describe('Page Inspector runtime source', () => {
     expect(rootSource).not.toContain('const RoutedDirectPreviewTarget');
   });
 
+  /** Gives the facade beside the page the candidate's usage and typed props instead of none. */
+  it('mounts the contextual target with the selected candidate props', () => {
+    const source = createPreviewPageInspectorRuntimeSource();
+    const start = source.indexOf('function createPreviewInspectorContextualTargetElement');
+    const contextualSource = source.slice(start, source.indexOf('\n}\n', start));
+
+    expect(contextualSource).toContain(
+      'const candidate = readSelectedPreviewInspectorPageCandidate(descriptor)',
+    );
+    expect(contextualSource).toContain(
+      'React.createElement(Component, { ...(candidate?.targetAutomaticProps ?? {}) }, children)',
+    );
+  });
+
   /** Remounts the authored page so an automatic condition choice reaches project render code. */
   it('keys the authored page root by the render-condition revision', () => {
     const source = createPreviewPageInspectorRuntimeSource();

@@ -32,7 +32,11 @@ function readPreviewInspectorDeterministicRequirementEvidence(descriptor, candid
     .filter((record) =>
       admittedRequestIds.has(record.id) &&
       record.reachabilityKey === state.key &&
-      record.kind === 'graphql' &&
+      // GraphQL selections and declared (or compiler-inferred) REST response types both prove one
+      // minimum static shape; an endpoint-name guess does not.
+      (record.kind === 'graphql' ||
+        (typeof isPreviewInspectorDeclaredRestRequest === 'function' &&
+          isPreviewInspectorDeclaredRestRequest(record))) &&
       (record.mode === 'auto' || hasPreviewInspectorStaleSmartDataRequirement(record)) &&
       readPreviewInspectorDataShapePaths(record.shape).length > 0,
     )

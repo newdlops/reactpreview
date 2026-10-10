@@ -11,6 +11,11 @@ import {
 import { createPreviewInspectorRouteExecutionRuntimeSource } from './previewInspectorRouteExecutionRuntimeSource';
 import { isReactOverlayComponentName } from '../staticResources/reactOverlayVisibilityInference';
 import { PREVIEW_INSPECTOR_PAGE_SURFACE_PROPS_KEY } from '../pageInspector/previewInspectorPageSurfacePropsRuntimeSource';
+import {
+  PREVIEW_INSPECTOR_EXECUTION_ROOT_BRIDGE_KEY,
+  PREVIEW_INSPECTOR_EXECUTION_SURFACES_KEY,
+  PREVIEW_INSPECTOR_PAGE_EXECUTION_KEY,
+} from '../pageInspector/previewInspectorPageExecutionOwnerProofRuntimeSource';
 import type {
   PreviewInspectorMountSurface,
   PreviewInspectorPageCompositionEdge,
@@ -391,12 +396,25 @@ export function createPreviewInspectorPageExecutionSource(
     `    ? React.createElement(${executionRootLocal}, rootProps, bridgeProps.children)`,
     `    : React.createElement(${executionRootLocal}, rootProps);`,
     '}',
+    // The runtime proves a mounted execution root by this bridge above the target, not by names.
+    `${executionRootBridge}[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_EXECUTION_ROOT_BRIDGE_KEY)})] = true;`,
+    // Imported owner components by identity, so a styled/HOC owner is proven by its Fiber type.
+    `globalThis[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_EXECUTION_SURFACES_KEY)})] = Object.freeze([`,
+    ...surfaces.flatMap((surface, index) =>
+      surface.id === options.candidate.runtimeTargetSurfaceId
+        ? []
+        : [
+            `  Object.freeze({ component: Surface${index.toString()}, exportName: ${JSON.stringify(surface.exportName)}, sourcePath: ${JSON.stringify(surface.sourcePath)} }),`,
+          ],
+    ),
+    ']);',
     ...contextualTargetFallbackSource,
     ...contextualTargetParentFrameSource,
     ...virtualPageOwnerFrame,
     'export default function PreviewInspectorPageExecution(previewProps) {',
     `  return React.createElement(${executionPropsContext}.Provider, { value: previewProps ?? Object.freeze({}) }, ${contextualRouteElement});`,
     '}',
+    `PreviewInspectorPageExecution[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_PAGE_EXECUTION_KEY)})] = true;`,
   ].join('\n');
 }
 

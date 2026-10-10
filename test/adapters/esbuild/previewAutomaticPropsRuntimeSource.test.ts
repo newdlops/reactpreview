@@ -41,6 +41,149 @@ describe('createPreviewAutomaticPropsRuntimeSource', () => {
     expect(context.result).toEqual({ addressInput: {}, helperResult: undefined, name: 'office' });
   });
 
+  /** A name-only date prop holds the canonical sample date; the page shows the current day. */
+  it('places a canonical sample date literal on the current day', () => {
+    const context: { result?: Record<string, unknown> } = {};
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        "globalThis[Symbol.for('newdlops.react-file-preview.sample-dates')].baseOverride = new Date(2026, 9, 6, 12);",
+        "const shape = { kind: 'object', properties: { createdAt: { kind: 'string', value: '2026-01-15T09:00:00.000Z' }, title: { kind: 'string', value: '2026-01-15 release' } } };",
+        'globalThis.result = createPreviewPropsFromLayers(shape);',
+      ].join('\n'),
+      context,
+    );
+
+    expect(JSON.parse(JSON.stringify(context.result))).toEqual({
+      createdAt: '2026-10-06T09:00:00.000Z',
+      title: '2026-01-15 release',
+    });
+  });
+
+  /** SimSheet read `finals[3]` from a three-item sample list and rendered NaN. */
+  it('materializes at least as many items as bounded index reads reach', () => {
+    const context: { result?: Record<string, unknown> } = {};
+    const shape = {
+      kind: 'object',
+      properties: {
+        finals: { kind: 'array', items: { kind: 'number' }, minItems: 4 },
+        past: { kind: 'array', items: { kind: 'number' } },
+        tags: { kind: 'array', minItems: 4 },
+      },
+    };
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        `const value = createPreviewPropsFromLayers(${JSON.stringify(shape)});`,
+        'globalThis.result = { finals: value.finals.length, past: value.past.length, tags: value.tags.length };',
+      ].join('\n'),
+      context,
+    );
+
+    // Item-less arrays still stay empty: the length bound never invents an element contract.
+    expect(context.result).toEqual({ finals: 4, past: 3, tags: 0 });
+  });
+
+  /** Target-only Button, PageHeader, and SegmentedControl labels rendered as empty elements. */
+  it('renders compiler and text-slot labels for React content props', () => {
+    const context: { result?: unknown; React: unknown } = {
+      React: { createElement: (type: string) => ({ element: type }) },
+    };
+    const shape = {
+      kind: 'object',
+      properties: {
+        children: { kind: 'element', value: 'Button' },
+        icon: { kind: 'element' },
+        items: {
+          kind: 'array',
+          items: { kind: 'object', properties: { label: { kind: 'element' } } },
+        },
+        title: { kind: 'element' },
+      },
+    };
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        `globalThis.result = createPreviewPropsFromLayers(${JSON.stringify(shape)});`,
+      ].join('\n'),
+      context,
+    );
+
+    expect(JSON.parse(JSON.stringify(context.result))).toEqual({
+      children: 'Button',
+      icon: { element: 'div' },
+      items: [{ label: 'Label' }, { label: 'Label 2' }, { label: 'Label 3' }],
+      title: 'Title',
+    });
+  });
+
+  /** Typed list rows carry canonical dates as candidates; each row lands on its recent day. */
+  it('places candidate sample dates of generated rows on recent days', () => {
+    const context: { result?: unknown } = {};
+    const shape = {
+      kind: 'object',
+      properties: {
+        rows: {
+          kind: 'array',
+          items: {
+            kind: 'object',
+            properties: {
+              due: { candidateValues: ['2026-01-15', '2026-01-14'], kind: 'string' },
+              note: { candidateValues: ['Note'], kind: 'string' },
+            },
+          },
+        },
+      },
+    };
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        "globalThis[Symbol.for('newdlops.react-file-preview.sample-dates')].baseOverride = new Date(2026, 9, 6, 12);",
+        `globalThis.result = createPreviewPropsFromLayers(${JSON.stringify(shape)});`,
+      ].join('\n'),
+      context,
+    );
+
+    expect(JSON.parse(JSON.stringify(context.result))).toEqual({
+      rows: [
+        { due: '2026-10-06', note: 'Note' },
+        { due: '2026-10-05', note: 'Note' },
+        { due: '2026-10-06', note: 'Note' },
+      ],
+    });
+  });
+
+  /** InventoryTimeline mounted with generated props threw "promoWeeks?.has is not a function". */
+  it('materializes props declared as Map or Set as empty real collections', () => {
+    const context: { result?: Record<string, unknown> } = {};
+    const shape = {
+      kind: 'object',
+      properties: {
+        promoWeeks: {
+          collection: 'map',
+          kind: 'object',
+          properties: { get: { kind: 'function' } },
+        },
+        tags: { collection: 'set', kind: 'object', properties: {} },
+      },
+    };
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        `const value = createPreviewPropsFromLayers(${JSON.stringify(shape)}, {});`,
+        'globalThis.result = {',
+        '  has: value.promoWeeks.has(3),',
+        '  map: value.promoWeeks instanceof Map,',
+        '  set: value.tags instanceof Set,',
+        '  size: value.promoWeeks.size + value.tags.size,',
+        '};',
+      ].join('\n'),
+      context,
+    );
+
+    expect(context.result).toEqual({ has: false, map: true, set: true, size: 0 });
+  });
+
   /** Rejects prototype keys and lets authored null remain an intentional semantic value. */
   it('bounds unsafe shapes and preserves explicit null', () => {
     const context: { result?: Record<string, unknown> } = {};
@@ -271,6 +414,8 @@ describe('createPreviewAutomaticPropsRuntimeSource', () => {
         '  globalThis.selection = { specification, candidates };',
         "  return { candidateId: 'branch-coverage', decision: { candidateId: 'branch-coverage' } };",
         '}',
+        // Rows count back from the preview's current day; pin that day for a stable assertion.
+        "globalThis[Symbol.for('newdlops.react-file-preview.sample-dates')].baseOverride = new Date(2026, 0, 15, 12);",
         "const shape = { kind: 'object', properties: { events: { kind: 'array', renderedCollection: true, items: { kind: 'object', properties: { date: { kind: 'string' }, eventType: { kind: 'string', candidateValues: ['appointed', 'ended', 'co-ceo'], exactValue: true, value: 'appointed' } } } } } };",
         'setPreviewGeneratedListSampleCount(2);',
         'const value = createPreviewPropsFromLayers(shape);',
@@ -280,11 +425,7 @@ describe('createPreviewAutomaticPropsRuntimeSource', () => {
     );
 
     expect(context.result).toEqual({
-      dates: [
-        '2026-01-15T09:00:00.000Z',
-        '2026-01-16T09:00:00.000Z',
-        '2026-01-17T09:00:00.000Z',
-      ],
+      dates: ['2026-01-15T09:00:00.000Z', '2026-01-14T09:00:00.000Z', '2026-01-13T09:00:00.000Z'],
       eventTypes: ['appointed', 'ended', 'co-ceo'],
       length: 3,
     });

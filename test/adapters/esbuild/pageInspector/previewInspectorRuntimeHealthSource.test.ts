@@ -114,6 +114,29 @@ describe('Preview Inspector runtime health source', () => {
     ]);
   });
 
+  /** The host keeps the latest snapshot, so a return to an earlier state must be delivered again. */
+  it('re-emits a page composition snapshot that returns to an earlier state', () => {
+    const runtime = createRuntimeHealthFixture();
+    const snapshot = (
+      stage: string,
+    ): { category: string; detail: { targetState: { stage: string } }; event: string } => ({
+      category: 'page-composition',
+      detail: { targetState: { stage } },
+      event: 'page-composition-snapshot',
+    });
+
+    runtime.record(snapshot('target-output'));
+    runtime.record(snapshot('target-mounted-no-output'));
+    runtime.record(snapshot('target-output'));
+    runtime.record(snapshot('target-output'));
+
+    expect(
+      runtime.messages.map(
+        (message) => (message.event.detail as { targetState: { stage: string } }).targetState.stage,
+      ),
+    ).toEqual(['target-output', 'target-mounted-no-output', 'target-output']);
+  });
+
   /** Publishes only verifier-owned model updates, never feature vectors or project values. */
   it('records neural residual verifier updates', () => {
     const runtime = createRuntimeHealthFixture();

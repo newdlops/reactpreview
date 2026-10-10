@@ -16,6 +16,7 @@ import {
   PREVIEW_INSPECTOR_RUNTIME_NAMESPACE,
   PREVIEW_INSPECTOR_TARGET_NAMESPACE,
   PREVIEW_NODE_BUILTIN_NAMESPACE,
+  PREVIEW_REACT_QUERY_BRIDGE_NAMESPACE,
   PREVIEW_REDUX_BRIDGE_NAMESPACE,
   PREVIEW_ROUTER_BRIDGE_NAMESPACE,
   PREVIEW_SETUP_BRIDGE_NAMESPACE,
@@ -30,7 +31,7 @@ import {
 } from './previewBuildEntryPlugin';
 
 /** Namespace-aware confinement policy identity. Bump whenever registry admission semantics change. */
-export const PREVIEW_OWNED_NAMESPACE_POLICY_VERSION = 5;
+export const PREVIEW_OWNED_NAMESPACE_POLICY_VERSION = 6;
 
 /** Compiler-private namespace values that are intentionally unavailable to build requests. */
 export const PREVIEW_COMPILER_PRIVATE_NAMESPACES = Object.freeze({
@@ -134,6 +135,7 @@ const BASE_COMPILER_REGISTRATIONS = Object.freeze([
   registration(PREVIEW_CONTEXT_BRIDGE_NAMESPACE, 'react-preview-context-bridge'),
   registration(PREVIEW_FORMIK_BRIDGE_NAMESPACE, 'react-preview-formik-bridge'),
   registration(PREVIEW_YARN_LIBUI_BRIDGE_NAMESPACE, 'react-preview-yarn-libui-bridge'),
+  registration(PREVIEW_REACT_QUERY_BRIDGE_NAMESPACE, 'react-preview-react-query-bridge'),
   registration(PREVIEW_REDUX_BRIDGE_NAMESPACE, 'react-preview-redux-bridge'),
   registration(PREVIEW_ROUTER_BRIDGE_NAMESPACE, 'react-preview-router-bridge'),
   registration(

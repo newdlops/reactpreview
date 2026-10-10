@@ -71,7 +71,7 @@ describe('resolved React Context type fallback', () => {
       '"siteSettings": Object.freeze({ "legalSiteUrl": "https://example.invalid/" })',
     );
     expect(transformed.contents).toContain(
-      '"user": Object.freeze({ "email": "preview@example.invalid", "fullName": "fullName" })',
+      '"user": Object.freeze({ "email": "preview@example.invalid", "fullName": "Full name" })',
     );
     expect(transformed.contents).not.toContain('createContext<AppContextType>(null as any)');
   });

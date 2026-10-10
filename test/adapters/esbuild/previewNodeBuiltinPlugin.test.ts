@@ -301,4 +301,109 @@ describe('createPreviewNodeBuiltinPlugin', () => {
       await rm(workspace, { force: true, recursive: true });
     }
   });
+
+  /** Module-scope host reads in server packages get plain values instead of neutral callables. */
+  it('serves os, module, and process facades used while server packages evaluate', async () => {
+    const result = await build({
+      bundle: true,
+      format: 'cjs',
+      logLevel: 'silent',
+      platform: 'browser',
+      plugins: [createPreviewNodeBuiltinPlugin()],
+      stdin: {
+        contents: [
+          "import os from 'os';",
+          "import { builtinModules, createRequire, isBuiltin } from 'node:module';",
+          "import processModule from 'node:process';",
+          "const localRequire = createRequire('/virtual/server.js');",
+          "let dynamicError = '';",
+          "try { localRequire('left-pad'); } catch (error) { dynamicError = error.message; }",
+          'globalThis.__facadeResult = {',
+          "  builtin: isBuiltin('node:path') && builtinModules.includes('os'),",
+          '  cpus: os.cpus().length,',
+          '  dynamicError,',
+          '  eol: os.EOL,',
+          '  hostnameLength: os.hostname().length,',
+          "  joined: localRequire('node:path').join('a', 'b'),",
+          '  platform: os.platform(),',
+          '  processArgv: Array.isArray(processModule.argv),',
+          '  processDebug: typeof processModule.env.DEBUG,',
+          '};',
+        ].join('\n'),
+        loader: 'js',
+      },
+      write: false,
+    });
+    const context: { __facadeResult?: Record<string, unknown> } = {};
+    runInNewContext(result.outputFiles[0]?.text ?? '', {
+      console: { warn: vi.fn() },
+      globalThis: context,
+      queueMicrotask,
+    });
+
+    expect(context.__facadeResult).toEqual({
+      builtin: true,
+      cpus: 1,
+      dynamicError: 'Dynamic require of "left-pad" is not supported',
+      eol: '\n',
+      hostnameLength: 'localhost'.length,
+      joined: 'a/b',
+      platform: 'linux',
+      processArgv: true,
+      processDebug: 'undefined',
+    });
+  });
+
+  /** Server-only packages that require prebuilt native bindings no longer fail the build. */
+  it('replaces native addon bindings with the neutral namespace', async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), 'react-preview-native-addon-'));
+    try {
+      const packageDirectory = path.join(workspace, 'node_modules', 'native-runtime');
+      await mkdir(path.join(packageDirectory, 'bin', 'darwin'), { recursive: true });
+      await writeFile(
+        path.join(packageDirectory, 'package.json'),
+        '{"name":"native-runtime","main":"index.js"}',
+      );
+      await writeFile(
+        path.join(packageDirectory, 'index.js'),
+        [
+          "const binding = require('./bin/darwin/runtime.node');",
+          'const platformBinding = () => require(`./bin/${process.platform}/runtime.node`);',
+          'module.exports = { binding, platformBinding };',
+        ].join('\n'),
+      );
+      await writeFile(
+        path.join(packageDirectory, 'bin', 'darwin', 'runtime.node'),
+        Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00]),
+      );
+      const result = await build({
+        absWorkingDir: workspace,
+        bundle: true,
+        format: 'cjs',
+        logLevel: 'silent',
+        platform: 'browser',
+        plugins: [createPreviewNodeBuiltinPlugin()],
+        stdin: {
+          contents: [
+            "import { binding } from 'native-runtime';",
+            'globalThis.__nativeAddonResult = typeof binding.createSession();',
+          ].join('\n'),
+          loader: 'js',
+          resolveDir: workspace,
+        },
+        write: false,
+      });
+      const warning = vi.fn();
+      const context: { __nativeAddonResult?: string } = {};
+      runInNewContext(result.outputFiles[0]?.text ?? '', {
+        console: { warn: warning },
+        globalThis: context,
+      });
+
+      expect(context.__nativeAddonResult).toBe('undefined');
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('Native addon runtime.node'));
+    } finally {
+      await rm(workspace, { force: true, recursive: true });
+    }
+  });
 });

@@ -6,6 +6,11 @@
 import path from 'node:path';
 import ts from 'typescript';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
+import { createPreviewSampleLabel } from '../previewSampleLabel';
+import {
+  readPreviewBoundedIndexLiteral,
+  readPreviewBoundedIndexMaximum,
+} from './reactPropIndexBounds';
 import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 import {
@@ -21,6 +26,10 @@ import {
 } from './reactOverlayVisibilityInference';
 import { inferReactOverlayVisibilityTypePath } from './reactOverlayVisibilityTypeInference';
 import { inferReactOverlayVisibilityNeutralValue } from './reactOverlayVisibilityNeutralValue';
+import {
+  annotatePreviewPropCollections,
+  type PreviewPropCollectionKind,
+} from './reactPropCollectionType';
 
 const MAX_COMPONENT_EXPORTS = 32;
 const MAX_LOCAL_COMPONENT_RESOLUTION_DEPTH = 12;
@@ -33,6 +42,7 @@ const MAX_STATIC_REGISTRY_HINTS = 16;
 const MAX_STATIC_REGISTRY_SOURCE_BYTES = 512 * 1024;
 const BLOCKED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'key', 'prototype', 'ref']);
 const ARRAY_METHOD_NAMES = new Set<string>(PREVIEW_COLLECTION_METHOD_NAMES);
+const ARRAY_INDEX_PATTERN = /^(?:0|[1-9]\d*)$/u;
 const ARRAY_ITEM_CALLBACK_METHOD_NAMES = new Set([
   'every',
   'filter',
@@ -69,12 +79,7 @@ const RENDERED_COLLECTION_PROP_NAMES = new Set([
   'values',
 ]);
 const RENDERED_COLLECTION_CONFIG_PROP_NAMES = new Set(['columns', 'fields']);
-const RENDERED_COLLECTION_FIELD_KEY_NAMES = new Set([
-  'accessorkey',
-  'dataindex',
-  'field',
-  'key',
-]);
+const RENDERED_COLLECTION_FIELD_KEY_NAMES = new Set(['accessorkey', 'dataindex', 'field', 'key']);
 const RENDERED_COLLECTION_CALLBACK_NAMES = new Set([
   'accessor',
   'body',
@@ -125,9 +130,15 @@ export interface PreviewInferredPropShape {
   /** Element contract for arrays when syntax or a resolved type proves its required fields. */
   readonly items?: PreviewInferredPropShape;
   readonly kind: PreviewInferredPropKind;
+  /** Array items an authored index read reaches (`finals[k]`, `k: 0 | 1 | 2 | 3` needs four). */
+  readonly minItems?: number;
+  /** An object prop declared as a built-in Map or Set, materialized as an empty one. */
+  readonly collection?: PreviewPropCollectionKind;
   readonly properties?: Readonly<Record<string, PreviewInferredPropShape>>;
   /** True only when JSX proves that this Array directly feeds a list/table collection prop. */
   readonly renderedCollection?: true;
+  /** A text leaf read directly as React child content (`<h1>{title}</h1>`), shown as-is. */
+  readonly renderedText?: true;
   readonly value?: boolean | number | string | null;
 }
 
@@ -200,6 +211,8 @@ interface MutableShapeNode {
   /** Source-ordered finite primitive values accepted by rendered callback branches. */
   candidateValues?: (boolean | number | string)[];
   children: Map<string, MutableShapeNode>;
+  /** Built-in collection a prop's declaration names (`promoWeeks?: Map<number, string>`). */
+  collection?: PreviewPropCollectionKind;
   /** Retains authored literal/control-flow evidence across compatible shape merges. */
   exactValue?: true;
   /** Lets operation-proven literals outrank a type union's arbitrary first materialized member. */
@@ -209,6 +222,8 @@ interface MutableShapeNode {
   /** Direct iterable destructuring proves that an otherwise scalar-typed Array needs one sample. */
   itemConsumed?: true;
   kind: PreviewInferredPropKind;
+  /** Smallest sample length that keeps every bounded authored index read inside the Array. */
+  minItems?: number;
   /** The callback item itself was emitted as React child content rather than only keyed. */
   renderedValue?: true;
   /** JSX proves that this Array is passed to a conventional list/table data prop. */
@@ -272,6 +287,12 @@ interface InferenceState {
   readonly registryDiscriminantHints: ReadonlyMap<string, PreviewStaticRegistryKey>;
   root: MutableShapeNode;
   readonly sourceFile: ts.SourceFile;
+  /** Uses behind an optional receiver, applied only if other evidence materializes that receiver. */
+  optionalOperations?: {
+    readonly node: ts.Expression;
+    readonly path: readonly string[];
+    readonly receiverLength: number;
+  }[];
 }
 
 const CLASS_COMPONENT_PROPS_ALIAS = 'this.props';
@@ -1136,6 +1157,7 @@ function inferComponentProps(
   collectLocalHelperForwardedPropRequirements(functionLike, state);
   collectKeyedCollectionHelperRequirements(functionLike, state);
   collectUsageRequirements(functionLike, state);
+  collectBoundedIndexReadLengths(functionLike, state);
   collectRenderedCollectionRequirements(functionLike, state);
   collectEqualityDiscriminantRequirements(functionLike, state);
   collectSwitchDiscriminantRequirements(functionLike, state);
@@ -1143,11 +1165,125 @@ function inferComponentProps(
   if (followLocalJsxPropForwarding) {
     collectLocalJsxForwardedPropRequirements(functionLike, state);
   }
+  collectTemplateTextReads(functionLike, state);
   addOverlayVisibilityRequirement(component, localTypes, state, sourceFile, overlayStateVisibility);
+  applyMaterializedOptionalOperations(state);
+  const propsType = parameter?.type ?? component.contextualPropsType;
+  const propsMembers =
+    propsType === undefined ? undefined : readObjectTypeMembers(propsType, localTypes, new Set());
+  if (propsMembers !== undefined)
+    annotatePreviewPropCollections(state.root, propsMembers, sourceFile);
+  labelDirectlyRenderedChildren(component, state);
+  markDirectlyRenderedTextProps(component.functionLike, state);
   if (state.root.children.size === 0) {
     return undefined;
   }
   return freezeInference(state.root);
+}
+
+/**
+ * Gives a `children` slot the component's own label ("Button", "Section title") when the component
+ * only renders it as direct JSX content. Its placeholder element showed an empty button in
+ * target-only previews; any other use (`Children.map`, `cloneElement`, a call, a condition) keeps
+ * the element, because those need a real element rather than text.
+ */
+function labelDirectlyRenderedChildren(
+  component: ExportedComponentFunction,
+  state: InferenceState,
+): void {
+  const node = state.root.children.get('children');
+  const body = component.functionLike.body;
+  if (node?.kind !== 'element' || node.value !== undefined || body === undefined) return;
+  const uses = { other: false, rendered: false };
+  const visit = (current: ts.Node): void => {
+    if (uses.other) return;
+    if (
+      (ts.isIdentifier(current) || ts.isPropertyAccessExpression(current)) &&
+      !isNestedAccessReceiver(current) &&
+      isChildrenPropReference(current, state)
+    ) {
+      if (isReactRenderedChildValueExpression(current)) uses.rendered = true;
+      else uses.other = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(body);
+  if (!uses.rendered || uses.other) return;
+  const name =
+    component.exportName === 'default'
+      ? (readFunctionLikeName(component.functionLike) ?? 'Preview')
+      : component.exportName;
+  node.value = createPreviewSampleLabel(name);
+}
+
+/**
+ * Marks text props that the component shows as-is (`<h1>{title}</h1>`). Only such leaves may take
+ * a typed sample label: DateRangePicker parses `end` (`display(end)` split it into
+ * "End.undefined.undefined"), so text read any other way keeps its neutral ''.
+ */
+function markDirectlyRenderedTextProps(
+  functionLike: ExportedFunctionLike,
+  state: InferenceState,
+): void {
+  const body = functionLike.body;
+  if (body === undefined) return;
+  const visit = (current: ts.Node): void => {
+    if (
+      (ts.isIdentifier(current) || isAccessExpression(current)) &&
+      !isNestedAccessReceiver(current) &&
+      (!ts.isIdentifier(current) || isRuntimeValueReference(current)) &&
+      isReactRenderedChildValueExpression(current)
+    ) {
+      const path_ = readPropPath(current, state.aliases);
+      const node =
+        path_ === undefined || path_.length === 0 || isShadowedPathRoot(current, state)
+          ? undefined
+          : readMutablePathNode(state, path_);
+      if (node?.kind === 'string') node.renderedValue = true;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(body);
+}
+
+/** Matches a runtime read that resolves to the root `children` prop. */
+function isChildrenPropReference(
+  node: ts.Identifier | ts.PropertyAccessExpression,
+  state: InferenceState,
+): boolean {
+  if (ts.isIdentifier(node) && !isRuntimeValueReference(node)) return false;
+  const path_ = readPropPath(node, state.aliases);
+  return path_?.length === 1 && path_[0] === 'children' && !isShadowedPathRoot(node, state);
+}
+
+/** Excludes declarations, property names, and JSX tag names from value references. */
+function isRuntimeValueReference(identifier: ts.Identifier): boolean {
+  const parent = identifier.parent;
+  return !(
+    (ts.isBindingElement(parent) &&
+      (parent.name === identifier || parent.propertyName === identifier)) ||
+    (ts.isParameter(parent) && parent.name === identifier) ||
+    (ts.isPropertyAccessExpression(parent) && parent.name === identifier) ||
+    (ts.isPropertyAssignment(parent) && parent.name === identifier) ||
+    (ts.isShorthandPropertyAssignment(parent) && parent.name === identifier) ||
+    ts.isJsxAttribute(parent) ||
+    ts.isJsxOpeningElement(parent) ||
+    ts.isJsxClosingElement(parent) ||
+    ts.isJsxSelfClosingElement(parent) ||
+    ts.isTypeNode(parent)
+  );
+}
+
+/** Reads a function's own name for a default export. */
+function readFunctionLikeName(functionLike: ExportedFunctionLike): string | undefined {
+  if (functionLike.name !== undefined && ts.isIdentifier(functionLike.name)) {
+    return functionLike.name.text;
+  }
+  const parent = functionLike.parent;
+  return ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)
+    ? parent.name.text
+    : undefined;
 }
 
 /**
@@ -1254,6 +1390,156 @@ function collectKeyedCollectionHelperRequirements(
     ts.forEachChild(node, visit);
   };
   visit(functionLike.body);
+}
+
+/**
+ * Records how many items authored index reads reach (`readPreviewBoundedIndexMaximum`). An index
+ * variable bounded by a literal range proves an Array receiver; a literal index (`name[0]`, which
+ * may read a string) only lengthens a receiver that is already an Array.
+ */
+function collectBoundedIndexReadLengths(
+  functionLike: ExportedFunctionLike,
+  state: InferenceState,
+): void {
+  const body = functionLike.body;
+  if (body === undefined) return;
+  const visit = (node: ts.Node): void => {
+    if (ts.isElementAccessExpression(node)) {
+      const maximum = readPreviewBoundedIndexMaximum(node.argumentExpression);
+      const path_ =
+        maximum === undefined ? undefined : readPropPath(node.expression, state.aliases);
+      if (
+        maximum !== undefined &&
+        path_ !== undefined &&
+        path_.length > 0 &&
+        !isShadowedPathRoot(node.expression, state)
+      ) {
+        if (!ts.isNumericLiteral(unwrapExpression(node.argumentExpression))) {
+          requirePath(state, path_, 'array', 'usage');
+        }
+        const receiver = readMutablePathNode(state, path_);
+        if (receiver?.kind === 'array') recordArrayMinItems(receiver, maximum);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+}
+
+/**
+ * Makes a prop read only as template text a string once every other rule has run. A read creates
+ * an empty object receiver, so SegmentedControl's `${active ? 'bg-brand' : it.dot}` rendered
+ * `class="… [object Object]"`. Only such empty objects change, to the name rule's value
+ * (`count` → number) or neutral text; recorded members, values, and other kinds win, and an absent
+ * leaf stays absent because `leadDays != null ? `${leadDays}일` : '—'` must keep its authored dash.
+ */
+function collectTemplateTextReads(functionLike: ExportedFunctionLike, state: InferenceState): void {
+  const body = functionLike.body;
+  if (body === undefined) return;
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isIdentifier(node) || isAccessExpression(node)) &&
+      !isNestedAccessReceiver(node) &&
+      (!ts.isIdentifier(node) || !isIdentifierPartOfAccess(node)) &&
+      isTemplateTextPosition(node)
+    ) {
+      const path_ = readPropPath(node, state.aliases);
+      const existing = path_ === undefined ? undefined : readMutablePathNode(state, path_);
+      if (
+        path_ !== undefined &&
+        path_.length > 0 &&
+        !isShadowedPathRoot(node, state) &&
+        existing?.kind === 'object' &&
+        existing.children.size === 0 &&
+        existing.collection === undefined
+      ) {
+        const semantic = inferPreviewUsageSemanticFallback(state, path_.at(-1) ?? '');
+        if (semantic === undefined) requirePath(state, path_, 'string', 'usage');
+        else requirePath(state, path_, semantic.kind, 'usage', semantic.value, semantic.exactValue);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+}
+
+/** Follows value-preserving wrappers (`c ? a : x`, `x ?? ''`) to an untagged template or `'a' + x`. */
+function isTemplateTextPosition(node: ts.Expression): boolean {
+  let current: ts.Node = node;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const parent = current.parent;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isNonNullExpression(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      (ts.isConditionalExpression(parent) && parent.condition !== current) ||
+      (ts.isBinaryExpression(parent) &&
+        (parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+          parent.operatorToken.kind === ts.SyntaxKind.BarBarToken))
+    ) {
+      current = parent;
+      continue;
+    }
+    if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const other = parent.left === current ? parent.right : parent.left;
+      return ts.isStringLiteralLike(other) || ts.isTemplateExpression(other);
+    }
+    return (
+      ts.isTemplateSpan(parent) &&
+      parent.expression === current &&
+      ts.isTemplateExpression(parent.parent) &&
+      !ts.isTaggedTemplateExpression(parent.parent.parent)
+    );
+  }
+  return false;
+}
+
+/**
+ * Reads `'REQUESTED' | 'IN_TRANSIT' | 'DELIVERED'` (or numeric literals) in declaration order.
+ * Mixed kinds, open members (`'a' | string`), and non-literal members are not a closed value set.
+ */
+function readLiteralUnionValues(
+  members: readonly ts.TypeNode[],
+): readonly string[] | readonly number[] | undefined {
+  const values = members.map((member) => {
+    const unwrapped = ts.isParenthesizedTypeNode(member) ? member.type : member;
+    return ts.isLiteralTypeNode(unwrapped) ? readLiteralValue(unwrapped.literal) : undefined;
+  });
+  if (values.every((value): value is string => typeof value === 'string')) return values;
+  if (values.every((value): value is number => typeof value === 'number')) return values;
+  return undefined;
+}
+
+/**
+ * Gives a declared closed union its first member and every member as a candidate, so generated
+ * rows rotate through real values. InboundTab's `status: InboundStatus` was dropped and
+ * `STATUS_DOT[r.status]` / `STATUS_LABEL[r.status]` rendered "undefined" and an empty label,
+ * though both maps are keyed by exactly those members.
+ */
+function addLiteralUnionRequirement(
+  state: InferenceState,
+  path_: readonly string[],
+  literals: readonly string[] | readonly number[],
+): void {
+  const [first] = literals;
+  if (first === undefined) return;
+  const kind = typeof first === 'number' ? 'number' : 'string';
+  requirePath(state, path_, kind, 'type', first);
+  const node = readMutablePathNode(state, path_);
+  if (node?.kind !== kind) return;
+  const candidateValues = (node.candidateValues ??= []);
+  for (const literal of literals) {
+    if (candidateValues.length >= 8) break;
+    if (!candidateValues.some((candidate) => Object.is(candidate, literal))) {
+      candidateValues.push(literal);
+    }
+  }
+}
+
+/** Lengthens an Array sample to reach `index`; every generated list already holds one item. */
+function recordArrayMinItems(node: MutableShapeNode, index: number): void {
+  if (index >= 1) node.minItems = Math.max(node.minItems ?? 0, index + 1);
 }
 
 /**
@@ -1644,6 +1930,11 @@ function addTypeRequirement(
       const member = members[0];
       if (member === undefined) return;
       addTypeRequirement(path_, member, localTypes, state, sourceFile, activeNames, depthOffset);
+      return;
+    }
+    const literals = readLiteralUnionValues(members);
+    if (literals !== undefined) {
+      addLiteralUnionRequirement(state, path_, literals);
       return;
     }
     const representative = selectDiscriminatedObjectUnionMember(members, localTypes);
@@ -2084,6 +2375,9 @@ function mergeMutableShapeRequirement(target: MutableShapeNode, source: MutableS
     }
   }
   if (source.itemConsumed === true) target.itemConsumed = true;
+  if (source.minItems !== undefined) {
+    target.minItems = Math.max(target.minItems ?? 0, source.minItems);
+  }
   if (source.renderedCollection === true) target.renderedCollection = true;
   if (source.renderedValue === true) target.renderedValue = true;
   if (source.source === 'type') target.source = 'type';
@@ -2345,6 +2639,12 @@ function collectUsageRequirements(functionLike: ExportedFunctionLike, state: Inf
       if (path_ !== undefined && path_.length > 0 && !isShadowedPathRoot(node, state)) {
         const optionalReceiverLength = readFirstOptionalReceiverLength(node, state.aliases);
         if (optionalReceiverLength === undefined) addOperationRequirement(state, path_, node);
+        else
+          (state.optionalOperations ??= []).push({
+            node,
+            path: path_,
+            receiverLength: optionalReceiverLength,
+          });
       }
     } else if (ts.isIdentifier(node)) {
       const binding = state.aliases.get(node.text);
@@ -2509,9 +2809,7 @@ function readRenderedCollectionCarrierPropPath(
 }
 
 /** Accepts a map only when its returned record explicitly spreads the unchanged item. */
-function isRenderedCollectionIdentityMapCallback(
-  expression: ts.Expression | undefined,
-): boolean {
+function isRenderedCollectionIdentityMapCallback(expression: ts.Expression | undefined): boolean {
   if (
     expression === undefined ||
     (!ts.isArrowFunction(expression) && !ts.isFunctionExpression(expression))
@@ -2560,11 +2858,7 @@ function inferRenderedCollectionConfigurationItem(
     else mergeMutableShapeRequirement(item, candidate);
   };
   const appendField = (fieldName: string): void => {
-    if (
-      fieldName.length === 0 ||
-      fieldName.length > 128 ||
-      BLOCKED_PROPERTY_NAMES.has(fieldName)
-    ) {
+    if (fieldName.length === 0 || fieldName.length > 128 || BLOCKED_PROPERTY_NAMES.has(fieldName)) {
       return;
     }
     const semantic = inferPreviewUsageSemanticFallback(state, fieldName);
@@ -2965,7 +3259,9 @@ function thawPreviewInferredShape(
     node.candidateValues = [...shape.candidateValues].slice(0, 8);
   }
   if (shape.value !== undefined) node.value = shape.value;
+  if (shape.minItems !== undefined) node.minItems = shape.minItems;
   if (shape.renderedCollection === true) node.renderedCollection = true;
+  if (shape.renderedText === true) node.renderedValue = true;
   if (shape.exactValue === true) {
     node.exactValue = true;
     node.exactValueSource = 'usage';
@@ -3014,6 +3310,7 @@ function inferFunctionBindingRequirement(
   const typedParameter = functionLike.parameters.find((parameter) => parameter.name === binding);
   collectLocalPropAliases(functionLike, state);
   collectUsageRequirements(functionLike, state);
+  collectBoundedIndexReadLengths(functionLike, state);
   if (
     ts.isIdentifier(binding) &&
     typedParameter?.type !== undefined &&
@@ -3033,6 +3330,7 @@ function inferFunctionBindingRequirement(
   collectRequiredPropertyReadTerminals(functionLike, state);
   collectEqualityDiscriminantRequirements(functionLike, state);
   collectSwitchDiscriminantRequirements(functionLike, state);
+  collectTemplateTextReads(functionLike, state);
   parentState.nodeCount = state.nodeCount;
   return root.children.get(bindingRoot);
 }
@@ -3151,8 +3449,7 @@ function collectSwitchDiscriminantRequirements(
         }
         if (
           !hasPreviewInferredPropExplicitValue(state, path_) ||
-          (state.collectionDemandDepth > 0 &&
-            !hasPreviewInferredPropUsageExactValue(state, path_))
+          (state.collectionDemandDepth > 0 && !hasPreviewInferredPropUsageExactValue(state, path_))
         ) {
           const value = caseValues[0];
           if (value !== undefined) {
@@ -3194,6 +3491,21 @@ function addReceiverContainers(
 ): void {
   for (let length = 1; length < exclusiveLength; length += 1) {
     requirePath(state, path_.slice(0, length), 'object', 'usage');
+  }
+}
+
+/**
+ * Applies uses behind an optional receiver ('promoWeeks?.has(week)') once other evidence (here
+ * 'promoWeeks.get(week)') materialized that receiver anyway: a generated object must then carry
+ * those members too. A receiver nothing else proves stays absent, as the optional chain allows.
+ */
+function applyMaterializedOptionalOperations(state: InferenceState): void {
+  for (const { node, path, receiverLength } of state.optionalOperations ?? []) {
+    let receiver: MutableShapeNode | undefined = state.root;
+    for (const name of path.slice(0, receiverLength)) receiver = receiver?.children.get(name);
+    if (receiver?.kind !== 'object') continue;
+    addReceiverContainers(state, path, path.length);
+    addOperationRequirement(state, path, node);
   }
 }
 
@@ -3701,6 +4013,46 @@ function mergeNodeKind(
       node.exactValue = true;
       node.exactValueSource = source;
     }
+    return;
+  }
+  if (kind === 'array' && node.kind === 'object' && hasOnlyArrayMemberChildren(node)) {
+    convertArrayMemberObjectToArray(node, source);
+  }
+}
+
+/**
+ * Recognizes an object receiver whose only reads are `length` or index members (`past.length`,
+ * `past[0]`), which an Array also answers. The typed-props layer treats the same `{ length }`
+ * receiver as an evidence-free placeholder (`isPreviewEvidenceFreeShape`).
+ */
+function hasOnlyArrayMemberChildren(node: MutableShapeNode): boolean {
+  return (
+    node.collection === undefined &&
+    node.value === undefined &&
+    node.exactValue !== true &&
+    [...node.children.keys()].every((name) => name === 'length' || ARRAY_INDEX_PATTERN.test(name))
+  );
+}
+
+/**
+ * Turns an index-and-length-only object into the Array that later evidence proves. Without this,
+ * SimSheet's `r.past[r.past.length - 1]` left `past` a `{ length }` object, the declared
+ * `number[]` from the child-type demand was skipped as a kind conflict, and the empty sample
+ * list rendered `fmtInt(undefined)` as NaN. Index reads become the element contract.
+ */
+function convertArrayMemberObjectToArray(
+  node: MutableShapeNode,
+  source: PreviewInferredPropProvenance['source'],
+): void {
+  const indexReads = [...node.children].filter(([name]) => name !== 'length');
+  node.children.clear();
+  node.kind = 'array';
+  node.source = source;
+  for (const [name, item] of indexReads) {
+    if (node.items === undefined) node.items = item;
+    else mergeMutableShapeRequirement(node.items, item);
+    const reached = readPreviewBoundedIndexLiteral(name);
+    if (reached !== undefined) recordArrayMinItems(node, reached);
   }
 }
 
@@ -3799,12 +4151,19 @@ function freezeInference(root: MutableShapeNode): PreviewInferredExportProps {
       ...(node.kind === 'array' && node.items !== undefined
         ? { items: freezeNode(node.items, [...path_, '[]']) }
         : {}),
+      ...(node.kind === 'array' && node.minItems !== undefined ? { minItems: node.minItems } : {}),
       ...(node.kind === 'object' || node.kind === 'graphql-document'
         ? { properties: Object.freeze(properties) }
         : {}),
       ...(node.value === undefined ? {} : { value: node.value }),
       ...(node.exactValue === true ? { exactValue: true as const } : {}),
       ...(node.renderedCollection === true ? { renderedCollection: true as const } : {}),
+      ...(node.kind === 'string' && node.renderedValue === true
+        ? { renderedText: true as const }
+        : {}),
+      ...(node.kind === 'object' && node.collection !== undefined
+        ? { collection: node.collection }
+        : {}),
     });
   };
   const shape = freezeNode(root, []);

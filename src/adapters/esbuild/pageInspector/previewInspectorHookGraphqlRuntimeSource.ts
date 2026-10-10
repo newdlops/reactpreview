@@ -7,6 +7,7 @@
  * so this adapter deterministically supplies the same selected fields immediately. It never sends
  * a request, imports a project module, or guesses fields that are absent from the document.
  */
+import { PREVIEW_TYPED_GRAPHQL_SHAPE_RUNTIME_SOURCE } from '../previewTypedGraphqlShapeRuntimeSource';
 import { createPreviewInspectorRenderedCollectionNeuralRuntimeSource } from './previewInspectorRenderedCollectionNeuralRuntimeSource';
 
 /** Creates browser source that turns an authored GraphQL document into one settled hook result. */
@@ -14,11 +15,13 @@ export function createPreviewInspectorHookGraphqlRuntimeSource(): string {
   const renderedCollectionNeuralRuntimeSource =
     createPreviewInspectorRenderedCollectionNeuralRuntimeSource();
   return String.raw`
+${PREVIEW_TYPED_GRAPHQL_SHAPE_RUNTIME_SOURCE}
 const PREVIEW_INSPECTOR_HOOK_GRAPHQL_SOURCE_LIMIT = 1_000_000;
 const previewInspectorHookGraphqlDocumentIdentities = new WeakMap();
 const previewInspectorHookGraphqlRenderPropUsages = new WeakMap();
 const previewInspectorHookGraphqlRenderPropLiteralDemands = new WeakMap();
 const previewInspectorHookGraphqlFixedRendererDocuments = new WeakMap();
+const previewInspectorHookGraphqlRowEvidence = new WeakMap();
 ${renderedCollectionNeuralRuntimeSource}
 
 /** Registers compiler-proven render-prop demand and returns the same DocumentNode identity. */
@@ -328,29 +331,66 @@ function alignPreviewInspectorHookGraphqlResponseIdentities(data, readOptions) {
   return changed ? Object.freeze(aligned) : data;
 }
 
-/** Materializes only fields selected by the reached query and rejects empty/unknown roots. */
-function createPreviewInspectorHookGraphqlData(readDocument, readOptions) {
+/** Reads the selected result shape of one reached query, overlaid with its declared result type. */
+function readPreviewInspectorHookGraphqlResultShape(readDocument) {
   const evidence = readPreviewInspectorHookGraphqlDocumentEvidence(readDocument);
+  if (evidence === undefined || typeof inferPreviewInspectorGraphqlQueryShape !== 'function') {
+    return undefined;
+  }
+  const selectionShape = inferPreviewInspectorGraphqlQueryShape(
+    evidence.source,
+    evidence.operationName,
+  );
+  // A declared operation result keeps closed literals such as a status union out of name guesses.
+  const typedShape = readPreviewTypedGraphqlShape(evidence.operationName);
+  const shape = typedShape === undefined
+    ? selectionShape
+    : mergePreviewTypedGraphqlShape(selectionShape, typedShape, 0);
   if (
-    evidence === undefined ||
-    typeof inferPreviewInspectorGraphqlQueryShape !== 'function' ||
-    typeof generatePreviewInspectorDataValue !== 'function'
+    shape?.kind !== 'object' ||
+    shape.fields === null ||
+    typeof shape.fields !== 'object' ||
+    Object.keys(shape.fields).length === 0
   ) {
     return undefined;
   }
+  return { operationName: evidence.operationName, shape, typed: typedShape !== undefined };
+}
+
+/**
+ * Remembers the result shape behind one generated hook value whose collections have no compiler
+ * render demand (for example rows rendered by a child component that receives them as props).
+ * The verified collection fill may later serve that value with sample rows; demanded collections
+ * keep the row count chosen by the rendered-collection strategy.
+ */
+function rememberPreviewInspectorHookGraphqlRowEvidence(fallback, readDocument) {
+  if (fallback === null || typeof fallback !== 'object' || typeof readDocument !== 'function') return;
   try {
-    const shape = inferPreviewInspectorGraphqlQueryShape(
-      evidence.source,
-      evidence.operationName,
-    );
+    const document = readDocument();
     if (
-      shape?.kind !== 'object' ||
-      shape.fields === null ||
-      typeof shape.fields !== 'object' ||
-      Object.keys(shape.fields).length === 0
-    ) {
-      return undefined;
-    }
+      previewInspectorHookGraphqlPendingRenderedCollectionRecommendations.has(document) ||
+      readPreviewInspectorHookGraphqlDocumentDemand(readDocument) !== undefined
+    ) return;
+    const result = readPreviewInspectorHookGraphqlResultShape(readDocument);
+    if (result === undefined) return;
+    previewInspectorHookGraphqlRowEvidence.set(fallback, Object.freeze(result));
+  } catch { /* Without evidence the generated value keeps its minimum rows. */ }
+}
+
+/** Returns the result shape remembered for one cached generated hook value. */
+function readPreviewInspectorHookGraphqlRowEvidence(fallback) {
+  return fallback !== null && typeof fallback === 'object'
+    ? previewInspectorHookGraphqlRowEvidence.get(fallback)
+    : undefined;
+}
+
+/** Materializes only fields selected by the reached query and rejects empty/unknown roots. */
+function createPreviewInspectorHookGraphqlData(readDocument, readOptions) {
+  if (typeof generatePreviewInspectorDataValue !== 'function') return undefined;
+  try {
+    const result = readPreviewInspectorHookGraphqlResultShape(readDocument);
+    if (result === undefined) return undefined;
+    const shape = result.shape;
     const generatedData = generatePreviewInspectorDataValue(shape, '', 'smart');
     if (generatedData === null || typeof generatedData !== 'object') return undefined;
     const demand = readPreviewInspectorHookGraphqlDocumentDemand(readDocument);
@@ -368,7 +408,11 @@ function createPreviewInspectorHookGraphqlData(readDocument, readOptions) {
         );
       } catch { /* The generated data remains valid without trace correlation. */ }
     }
-    const data = recommendation?.payload ?? generatedData;
+    const recommendedData = recommendation?.payload ?? generatedData;
+    // Whichever generator filled the rows, declared literals stay inside their closed sets.
+    const data = result.typed
+      ? applyPreviewTypedGraphqlSeed(recommendedData, shape, 0)
+      : recommendedData;
     return data !== null && typeof data === 'object'
       ? alignPreviewInspectorHookGraphqlResponseIdentities(data, readOptions)
       : undefined;

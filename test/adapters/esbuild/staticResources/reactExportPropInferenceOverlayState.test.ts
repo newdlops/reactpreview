@@ -73,7 +73,7 @@ describe('collectReactExportPropInference overlay state', () => {
     });
 
     expect(result.Toast?.shape.properties).toEqual({
-      children: { kind: 'string', value: 'Toast' },
+      children: { kind: 'string', renderedText: true, value: 'Toast' },
       state: { exactValue: true, kind: 'string', value: 'Default' },
     });
   });

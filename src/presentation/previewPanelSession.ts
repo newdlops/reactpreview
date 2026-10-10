@@ -455,6 +455,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     const baseState = {
       documentName,
       kind: 'ready' as const,
+      remoteStylesheets: vscode.workspace.getConfiguration('reactPreview').get<boolean>('remoteStylesheets', true),
       ...(moduleImports === undefined ? {} : { moduleImports }),
       runtimeRevision: requestedRevision,
       runtimeToken: `${requestedRevision.toString()}:${preparedPreview.artifact.contentHash}`,
@@ -883,6 +884,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     if (!this.inspectorPageCandidateSelection.beginExecutionCandidate(
       request.executionCandidateId,
       request.candidateId,
+      request.restore === true,
     )) {
       this.rollbackInspectorSelection(this.revision + 1, 'already-active');
       return;

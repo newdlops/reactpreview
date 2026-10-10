@@ -15,6 +15,7 @@ import {
   type ResolvedPreviewTarget,
 } from './activePreviewTarget';
 import { PreviewInspectorCompanionPanel } from './previewInspectorCompanionPanel';
+import type { PreviewInspectorNeuralModelImportSource } from './previewInspectorNeuralModelImport';
 import type { PreviewInspectorNeuralModel } from './previewInspectorNeuralModelProtocol';
 import {
   PreviewInspectorNeuralModelStore,
@@ -66,8 +67,13 @@ export class PreviewController implements vscode.Disposable {
     private readonly log: vscode.LogOutputChannel,
     private readonly workspaceState: PreviewWorkspaceState,
     neuralModelState: PreviewInspectorNeuralModelState = workspaceState,
+    neuralModelImportSource?: PreviewInspectorNeuralModelImportSource,
   ) {
-    this.neuralModelStore = new PreviewInspectorNeuralModelStore(neuralModelState, log);
+    this.neuralModelStore = new PreviewInspectorNeuralModelStore(
+      neuralModelState,
+      log,
+      neuralModelImportSource,
+    );
     this.extensionDisposables.push(
       vscode.window.onDidChangeVisibleTextEditors(this.handleVisibleTextEditorsChanged.bind(this)),
       vscode.workspace.onDidChangeTextDocument(this.handleDocumentChanged.bind(this)),

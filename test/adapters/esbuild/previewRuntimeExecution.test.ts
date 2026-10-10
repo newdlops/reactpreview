@@ -11,6 +11,7 @@ import { build, type Plugin } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { createPreviewApolloBridgePlugin } from '../../../src/adapters/esbuild/previewApolloBridgePlugin';
 import { createPreviewFormikBridgePlugin } from '../../../src/adapters/esbuild/previewFormikBridgePlugin';
+import { createPreviewReactQueryBridgePlugin } from '../../../src/adapters/esbuild/previewReactQueryBridgePlugin';
 import { createPreviewReduxBridgePlugin } from '../../../src/adapters/esbuild/previewReduxBridgePlugin';
 import { createPreviewRouterBridgePlugin } from '../../../src/adapters/esbuild/previewRouterBridgePlugin';
 import { createPreviewEntry } from '../../../src/adapters/esbuild/createPreviewEntry';
@@ -299,6 +300,7 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
           createPreviewThemeBridgePlugin({ projectRoot }),
@@ -423,6 +425,7 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
           createPreviewThemeBridgePlugin({ projectRoot }),
@@ -519,6 +522,7 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
           createPreviewThemeBridgePlugin({ projectRoot }),
@@ -604,6 +608,7 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
           createPreviewThemeBridgePlugin({ projectRoot }),
@@ -696,6 +701,7 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
           createPreviewThemeBridgePlugin({ projectRoot }),
@@ -799,6 +805,7 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
           createPreviewThemeBridgePlugin({ projectRoot }),

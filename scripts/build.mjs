@@ -4,7 +4,7 @@
  * worker; runtime `esbuild` remains external to retain its platform-specific native binary.
  */
 import * as esbuild from 'esbuild';
-import { cp, mkdir, readFile, rm } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { NODE_ESM_COMPATIBILITY_BANNER } from './preview-node-esm-compatibility.mjs';
 import { createPreviewTypeScriptInteropPlugin } from './preview-typescript-interop.mjs';
@@ -12,6 +12,10 @@ import { createPreviewTypeScriptInteropPlugin } from './preview-typescript-inter
 const isProduction = process.argv.includes('--production');
 const shouldWatch = process.argv.includes('--watch');
 const REACT_18_RUNTIME_ROOT = path.resolve('dist/runtime/react18/node_modules');
+/** ECMAScript declaration libraries read by the worker's declared-type analysis program. */
+const TYPESCRIPT_LIB_ROOT = path.resolve('dist/typescript-lib');
+const TYPESCRIPT_LIB_FILE_PATTERN =
+  /^lib\.(?:es\d{4}|es5|es6|esnext|decorators)(?:\.[a-z.]+)?\.d\.ts$/u;
 
 /** Exact npm alias inputs copied to authored package names in the shipped runtime catalog. */
 const REACT_18_RUNTIME_PACKAGES = Object.freeze([
@@ -84,7 +88,33 @@ async function removeObsoleteHostArtifacts() {
       rm(artifactPath, { force: true }),
     ),
     rm(REACT_18_RUNTIME_ROOT, { force: true, recursive: true }),
+    rm(TYPESCRIPT_LIB_ROOT, { force: true, recursive: true }),
   ]);
+}
+
+/**
+ * Copies TypeScript's ECMAScript declaration libraries next to the bundled worker.
+ *
+ * The worker bundles the TypeScript compiler, so its default lib lookup no longer points at an
+ * installed package. DOM and host libraries are excluded on purpose: the analysis program uses
+ * only `lib.es2022.d.ts` and its references to type application data shapes.
+ *
+ * @returns Promise resolved after every matching lib file is present below dist.
+ */
+async function prepareTypeScriptLibCatalog() {
+  const sourceRoot = path.resolve('node_modules/typescript/lib');
+  await mkdir(TYPESCRIPT_LIB_ROOT, { recursive: true });
+  const names = (await readdir(sourceRoot)).filter((name) =>
+    TYPESCRIPT_LIB_FILE_PATTERN.test(name),
+  );
+  if (!names.includes('lib.es2022.d.ts') || !names.includes('lib.es5.d.ts')) {
+    throw new Error(`TypeScript ECMAScript libraries are missing from ${sourceRoot}.`);
+  }
+  await Promise.all(
+    names.map(async (name) =>
+      cp(path.join(sourceRoot, name), path.join(TYPESCRIPT_LIB_ROOT, name)),
+    ),
+  );
 }
 
 /**
@@ -150,10 +180,12 @@ async function runBuild() {
   if (!shouldWatch) {
     await Promise.all(buildPlans.map(async (options) => esbuild.build(options)));
     await prepareReact18RuntimeCatalog();
+    await prepareTypeScriptLibCatalog();
     return;
   }
 
   await prepareReact18RuntimeCatalog();
+  await prepareTypeScriptLibCatalog();
   const contexts = await Promise.all(buildPlans.map(async (options) => esbuild.context(options)));
   await Promise.all(contexts.map(async (context) => context.watch()));
   console.log('Watching extension sources for changes...');

@@ -256,6 +256,9 @@ export function createPreviewRouteExecutionPlanArtifact(
       ? {}
       : {
           recipe: Object.freeze({
+            ...(candidate.routeRecipe.contentRootOwnsRoutes === true
+              ? { contentRootOwnsRoutes: true as const }
+              : {}),
             kind: candidate.routeRecipe.kind,
             mounts: Object.freeze(
               candidate.routeRecipe.mounts.map((mount) => Object.freeze({ ...mount })),

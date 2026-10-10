@@ -347,7 +347,7 @@ describe('inferPreviewInspectorPageExecutionRootProps', () => {
         ?.properties,
     ).toMatchObject({
       id: { kind: 'string', value: 'preview-id' },
-      title: { kind: 'string', value: 'title' },
+      title: { kind: 'string', value: 'Title' },
     });
   });
 

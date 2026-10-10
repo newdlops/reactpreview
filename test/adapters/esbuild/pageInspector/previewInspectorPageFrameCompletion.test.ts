@@ -143,6 +143,26 @@ describe('page frame completion', () => {
     },
   );
 
+  /** An App rendered by its entry is the page root: its target-only execution is the whole page. */
+  it('accepts a target that is its own entry-rendered page root', () => {
+    expect(
+      evaluate(`
+      candidate.root = { exportName: 'Target', sourcePath: '/workspace/Target.tsx' };
+      Object.assign(execution, { fidelity: 'target-only', executionRootSurfaceId: 'target:app',
+        runtimeTargetSurfaceId: 'target:app' });
+      owners = [];
+      const app = observation();
+      // A standalone export (no entry consumer) and a framed page still need their owners.
+      execution.standaloneTarget = true;
+      const standalone = observation().contextComplete;
+      execution.standaloneTarget = false;
+      candidate.virtualPage.shells = [{ relation: 'wrapper', root: { exportName: 'Layout' } }];
+      const framed = observation().contextComplete;
+      ({ complete: app.contextComplete, pageRoot: app.targetIsPageRoot, standalone, framed });
+    `),
+    ).toEqual({ complete: true, framed: false, pageRoot: true, standalone: false });
+  });
+
   it('keeps recovering missing page context despite a stale reached/settled flag', () => {
     expect(
       evaluate(`

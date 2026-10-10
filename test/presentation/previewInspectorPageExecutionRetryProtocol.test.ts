@@ -24,6 +24,26 @@ describe('readPreviewInspectorPageExecutionRetryRequest', () => {
     });
   });
 
+  /** Only a literal true asks the host to restore an artifact it already committed. */
+  it('keeps a restore flag and rejects any other restore value', () => {
+    const request = {
+      candidateId: 'page-auto',
+      executionCandidateId: 'execution-target',
+      interactionId: 'execution:7:3',
+      runtimeRevision: 7,
+      type: 'react-preview-inspector-page-execution-retry',
+    };
+
+    expect(readPreviewInspectorPageExecutionRetryRequest({ ...request, restore: true })).toEqual({
+      ...request,
+      restore: true,
+    });
+    expect(
+      readPreviewInspectorPageExecutionRetryRequest({ ...request, restore: 'yes' }),
+    ).toBeUndefined();
+    expect(readPreviewInspectorPageExecutionRetryRequest(request)).not.toHaveProperty('restore');
+  });
+
   it('rejects paths and non-execution interaction ids', () => {
     expect(
       readPreviewInspectorPageExecutionRetryRequest({

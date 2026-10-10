@@ -14,6 +14,10 @@ import {
   type PreviewInferredPropShape,
 } from './reactExportPropInference';
 import { collectPreviewReduxToolkitInitialStateShapes } from './previewReduxToolkitInitialState';
+import {
+  collectPreviewReselectOptionalChainPaths,
+  type PreviewReselectOptionalChainPath,
+} from './previewReselectOptionalChainPaths';
 
 const MAX_RESELECT_CALLS = 128;
 const MAX_SELECTOR_BINDINGS = 256;
@@ -40,6 +44,8 @@ export interface PreviewReselectStateValueRequirement {
 /** One parse result shared by host prebuild state and reached-module container registration. */
 export interface PreviewReselectStateRequirements {
   readonly containerPaths: readonly (readonly string[])[];
+  /** Optional projector chains as root-state paths; seeded only below an existing receiver. */
+  readonly optionalChainPaths: readonly PreviewReselectOptionalChainPath[];
   readonly valueRequirements: readonly PreviewReselectStateValueRequirement[];
 }
 
@@ -87,6 +93,7 @@ export function collectPreviewReselectStateRequirements(
   const selectorBindings = collectSelectorFunctionBindings(sourceFile);
   const collected = new Map<string, readonly string[]>();
   const values = new Map<string, PreviewReselectStateValueRequirement>();
+  const optionalChains = new Map<string, PreviewReselectOptionalChainPath>();
   let callCount = 0;
 
   /** Visits bounded call sites while leaving project functions completely unevaluated. */
@@ -94,7 +101,7 @@ export function collectPreviewReselectStateRequirements(
     if (callCount >= MAX_RESELECT_CALLS) return;
     if (ts.isCallExpression(node) && isCreateSelectorCall(node, createSelectorImports)) {
       callCount += 1;
-      collectCreateSelectorCallPaths(node, selectorBindings, collected, values);
+      collectCreateSelectorCallPaths(node, selectorBindings, collected, values, optionalChains);
     }
     ts.forEachChild(node, visit);
   };
@@ -121,12 +128,23 @@ export function collectPreviewReselectStateRequirements(
     containerPaths: Object.freeze(
       containerPaths.map((containerPath) => Object.freeze([...containerPath])),
     ),
+    optionalChainPaths: Object.freeze(
+      [...optionalChains.values()]
+        .sort((left, right) => compareContainerPaths(left.path, right.path))
+        .map((chain) =>
+          Object.freeze({
+            ...chain,
+            path: Object.freeze([...chain.path]),
+          }),
+        ),
+    ),
     valueRequirements: Object.freeze(valueRequirements),
   });
 }
 
 const EMPTY_RESELECT_REQUIREMENTS: PreviewReselectStateRequirements = Object.freeze({
   containerPaths: Object.freeze([]),
+  optionalChainPaths: Object.freeze([]),
   valueRequirements: Object.freeze([]),
 });
 
@@ -261,6 +279,7 @@ function collectCreateSelectorCallPaths(
   bindings: ReadonlyMap<string, SelectorFunction>,
   collected: Map<string, readonly string[]>,
   values: Map<string, PreviewReselectStateValueRequirement>,
+  optionalChains: Map<string, PreviewReselectOptionalChainPath>,
 ): void {
   if (call.arguments.length < 2) return;
   const projector = resolveSelectorFunction(call.arguments[call.arguments.length - 1], bindings);
@@ -282,6 +301,15 @@ function collectCreateSelectorCallPaths(
     const requiredRelativePaths = collectProjectorParameterObjectPaths(projector, parameter);
     for (const relativePath of requiredRelativePaths) {
       addContainerPrefixes([...resolved.path, ...relativePath], collected);
+    }
+    for (const chain of collectPreviewReselectOptionalChainPaths(projector, parameter)) {
+      const statePath = [...resolved.path, ...chain.path];
+      if (statePath.length > MAX_PATH_DEPTH) continue;
+      optionalChains.set(statePath.join('\0'), {
+        ...chain,
+        path: statePath,
+        receiverLength: resolved.path.length + chain.receiverLength,
+      });
     }
   }
 }

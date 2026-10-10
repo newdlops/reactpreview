@@ -15,6 +15,7 @@ import { createPreviewDragDropBridgePlugin } from '../../../src/adapters/esbuild
 import { createPreviewFormikBridgePlugin } from '../../../src/adapters/esbuild/previewFormikBridgePlugin';
 import { PREVIEW_SOURCE_LOADERS } from '../../../src/adapters/esbuild/previewLoaderPolicy';
 import { createPreviewProgressRuntimeSource } from '../../../src/adapters/esbuild/previewProgressRuntimeSource';
+import { createPreviewReactQueryBridgePlugin } from '../../../src/adapters/esbuild/previewReactQueryBridgePlugin';
 import { createPreviewReduxBridgePlugin } from '../../../src/adapters/esbuild/previewReduxBridgePlugin';
 import { createPreviewRouterBridgePlugin } from '../../../src/adapters/esbuild/previewRouterBridgePlugin';
 import { createPreviewSetupBridgePlugin } from '../../../src/adapters/esbuild/previewSetupBridgePlugin';
@@ -494,6 +495,7 @@ async function buildControlledPreviewEntry(sourceText: string, fileName: string)
         createPreviewDragDropBridgePlugin({ projectRoot }),
         createIdentityContextBridgePlugin(),
         createPreviewFormikBridgePlugin({ projectRoot }),
+        createPreviewReactQueryBridgePlugin({ projectRoot }),
         createPreviewReduxBridgePlugin({ projectRoot }),
         createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
         createPreviewThemeBridgePlugin({ projectRoot }),

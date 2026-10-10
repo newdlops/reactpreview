@@ -110,8 +110,8 @@ React File Preview는 “현재 파일을 서버 없이 즉시 확인한다”�
 10. generated entry는 모든 setup/bridge/target dynamic import 전에 기존 `globalThis.process`를 보존하거나
     Browserify 호환 package에 필요한 bounded browser metadata, `cwd`와 microtask scheduler만 설치합니다.
     symbol state를 통해 hot entry가 같은 fallback을 재사용하며 Node I/O나 native API는 추가하지 않습니다.
-    reached package의 `fs` 같은 Node built-in은 callable neutral CommonJS proxy로 연결되어 resolution만
-    만족하고 모든 호출은 `undefined`를 반환하므로 host capability를 노출하지 않습니다.
+    reached package의 `fs` 같은 Node built-in과 `.node` native addon은 callable neutral CommonJS proxy로 연결되어
+    resolution만 만족하고 호출은 `undefined`를 반환하며(`url`은 브라우저 URL 기반 경로 변환, `os`는 중립 host 값, `module`의 `createRequire`는 브라우저 내장 facade만, `process`는 위 bounded `process`), `__dirname`·`__filename`은 webpack처럼 `"/"`·`"/index.js"`입니다.
 11. esbuild가 `platform: browser`, `format: esm`, `write: false`, `jsxDev: true`로 build합니다. styled-components
     runtime이 없으면 단일 main entry를 유지하고, 있으면 main entry와 runtime anchor를 split해 React,
     ReactDOM, styled-components singleton만 shared chunk에 둡니다. anchor는 project provider·theme·setup·target을
@@ -328,7 +328,7 @@ Next `loading/error/not-found`는 선택 module 자체를 target으로 유지한
 동시에 열어도 한 패널의 refresh가 다른 패널의 root 선택이나 상태를 바꾸지 않습니다.
 브라우저 runtime의 page corridor는 selected candidate subtree를 host element 없는 commit boundary로 감싸고, 별도의 target facade boundary와 함께 상태를 기록합니다. 성공은 두 boundary가 direct-target 전환 없이 같은 candidate render에서 살아 있을 때만 성립합니다. bounded gate DFS가 소진되어도 candidate root는 유지되며, target-only module은 명시적 진단 선택에만 지연 로드되고 blocker resolution에는 포함되지 않습니다.
 
-automatic fast/corridor build는 descriptor가 보존하는 넓은 analysis path를 그대로 import하지 않는다. compiler는 선택 route/page의 `Page Execution` 후보를 fidelity 순서로 probe하고, soft budget 안의 가장 바깥 후보(없으면 hard budget 안의 후보) 하나만 frozen frontier와 함께 bundle한다. app entry, route registry, loader/action은 evidence·watch 입력일 뿐 automatic executable input이 아니다. Next의 선택 layout과 `_app`은 선택 page에 대한 정확한 children/`Component` edge 및 정적 pathname/params만으로 조합한다. selected-export 또는 local HOC slice는 같은 파일의 필요한 lexical closure만 virtual surface로 만들고 외부 project HOC, mutable module bootstrap, 알아낼 수 없는 provider/state를 자동으로 재현하지 않으므로 이 계약은 setup 또는 preview harness가 명시해야 한다. explicit `full` mode는 automatic frontier를 적용하지 않는 compatibility mode이며, automatic slice의 안전한 대체물이 아니다.
+automatic fast/corridor build는 descriptor가 보존하는 넓은 analysis path를 그대로 import하지 않는다. compiler는 선택 route/page의 `Page Execution` 후보를 fidelity 순서로 probe하고, soft budget 안의 가장 바깥 후보(없으면 hard budget 안의 후보) 하나만 frozen frontier와 함께 bundle한다. app entry, route registry, loader/action은 evidence·watch 입력일 뿐 automatic executable input이 아니다. Next의 선택 layout과 `_app`은 선택 page에 대한 정확한 children/`Component` edge 및 정적 pathname/params만으로 조합한다. selected-export 또는 local HOC slice는 같은 파일의 필요한 lexical closure만 virtual surface로 만들고 외부 project HOC, mutable module bootstrap, 알아낼 수 없는 provider/state를 자동으로 재현하지 않으므로 이 계약은 setup 또는 preview harness가 명시해야 한다. 런타임 대상은 항상 target facade로 실제 모듈을 불러오므로, 대상 자신의 slice가 대상 역할을 맡는 후보(페이지가 곧 대상인 page/route-page sliced 변형)는 만들지 않는다. 그런 slice는 graph에 들어가지 않아 frontier 검증에서 `missing-execution-surface`로 버려진다. 런타임은 마운트된 fiber 이름으로 실행 루트·페이지 루트를 확인하며, default export 루트는 컴파일러가 읽은 선언 이름(`RootLayout`, `MyApp`)을 파일 이름(`layout`, `_app`)보다 먼저 쓴다. 실행 루트를 직접 렌더하는 생성 브리지는 심볼 표식을 달고, 그 브리지가 대상의 fiber 조상이면 이름과 관계없이(recompose `withProps` 같은 factory·HOC로 만든 루트 포함) 실행 루트와, 그와 같은 소스·export인 페이지 루트·페이지 프레임을 마운트된 것으로 본다. 생성 실행 소스는 import한 소유 표면 컴포넌트(대상 제외)를 소스·export와 함께 전역 심볼 목록에 등록하고, 런타임은 대상 위 fiber의 `type`·`elementType`이 그 컴포넌트와 같으면 styled-components·HOC로 만든 페이지 루트·프레임도 이름과 관계없이 마운트된 것으로 본다(프로젝트 객체는 수정하지 않음). 닫힌 모달 안 대상처럼 진짜 페이지 옆에 따로 마운트되는 대상(overlay·deferred sibling 배치)은 소유자가 조상이 아니라 형제이므로, 표식이 있는 같은 Page Execution 안에서 브리지와 그 아래 등록 소유자를 찾아 확인한다. explicit `full` mode는 automatic frontier를 적용하지 않는 compatibility mode이며, automatic slice의 안전한 대체물이 아니다.
 
 렌더 관점은 project 의미를 추측하지 않는 두 개의 명시적 scenario로 나뉩니다. 기본 `authored-page`는 선택한
 candidate가 만든 fallback/error/empty UI까지 변경 없이 유지하고, 화면 문자열이나 component 이름을 분류 근거로
@@ -377,7 +377,7 @@ resolver 결과를 memoize하므로 반복적인 workspace 전수 비교 없이 
 nearest tsconfig/package에서 먼저 시도하고 entry가 없을 때에만 전체 bounded workspace로 다시 넓힙니다.
 `previewEntryPointEvidence`는 `react-dom/client`/`react-dom` import identity와 lexical shadow를 확인해
 `createRoot().render`, const root render, `hydrateRoot`와 legacy mount만 entry로 인정합니다.
-`previewRenderModuleFacts`는 ESM/CommonJS default와 named export/local binding, re-export, `React.lazy`,
+`previewRenderModuleFacts`는 ESM/CommonJS default와 named export/local binding, re-export, `React.lazy`·`next/dynamic`,
 JSX/createElement, route element와 top-level page map/router 값 흐름을 inert fact로 만듭니다.
 `previewRenderChainPlanner`는 한 module index를 모든 direct export가 공유하게 하고 export별로 target에서
 entry까지 최대 32단계·8개 후보를 탐색합니다. route/layout/guard wrapper source와 모든 export의 선택
@@ -761,7 +761,8 @@ workspace source plugin을 지나므로 dirty overlay, static resource 변환과
 resolve합니다. 패키지가 없으면 identity wrapper만 만들고, 있으면 프로젝트 package의
 `ApolloClient`, `InMemoryCache`, `ApolloLink`, `Observable`, `ApolloProvider`로 outer boundary를 만듭니다.
 terminating link는 네트워크 transport를 포함하지 않고 bounded GraphQL selection tree로 정적 결과를
-생성합니다. setup의 `apolloPreview.resolveOperation`과 `initialState`는 데이터만 바꿀 수 있으며 URI,
+생성합니다. `previewReactQueryBridgePlugin`도 같은 방식으로 `@tanstack/react-query`/`react-query`의 project
+`QueryClient`·Provider만 사용하며, mount마다 새 client와 data revision별 query 무효화로 편집된 payload를 읽습니다. setup의 `apolloPreview.resolveOperation`과 `initialState`는 데이터만 바꿀 수 있으며 URI,
 link 또는 client를 주입할 수 없으므로 자동 경로의 no-network 보장은 유지됩니다.
 
 `pageInspector/previewInspectorDataRuntimeSource`는 Apollo fallback과 REST instrumentation이 공유하는 탭별
@@ -803,7 +804,7 @@ outer Provider에 전달합니다. target-reachable source transformer는 `useSe
 path와 결과 local alias에서 이어지는 비옵셔널 property dereference를 bounded하게 수집합니다. bridge는
 등록된 경로의 객체 container만 plain object로 만들고 deep freeze하며, leaf 값·enum·boolean은 생성하지
 않습니다. optional chain, computed key, unsafe segment, 모호한 alias와 depth/count 한도를 넘는 근거는
-fail closed합니다. dispatch는 action을 실행하지 않고 그대로 반환하며 state와 listener를 바꾸지
+fail closed합니다(0.1.1588부터 Reselect 옵셔널 체인은 첫 `?.`의 수신 객체가 이미 있을 때만 숫자 0·빈 컬렉션·날짜(wrapper `value`는 epoch 밀리초, 오늘로 옮김)로 채우고 문자열·boolean은 비워 둠). dispatch는 action을 실행하지 않고 그대로 반환하며 state와 listener를 바꾸지
 않습니다. setup의 `reduxPreview.state`는 자동 skeleton을 병합하거나 clone하지 않은 exact reference로
 최우선 사용되고, 내부 실제 Provider가 있으면 자동 경계보다 우선합니다.
 
@@ -855,14 +856,14 @@ leaf 값이나 app 의미를 생성하지 않습니다.
 `previewRuntimeHookInstrumentation`은 Page Inspector full build에서 reached workspace의 same-module hook과 모든
 정적 imported `useX` hook을 package 이름과 무관하게 분석합니다. destructuring, tuple, compared literal,
 required property/call/조건 path 또는 bounded semantic name으로 fallback expression을 증명한 호출만 global
-Inspector resolver로 감쌉니다. array method가 보이면 callback의 첫 parameter binding과 그 scope의 property
+Inspector resolver로 감싸며, component·hook 안의 `JSON.parse(localStorage|sessionStorage.getItem(key))`도 빈 preview origin의 `null` 때문에 key별 site로 감쌉니다. array method가 보이면 callback의 첫 parameter binding과 그 scope의 property
 read를 다시 분석해 사용 field만 가진 frozen one-item collection과 `[].field` required path를 만듭니다.
 React built-in은 직접 `useContext`만 포함하고 나머지는 제외하며, exact
 `use*Context` hook은 별도 Context transform이 같은 resolver protocol을 사용합니다. resolver는 원본 hook을
 정확히 한 번 호출하고 완전한 값은 identity까지 그대로 반환합니다. non-thenable 예외·필수 nullish root 또는
 plain object/array의 누락 nullish leaf는 preview auto-data layer가 켜진 경우에만 per-source stable fallback으로
-복구합니다. completion은 own descriptor만 읽고 실제 sibling/callback을 보존하며 getter, class, React element,
-unsafe key와 incompatible container는 fail closed합니다. Suspense thenable과 boundary를 끈 경우는 원래
+복구합니다. completion은 own descriptor만 읽고 실제 sibling/callback을 보존하며, getter는 required path일 때만 한 번 읽어 nullish일 때만 바꾸고(SWR의
+구독 `data`) 나머지 getter, class, React element, unsafe key와 incompatible container는 fail closed합니다. Suspense thenable과 boundary를 끈 경우는 원래
 예외/값을 보존합니다. 우회 record는 source·원본 headline·근거·생성 path/value와 함께 ephemeral fallback
 registry, 선택 owner의 Payload/blocker 상세와 Console warning에 남으며 backend/application truth로 취급되지 않습니다.
 
@@ -908,7 +909,7 @@ render-only hook circuit은 렌더 중단을 피하기 위해 사용처와 seman
 
 generated entry의 runtime report는 direct error headline을 먼저 두고 현재 bootstrap/render phase,
 target/export/setup/classification, 적용된 parent slice의 wrapper 수·complete/partial 상태와
-Globals의 lexical bridge/browser process 상태 및 Apollo·Context·Formik·Redux·Router·Theme bridge가 실제로
+Globals의 lexical bridge/browser process 상태 및 Apollo·Context·Formik·React Query·Redux·Router·Theme bridge가 실제로
 선택한 경계 상태를 함께 표시합니다. React error
 boundary의 component stack과 JavaScript stack을 보존하며 cross-realm thrown
 value의 bounded cause chain, `AggregateError.errors`, primitive own field도 getter 실패를 보고서 실패로
@@ -938,6 +939,8 @@ nonce 우회, `eval`, `unsafe-eval`을 사용하지 않습니다.
 - `frame-src 'none'`: iframe 삽입
 - `base-uri 'none'`: 상대 URL 기준 변경
 - `form-action 'none'`: 폼 제출
+- `style-src`: extension 리소스와 inline style만 허용합니다. 사용자 승인(2026-10-01)에 따라
+  `reactPreview.remoteStylesheets`(기본 켜짐)일 때 웹 폰트 CSS 같은 HTTPS stylesheet를 추가로 허용합니다.
 
 Page Inspector는 명시적으로 선택한 실제 ancestor의 render, hook, effect와 event handler를 웹뷰에서
 실행하므로 기본 component slice보다 실행 범위가 넓습니다. 그러나 reverse traversal은 workspace 안의
@@ -946,10 +949,9 @@ toolbar는 파일 쓰기나 extension command protocol을 노출하지 않으며
 panel-local webview state만 다룹니다.
 
 진단, 경로, 파일 이름, URI는 HTML text/attribute 문맥에서 escape합니다. 웹뷰가 extension으로 보내는
-메시지는 extension이 먼저 발급한 hot-reload token에 대한 ready/failed 확인으로 제한되며, 사용자
-번들이 임의 명령이나 파일 작업을 요청하는 protocol은 없습니다.
-extension이 웹뷰로 보내는 준비 상태는 고정된 단계 문구, bounded step metadata와 session revision만
-포함합니다. 최초 빌드는 script 없는 loading HTML을 단계별로 교체하고, 준비된 웹뷰는 project root의
+메시지는 extension이 먼저 발급한 hot-reload token에 대한 ready/failed 확인으로 제한되며, 사용자 번들이
+임의 명령이나 파일 작업을 요청하는 protocol은 없습니다. extension이 웹뷰로 보내는 준비 상태는 고정된
+단계 문구, bounded step metadata와 session revision만 포함합니다. 최초 빌드는 script 없는 loading HTML을 단계별로 교체하고, 준비된 웹뷰는 project root의
 sibling인 declarative Shadow DOM status panel을 사용합니다. generated runtime은 메시지 형태와 revision
 단조성을 다시 검증하고 `textContent`로만 갱신하므로 project CSS나 오래된 hot import가 최신 상태를
 덮지 못합니다. 완료 revision은 terminal 상태로 기록되고, provider-wrapped tree 안의 commit sentinel이

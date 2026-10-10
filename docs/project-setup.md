@@ -56,6 +56,20 @@ layer로 atomic publish하고, 새 dependency environment로 전체 compile을 �
 unresolved import는 한 번의 bounded acquisition에 합치며 같은 requirement state가 반복되어도 두 번째
 download/build를 시작하지 않습니다.
 
+다운로드는 extension host의 worker thread에서 실행되며, VS Code `http.systemCertificates`(기본 켜짐)는 이
+thread에 자동 적용되지 않습니다. 그래서 worker는 첫 요청 전에 자기 thread의 TLS root에 운영체제 인증서
+저장소의 root를 더합니다. Node 기본 root와 `NODE_EXTRA_CA_CERTS`는 그대로 신뢰하고 TLS 검증은 끄지 않으므로,
+회사 프록시나 TLS 검사 장비가 OS에만 설치한 root를 쓰는 환경에서도 받을 수 있습니다. 설정을 끄면 Node 기본
+root만 쓰며, 바꾼 값은 창을 다시 불러온 뒤 적용됩니다.
+
+서버 쪽 package는 받지 않고 중립 browser 계약으로 대체할 수 있습니다. 알려진 서버 package(`@prisma/client`,
+`pino` 등), `server-only`·`'use server'` 표식, Node 내장 모듈이나 `DATABASE_URL`·`JWT_SECRET` 같은 비공개
+`process.env` 값(계산된 key나 객체 전체 포함)을 쓰는 importer가 그 근거입니다. `src/api/client.ts`·`src/services/`처럼
+폴더 이름만 서버 모듈처럼 보이거나 `NODE_ENV`·`REACT_APP_*`·`NEXT_PUBLIC_*`·`VITE_*` 같은 공개 build-time 값만
+읽는 파일이 import한 package는 lockfile로 받을 수 있으면 먼저 받고, 받지 못했을 때만 그 계약을 씁니다. 이런
+파일에는 보통 axios·lodash 같은 browser library가 있어, 중립 계약으로 바꾸면 요청이나 계산 결과가 사라지기
+때문입니다.
+
 이 과정은 `npm install` 같은 package manager, lifecycle/install script와 프로젝트 config를 실행하지 않으며
 프로젝트 `package.json`, lockfile, `.yarn` cache와 `node_modules`를 만들거나 수정하지 않습니다. 프로젝트의
 정상 local/PnP resolution이 항상 우선이고, lock 획득 package도 publish 뒤 package별 content digest를 다시
@@ -107,7 +121,9 @@ root가 작성한 children, sibling, 조건식, hook, effect, event handler와 C
 화면에서 보이는 문맥을 독립 export gallery보다 충실하게 확인할 수 있습니다. `Open Current File Export
 Gallery`는 page ancestry가 필요 없는 경우에만 선택합니다.
 
-Inspector는 별도로 import identity가 증명된 `createRoot`/`hydrateRoot`/legacy ReactDOM mount를 찾습니다.
+Inspector는 별도로 import identity가 증명된 `createRoot`/`hydrateRoot`/legacy ReactDOM mount를 찾습니다
+(`import { createRoot } from 'react-dom/client'`, `import * as ReactDOM …`, Vite 템플릿의
+`import ReactDOM from 'react-dom/client'`).
 현재 파일의 모든 direct component export가 한 module index를 공유하며, 각 export에서 `React.lazy`,
 re-export, route `element`, page map과 router local value를 거슬러 실제 entry에 도달한 후보를 우선하고
 route layout·guard를 정적 component 경로에 포함합니다. 아직 root가 렌더하지 않은 sibling export도 목록에서
@@ -269,6 +285,7 @@ setup 모듈은 아래 named export를 필요한 만큼만 제공할 수 있습�
 | `createPreviewProps`   | 대상 element 생성 전    | 파일 이름에 따라 공통 props를 만드는 동기/비동기 함수 |
 | `previewPropsByExport` | export element 생성 전  | export 이름별로 공통 props를 덮어쓰는 정적 객체       |
 | `apolloPreview`        | Apollo client 생성 시   | 자동 정적 응답을 조정하거나 `false`로 비활성화        |
+| `reactQueryPreview`    | QueryClient 생성 시     | `false`로 자동 QueryClientProvider를 비활성화         |
 | `themePreview`         | ThemeProvider 생성 시   | exact theme을 지정하거나 `false`로 비활성화           |
 | `reduxPreview`         | Redux Provider 생성 시  | exact static state를 지정하거나 `false`로 비활성화    |
 | `formikPreview`        | Formik Provider 생성 시 | 정적 initial values를 지정하거나 `false`로 비활성화   |
@@ -353,6 +370,26 @@ export const apolloPreview = {
 합니다. `initialState` 객체를 함께 지정하면 `InMemoryCache.restore()`의 초기값으로 사용됩니다.
 프로젝트의 `PreviewProviders`가 자체 Apollo client를 제공한다면 그 Provider가 자동 outer Provider보다
 가까워 정상적으로 우선합니다. 자동 계층이 필요 없으면 `export const apolloPreview = false`로 끕니다.
+
+## TanStack/React Query 프리뷰
+
+앱은 보통 `QueryClientProvider`를 프리뷰가 실행하지 않는 entry(`main.tsx`)에 둡니다. 대상 package에서
+`@tanstack/react-query`(v4·v5) 또는 `react-query`(v3)를 찾으면 확장은 그 프로젝트 복사본의 `QueryClient`와
+`QueryClientProvider`로 메모리 전용 경계를 자동 구성하므로 `useQuery`·`useMutation`·`useQueryClient`가
+실제로 동작합니다. 작성된 query function은 그대로 실행되고, 그 요청은 기존 Page Inspector 데이터 경계
+(fetch·axios·XMLHttpRequest payload registry)에서 끝나며 외부 네트워크로 나가지 않습니다.
+
+프리뷰 client는 쿼리별 설정보다 우선해 재시도, polling, focus·reconnect 재요청을 끄고 `networkMode`를
+`always`로 둡니다. Inspector에서 payload를 바꾸면 캐시된 쿼리를 무효화해 새 값을 다시 읽고, 페이지 후보가
+바뀌면 새 client로 시작합니다. `PreviewProviders`가 자체 `QueryClientProvider`를 제공하면 더 가까운 그
+Provider가 우선하며, 자동 경계가 필요 없으면 `export const reactQueryPreview = false`로 끕니다. Provider가
+필요 없는 React Query v2는 감싸지 않습니다.
+
+Next.js `app/providers.tsx`처럼 페이지 문맥 안에서 프로젝트가 직접 `QueryClientProvider`를 렌더하면 쿼리는 그
+프로젝트 client에 붙습니다. 이 client는 흔히 모듈 단위로 하나만 만들고 `staleTime`이 길어서, payload를 바꾸거나 목록
+샘플 행을 채워도 캐시가 신선하다고 보고 다시 요청하지 않았습니다. 이제 확장은 Provider가 마운트한 프로젝트 client도
+기록해 두었다가 Inspector 데이터가 바뀔 때 함께 무효화합니다. 프로젝트 client의 재시도·polling 설정은 바꾸지
+않습니다.
 
 ## styled-components theme와 StyleSheetManager 프리뷰
 

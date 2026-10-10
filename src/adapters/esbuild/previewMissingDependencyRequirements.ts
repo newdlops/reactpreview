@@ -20,6 +20,7 @@ import type {
   PreviewManagedDependencyStore,
 } from '../node/previewManagedDependencyStore';
 import { hasExplicitPreviewServerBoundary } from './previewDependencyResolutionHintPlugin';
+import { readPreviewProcessEnvironmentEvidence } from './previewProcessEnvironmentEvidence';
 import {
   collectPreviewAdjacentTestContractEvidence,
   type PreviewLearnedServerContractExample,
@@ -50,8 +51,8 @@ const SERVER_PACKAGE_PATTERN =
   /^(?:@ai-sdk\/|@auth\/|@aws-sdk\/|@neondatabase\/|@prisma\/|@upstash\/|google-auth-library$|next-auth$|pg$|pino$|prisma$|server-only$|sharp$|undici$|web-push$|ws$)/u;
 const SERVER_SOURCE_PATH_PATTERN =
   /(?:^|[/\\._-])(?:action|api|auth|backend|database|db|job|logger|logging|mail|queue|server|service|worker)s?(?=$|[/\\._-])/iu;
-const SERVER_RUNTIME_SOURCE_PATTERN =
-  /\b(?:process\.env|require\s*\(\s*["'](?:node:)?(?:child_process|crypto|fs|http|https|net|os|path|stream|tls|worker_threads|zlib)(?:\/[^"']*)?["']|from\s*["'](?:node:)?(?:child_process|crypto|fs|http|https|net|os|path|stream|tls|worker_threads|zlib)(?:\/[^"']*)?["'])/u;
+const SERVER_HOST_IO_SOURCE_PATTERN =
+  /\b(?:require\s*\(\s*["'](?:node:)?(?:child_process|crypto|fs|http|https|net|os|path|stream|tls|worker_threads|zlib)(?:\/[^"']*)?["']|from\s*["'](?:node:)?(?:child_process|crypto|fs|http|https|net|os|path|stream|tls|worker_threads|zlib)(?:\/[^"']*)?["'])/u;
 const STYLE_SOURCE_PATTERN = /\.(?:css|less|sass|scss|styl)$/iu;
 const STYLE_MODULE_PATTERN = /\.(?:css|less|sass|scss|styl)$/iu;
 
@@ -83,6 +84,12 @@ export interface PreviewDependencyServerFacadeHint {
 
 /** One exact server-affinity package edge eligible for a neutral browser execution contract. */
 export interface PreviewDependencyPackageContractHint {
+  /**
+   * The importer looks server-side only by weak hints (a path such as `src/api/client.ts`, or reads
+   * of public build-time `process.env` names) and the lockfile can restore the package, so
+   * acquisition runs first and this contract covers only a failed one.
+   */
+  readonly fallbackOnly?: true;
   readonly moduleSpecifier: string;
   readonly packageName: string;
   readonly score: PreviewDependencyResolutionNeuralScore;
@@ -108,13 +115,19 @@ export interface PreviewDependencyResolutionHintPlan {
   readonly version: 4;
 }
 
-/** Keeps only non-acquiring contracts for a speculative first-build preflight. */
+/**
+ * Keeps only non-acquiring contracts for a speculative first-build preflight. A fallback-only
+ * contract would make the first build succeed and so prevent the acquisition it stands behind.
+ */
 export function createPreviewRenderOnlyDependencyResolutionHintPlan(
   plan: PreviewDependencyResolutionHintPlan,
 ): PreviewDependencyResolutionHintPlan {
   return Object.freeze({
     ...plan,
     packageCandidates: Object.freeze([]),
+    packageContractCandidates: Object.freeze(
+      plan.packageContractCandidates.filter((candidate) => candidate.fallbackOnly !== true),
+    ),
     packageNames: Object.freeze([]),
   });
 }
@@ -360,11 +373,17 @@ export async function tryAcquirePreviewMissingDependencies(
     : undefined;
 }
 
-/** Produces a safe plan in which the model ranks, but never invents, recovery actions. */
+/**
+ * Produces a safe plan in which the model ranks, but never invents, recovery actions.
+ *
+ * @param hostIoServerSourcePaths Explicit server modules that import host I/O built-ins; they
+ * become facade candidates without a missing-package failure (see `previewHostIoServerModules`).
+ */
 export async function createPreviewDependencyResolutionHintPlan(
   errors: readonly Message[],
   context: PreviewMissingDependencyAcquisitionContext,
   neuralModel = new PreviewDependencyResolutionNeuralModel(),
+  hostIoServerSourcePaths: readonly string[] = [],
 ): Promise<PreviewDependencyResolutionHintPlan> {
   const messagesBySource = groupMissingMessagesBySource(errors, context.workspaceRoot);
   const facadeCandidates: PreviewDependencyServerFacadeHint[] = [];
@@ -402,6 +421,32 @@ export async function createPreviewDependencyResolutionHintPlan(
     if (facadeScore.selectionScore < packageScore.selectionScore + 0.04) continue;
     facadeCandidates.push(Object.freeze({ score: facadeScore, sourcePath }));
     for (const message of sourceMessages) facadedMessages.add(message);
+  }
+  for (const sourcePath of hostIoServerSourcePaths) {
+    if (
+      samePath(sourcePath, context.targetPath) ||
+      facadeCandidates.some((candidate) => samePath(candidate.sourcePath, sourcePath))
+    ) {
+      continue;
+    }
+    const sourceText = await readRecoverySource(sourcePath, context.readSource);
+    if (sourceText === undefined || !hasExplicitPreviewServerBoundary(sourceText)) continue;
+    const features = createNeuralFeatures({
+      declaredPackageRatio: 0,
+      errorCount: 0,
+      packageNames: [],
+      serverSourceAffinity: 1,
+      sourcePath,
+      sourceText,
+      targetModule: false,
+    });
+    // Host I/O has no browser alternative to rank against; the model only scores the contract.
+    facadeCandidates.push(
+      Object.freeze({
+        score: neuralModel.score('facade-server-contract', features, 0.99),
+        sourcePath,
+      }),
+    );
   }
   facadeCandidates.sort(
     (left, right) =>
@@ -481,6 +526,7 @@ export async function createPreviewDependencyResolutionHintPlan(
   );
   const packageContractCandidates: PreviewDependencyPackageContractHint[] = [];
   const packageContractKeys = new Set<string>();
+  const fallbackContractKeys = new Set<string>();
   const packageContractMessages = new Set<Message>();
   for (const message of packageMessages) {
     const unresolved = readPreviewUnresolvedPackage(message);
@@ -495,7 +541,7 @@ export async function createPreviewDependencyResolutionHintPlan(
     }
     const candidateKey = `${sourcePath}\0${unresolved.moduleSpecifier}`;
     if (packageContractKeys.has(candidateKey)) {
-      packageContractMessages.add(message);
+      if (!fallbackContractKeys.has(candidateKey)) packageContractMessages.add(message);
       continue;
     }
     const sourceText = (await readRecoverySource(sourcePath, context.readSource)) ?? '';
@@ -520,7 +566,12 @@ export async function createPreviewDependencyResolutionHintPlan(
       features,
       contractEvidence.deterministicConfidence,
     );
-    if (acquirablePackageNames.has(unresolved.packageName)) {
+    const acquirable = acquirablePackageNames.has(unresolved.packageName);
+    // A folder name such as `api/` or a public `process.env.REACT_APP_*` read is weak evidence:
+    // frontends keep browser HTTP clients and utilities there. Such a package is acquired first;
+    // the contract stays a fallback.
+    const fallbackOnly = acquirable && contractEvidence.weakEvidence;
+    if (acquirable && !fallbackOnly) {
       const acquisitionScore = neuralModel.score(
         'acquire-package',
         features,
@@ -529,9 +580,11 @@ export async function createPreviewDependencyResolutionHintPlan(
       if (contractScore.selectionScore < acquisitionScore.selectionScore + 0.04) continue;
     }
     packageContractKeys.add(candidateKey);
-    packageContractMessages.add(message);
+    if (fallbackOnly) fallbackContractKeys.add(candidateKey);
+    else packageContractMessages.add(message);
     packageContractCandidates.push(
       Object.freeze({
+        ...(fallbackOnly ? { fallbackOnly: true as const } : {}),
         moduleSpecifier: unresolved.moduleSpecifier,
         packageName: unresolved.packageName,
         score: contractScore,
@@ -549,6 +602,7 @@ export async function createPreviewDependencyResolutionHintPlan(
   // Style and server contracts are tried only after ordinary resolution on the rebuild. Keeping
   // their already-covered roots out of archive acquisition prevents oversized fonts or server SDK
   // closures from consuming the worker watchdog before the deterministic fallback can cooperate.
+  // Fallback-only contracts keep their roots here, so the real package wins when it can be restored.
   const acquisitionPackageNames = packageNames.filter((packageName) => {
     const matchingMessages = packageMessages.filter(
       (message) => readPreviewUnresolvedPackage(message)?.packageName === packageName,
@@ -811,25 +865,36 @@ function selectServerPackageContractEvidence(options: {
   readonly sourcePath: string;
   readonly sourceText: string;
   readonly targetModule: boolean;
-}): { readonly deterministicConfidence: number; readonly sourceAffinity: number } | undefined {
+}):
+  | {
+      readonly deterministicConfidence: number;
+      readonly sourceAffinity: number;
+      /** Only a server-sounding path or public `process.env` reads suggested a server module. */
+      readonly weakEvidence: boolean;
+    }
+  | undefined {
   const explicitBoundary = hasExplicitPreviewServerBoundary(options.sourceText);
   const knownServerPackage = SERVER_PACKAGE_PATTERN.test(options.packageName);
-  const serverRuntime = SERVER_RUNTIME_SOURCE_PATTERN.test(options.sourceText);
+  const environment = readPreviewProcessEnvironmentEvidence(options.sourceText);
+  const hostIo = SERVER_HOST_IO_SOURCE_PATTERN.test(options.sourceText);
+  const serverRuntime = hostIo || environment !== 'none';
   const serverPath = SERVER_SOURCE_PATH_PATTERN.test(options.sourcePath);
   const nonVisualSupportModule = !options.targetModule && !/x$/iu.test(options.sourcePath);
   if (explicitBoundary) {
-    return Object.freeze({ deterministicConfidence: 0.99, sourceAffinity: 1 });
+    return Object.freeze({ deterministicConfidence: 0.99, sourceAffinity: 1, weakEvidence: false });
   }
   if (knownServerPackage) {
     return Object.freeze({
       deterministicConfidence: serverRuntime ? 0.98 : 0.92,
       sourceAffinity: 1,
+      weakEvidence: false,
     });
   }
   if (!nonVisualSupportModule || (!serverRuntime && !serverPath)) return undefined;
   return Object.freeze({
     deterministicConfidence: serverRuntime && serverPath ? 0.94 : serverRuntime ? 0.88 : 0.82,
     sourceAffinity: serverRuntime && serverPath ? 0.92 : serverRuntime ? 0.78 : 0.65,
+    weakEvidence: !hostIo && environment !== 'private',
   });
 }
 

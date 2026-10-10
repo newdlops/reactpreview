@@ -144,6 +144,24 @@ function runPreviewInspectorAutomaticNeuralAssistance(
     return false;
   }
   record.lastModelUpdates = Math.max(record.lastModelUpdates, modelUpdates);
+  // A provisional success is still being sampled; its promotion or rejection resumes the sweep.
+  if (
+    typeof isPreviewInspectorNeuralSuccessVerificationPending === 'function' &&
+    isPreviewInspectorNeuralSuccessVerificationPending(record)
+  ) {
+    return false;
+  }
+  // Output already visible on the current path is sampled before exploration changes the page.
+  // Exploring first replaced that pending sample, so the authored path never became a checkpoint
+  // and the final restore depended on which alternative happened to verify.
+  if (
+    reachability.targetHasOutput === true &&
+    typeof recordPreviewInspectorNeuralSuccessfulPath === 'function' &&
+    typeof isPreviewInspectorNeuralSuccessVerificationPending === 'function'
+  ) {
+    recordPreviewInspectorNeuralSuccessfulPath(reachability);
+    if (isPreviewInspectorNeuralSuccessVerificationPending(record)) return false;
+  }
   const exploration = createPreviewInspectorNeuralExplorationPlan(record);
   if (exploration === undefined) {
     const settlement = settlePreviewInspectorNeuralSuccessfulPaths(key);

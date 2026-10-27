@@ -30,8 +30,32 @@ vi.mock('../../scripts/rtcc-v4-authority-policy.mjs', async (importOriginal) => 
     await importOriginal<typeof import('../../scripts/rtcc-v4-authority-policy.mjs')>();
   const fixture = getV4ReconstructedArchive();
   const bindings = fixture.contract.BINDINGS;
+  const root = fixture.contract.PATHS.workingDirectory;
+  /** Rebases only this unit graph; frozen production authority paths remain unchanged. */
+  const relocate = (sourcePath: string): string => {
+    if (!sourcePath.startsWith(policy.ROOT + '/')) throw new Error('Unexpected fixture root.');
+    return root + sourcePath.slice(policy.ROOT.length);
+  };
   return {
     ...policy,
+    ROOT: root,
+    VALIDATOR_PATH: relocate(policy.VALIDATOR_PATH),
+    PREFLIGHT_PATH: relocate(policy.PREFLIGHT_PATH),
+    ATTEMPT_PATH: relocate(policy.ATTEMPT_PATH),
+    TERMINAL_PATH: relocate(policy.TERMINAL_PATH),
+    PROFILE_VALIDATION_PATH: relocate(policy.PROFILE_VALIDATION_PATH),
+    RUN_EVIDENCE_PATH: relocate(policy.RUN_EVIDENCE_PATH),
+    REFERENCE_PATH: relocate(policy.REFERENCE_PATH),
+    PRODUCTION_MANIFEST_PATH: relocate(policy.PRODUCTION_MANIFEST_PATH),
+    V4_PATHS: {
+      ...policy.V4_PATHS,
+      preflight: relocate(policy.V4_PATHS.preflight),
+      attempt: relocate(policy.V4_PATHS.attempt),
+      terminal: relocate(policy.V4_PATHS.terminal),
+      profileValidation: relocate(policy.V4_PATHS.profileValidation),
+      runEvidence: relocate(policy.V4_PATHS.runEvidence),
+      reference: relocate(policy.V4_PATHS.reference),
+    },
     PLAN_SHA256: bindings.planSha256,
     PRODUCTION_SHA256: bindings.productionManifestSha256,
     REFERENCE_SHA256: fixture.referenceSha256,

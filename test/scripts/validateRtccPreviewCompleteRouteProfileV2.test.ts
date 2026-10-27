@@ -78,9 +78,10 @@ const sha256 = (value: Buffer): string => createHash('sha256').update(value).dig
 function runProbe(
   environment: Readonly<Record<string, string>>,
   argument = '--gate-probe',
+  workingDirectory = repositoryRoot,
 ): Promise<SubprocessResult> {
   const child = spawn(nodePath, [scriptPath, argument], {
-    cwd: repositoryRoot,
+    cwd: workingDirectory,
     env: { ...environment },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -224,6 +225,15 @@ describe('rtcc preview complete-route validator v2 gate', () => {
       code: 64,
       stdout: marker,
       stderr: 'Invalid validator v2 gate worker environment.\n',
+    });
+  });
+
+  it('rejects a probe outside its own checkout before starting a worker', async () => {
+    const result = await runProbe(exactEnvironment, '--gate-probe', path.dirname(repositoryRoot));
+    expect(result).toEqual({
+      code: 64,
+      stdout: '',
+      stderr: 'Invalid validator v2 gate parent environment.\n',
     });
   });
 });

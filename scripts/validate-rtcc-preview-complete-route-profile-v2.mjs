@@ -154,7 +154,8 @@ export function runtimeIsExact(environment = process.env) {
 
 /** Applies the portable runtime gate to non-official probe parent and worker modes. */
 function gateRuntimeIsExact(environment = process.env) {
-  return process.cwd() === REPOSITORY_ROOT && environmentIsExact(environment);
+  const probeRoot = path.resolve(path.dirname(SCRIPT_PATH), '..');
+  return process.cwd() === probeRoot && environmentIsExact(environment);
 }
 
 /** Returns the only valid retained account of the terminal v5.5.24 validator failure. */

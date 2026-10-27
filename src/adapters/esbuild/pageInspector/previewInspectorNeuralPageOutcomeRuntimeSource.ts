@@ -158,6 +158,7 @@ function continuePreviewInspectorNeuralPageContextCoverage() {
   const currentId = descriptor?.inspector?.executablePageCandidateId ??
     previewInspectorSession.selectedPageCandidateId;
   if (record === undefined || record.evaluatedCandidateIds.has(currentId) !== true) return false;
+  if (record.awaitingCurrentCandidateId === currentId) return false;
   const currentState = typeof readPreviewInspectorNeuralAssistanceReachability === 'function'
     ? readPreviewInspectorNeuralAssistanceReachability() : undefined;
   const currentCandidate = readPreviewInspectorPageCandidates(descriptor).find((candidate) => candidate?.id === currentId);

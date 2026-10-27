@@ -88,20 +88,24 @@ export function createPreviewDependencyResolutionHintPlugin(
       return sourcePath === undefined ? [] : [[sourcePath, hint] as const];
     }),
   );
+  const packageHintSpecifiers = new Set<string>();
   const packageContractHints = new Map(
     (options.packageContractHints ?? []).flatMap((hint) => {
       const sourcePath = canonicalizeHintPath(hint.sourcePath, workspaceRoot);
-      return sourcePath === undefined
-        ? []
-        : [[createHintKey(sourcePath, hint.moduleSpecifier), hint] as const];
+      if (sourcePath === undefined) return [];
+      const moduleSpecifier = hint.moduleSpecifier;
+      packageHintSpecifiers.add(moduleSpecifier);
+      return [[createHintKey(sourcePath, moduleSpecifier), hint] as const];
     }),
   );
+  const styleHintSpecifiers = new Set<string>();
   const styleHints = new Map(
     (options.styleHints ?? []).flatMap((hint) => {
       const sourcePath = canonicalizeHintPath(hint.sourcePath, workspaceRoot);
-      return sourcePath === undefined
-        ? []
-        : [[createHintKey(sourcePath, hint.moduleSpecifier), hint] as const];
+      if (sourcePath === undefined) return [];
+      const moduleSpecifier = hint.moduleSpecifier;
+      styleHintSpecifiers.add(moduleSpecifier);
+      return [[createHintKey(sourcePath, moduleSpecifier), hint] as const];
     }),
   );
   const recordedOutcomes = new Set<string>();
@@ -119,6 +123,7 @@ export function createPreviewDependencyResolutionHintPlugin(
         ) {
           return undefined;
         }
+        if (!styleHintSpecifiers.has(arguments_.path)) return undefined;
         const importerPath = canonicalizeHintPath(arguments_.importer, workspaceRoot);
         if (importerPath === undefined) return undefined;
         const hintKey = createHintKey(importerPath, arguments_.path);
@@ -161,6 +166,7 @@ export function createPreviewDependencyResolutionHintPlugin(
         ) {
           return undefined;
         }
+        if (!packageHintSpecifiers.has(arguments_.path)) return undefined;
         const importerPath = canonicalizeHintPath(arguments_.importer, workspaceRoot);
         if (importerPath === undefined) return undefined;
         const hintKey = createHintKey(importerPath, arguments_.path);
@@ -265,9 +271,21 @@ export function createPreviewDependencyResolutionHintPlugin(
         };
       }
 
-      build.onResolve({ filter: /.*/ }, resolveHintedStyleContract);
-      build.onResolve({ filter: /.*/ }, resolveHintedPackageContract);
-      build.onLoad({ filter: SOURCE_FILTER, namespace: 'file' }, loadHintedServerContract);
+      if (styleHints.size > 0) {
+        build.onResolve(
+          { filter: createHintSpecifierFilter(styleHintSpecifiers) },
+          resolveHintedStyleContract,
+        );
+      }
+      if (packageContractHints.size > 0) {
+        build.onResolve(
+          { filter: createHintSpecifierFilter(packageHintSpecifiers) },
+          resolveHintedPackageContract,
+        );
+      }
+      if (hintedPaths.size > 0) {
+        build.onLoad({ filter: SOURCE_FILTER, namespace: 'file' }, loadHintedServerContract);
+      }
       build.onLoad(
         {
           filter: /.*/,
@@ -287,6 +305,24 @@ export function createPreviewDependencyResolutionHintPlugin(
       );
     },
   };
+}
+
+/**
+ * Narrows native callback delivery to exact literal requests, without caching filesystem answers.
+ * Printable ASCII has a common literal syntax in JavaScript and esbuild's Go regexp engine.
+ * Other or unusually large inputs retain the broad filter and exact set check in the callback.
+ */
+function createHintSpecifierFilter(specifiers: ReadonlySet<string>): RegExp {
+  const escaped: string[] = [];
+  let patternLength = 0;
+  for (const specifier of specifiers) {
+    if (/[^\x20-\x7e]/u.test(specifier)) return /.*/;
+    const literal = specifier.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    patternLength += literal.length + 1;
+    if (patternLength > 16_384) return /.*/;
+    escaped.push(literal);
+  }
+  return new RegExp(`^(?:${escaped.join('|')})$`);
 }
 
 /** Reports whether authored source explicitly opts into a server execution boundary. */

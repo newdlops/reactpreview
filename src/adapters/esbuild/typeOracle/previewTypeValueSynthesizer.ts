@@ -275,9 +275,6 @@ function synthesizeUnion(
   declaration: ts.TypeNode | undefined,
 ): PreviewTypedValue | typeof ABSENT {
   const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
-  const members = orderDeclaredUnionMembers(state.checker, type, declaration).filter(
-    (member) => (member.flags & nullish) === 0,
-  );
   const nullable = type.types.some((member) => (member.flags & ts.TypeFlags.Null) !== 0);
   // Error, fallback, and child slots are absent in an ordinary successful render, and so is an
   // ending-state timestamp (`deletedAt`), which would open tombstone or deletion notices.
@@ -289,9 +286,14 @@ function synthesizeUnion(
   ) {
     return null;
   }
-  if (members.length === 0)
-    return type.types.some((m) => (m.flags & ts.TypeFlags.Null) !== 0) ? null : ABSENT;
+  // Only alternatives that can produce a value need source ordering or checker text keys.
+  const present = type.types.filter((member) => (member.flags & nullish) === 0);
+  if (present.length === 0) return nullable ? null : ABSENT;
   if (isReactNodeLike(type)) return semanticScalar(name, 'string');
+  const members =
+    present.length === 1
+      ? present
+      : orderDeclaredUnionMembers(state.checker, type, declaration, present);
   const literalValues = members.map(readLiteralValue);
   if (literalValues.every((value) => value !== undefined)) {
     const allowed = [...new Set(literalValues)];
@@ -301,9 +303,14 @@ function synthesizeUnion(
       ? semanticScalar(name, 'boolean')
       : (selectSettledLiteral(allowed) ?? ABSENT);
   }
-  const ranked = [...members].sort(
-    (left, right) => scoreUnionMember(state, right, demand) - scoreUnionMember(state, left, demand),
-  );
+  // Ranking belongs to this demand and anchor only; no checker/type survives this local sort.
+  const ranked =
+    members.length === 1
+      ? members
+      : members
+          .map((member) => ({ member, score: scoreUnionMember(state, member, demand) }))
+          .sort((left, right) => right.score - left.score)
+          .map(({ member }) => member);
   for (const member of ranked) {
     const value = synthesize(state, member, path, demand, depth, name);
     if (value !== ABSENT) return value;
@@ -553,6 +560,7 @@ function orderDeclaredUnionMembers(
   checker: ts.TypeChecker,
   type: ts.UnionType,
   declaration: ts.TypeNode | undefined,
+  members: readonly ts.Type[],
 ): readonly ts.Type[] {
   const declared: ts.Type[] = [];
   const source = readAliasTypeNode(type) ?? declaration;
@@ -561,10 +569,20 @@ function orderDeclaredUnionMembers(
   declared.forEach((member, index) => {
     if (!rank.has(member)) rank.set(member, index);
   });
-  return [...type.types].sort(
+  const stableKeys = new Map<ts.Type, string>();
+  /** Computes a tie-break key only if needed, once for this union's ordering. */
+  const readKey = (member: ts.Type): string => {
+    let key = stableKeys.get(member);
+    if (key === undefined) {
+      key = readStableTypeKey(checker, member);
+      stableKeys.set(member, key);
+    }
+    return key;
+  };
+  return [...members].sort(
     (left, right) =>
       (rank.get(left) ?? declared.length) - (rank.get(right) ?? declared.length) ||
-      readStableTypeKey(checker, left).localeCompare(readStableTypeKey(checker, right)),
+      readKey(left).localeCompare(readKey(right)),
   );
 }
 

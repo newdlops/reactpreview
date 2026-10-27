@@ -93,6 +93,44 @@ describe('PreviewProjectFileAnalysisCache', () => {
     expect(second?.fingerprint).toMatch(/^snapshot:/u);
   });
 
+  /** A reused non-ASCII snapshot must still respect the current caller's UTF-8 byte ceiling. */
+  it('checks tighter byte ceilings for a previously accepted editor snapshot', async () => {
+    const cache = new PreviewProjectFileAnalysisCache();
+    const sourcePath = path.resolve('/workspace/src/Unicode.tsx');
+    const sourceText = '가나다';
+    const first = await cache.readSource({
+      sourcePath,
+      snapshotText: sourceText,
+      maximumBytes: 16,
+    });
+    const exact = await cache.readSource({ sourcePath, snapshotText: sourceText, maximumBytes: 9 });
+    const oversized = await cache.readSource({
+      sourcePath,
+      snapshotText: sourceText,
+      maximumBytes: 8,
+    });
+
+    expect(exact).toBe(first);
+    expect(exact?.byteLength).toBe(9);
+    expect(oversized).toBeUndefined();
+  });
+
+  /** Equal replacement-character UTF-8 encodings do not collapse distinct UTF-16 editor text. */
+  it('keeps distinct unpaired surrogate snapshots separate', async () => {
+    const cache = new PreviewProjectFileAnalysisCache();
+    const sourcePath = path.resolve('/workspace/src/Unicode.tsx');
+    const first = await cache.readSource({ sourcePath, snapshotText: '\ud800', maximumBytes: 16 });
+    const changed = await cache.readSource({
+      sourcePath,
+      snapshotText: '\ud801',
+      maximumBytes: 16,
+    });
+
+    expect(changed?.byteLength).toBe(first?.byteLength);
+    expect(changed?.sourceText).not.toBe(first?.sourceText);
+    expect(changed?.fingerprint).not.toBe(first?.fingerprint);
+  });
+
   /** Reads and reuses exact source entries stored inside a Yarn PnP cache archive. */
   it('caches a bounded Yarn zip source without executing the PnP manifest', async () => {
     const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-yarn-zip-cache-'));

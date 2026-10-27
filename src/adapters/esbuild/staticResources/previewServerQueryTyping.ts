@@ -3,7 +3,8 @@
  * declares. A contract (for example a `server-only` `lib/prisma.ts`) can only answer neutral
  * values, which have no fields to spread or select, while the project's generated client types
  * compute each call's exact payload, including `select`ed relations. Calls whose receiver comes
- * from a contract module are wrapped so they settle to that payload; slots of unresolved types
+ * from a contract module are wrapped only when the checker proves the receiver's import binding,
+ * so local shadows retain their results. Contract calls settle to that payload; unresolved types
  * (free-form JSON) keep the contract's neutral value, and string columns take the schema's
  * `@default("…")` when the project declares one.
  */
@@ -16,6 +17,7 @@ import {
 } from '../previewPrismaColumnDefaults';
 import { PREVIEW_PRISMA_QUERY_METHOD_PATTERN } from '../previewPrismaQueryMethods';
 import { createPreviewTypedValueExpression } from '../typeOracle/previewTypedValueExpression';
+import type { PreviewTypedCallImportBinding } from '../typeOracle/previewTypedCallImportBinding';
 import type { PreviewTypeOracleView } from '../typeOracle/previewTypeOracle';
 import {
   PREVIEW_TYPED_VALUE_TAG,
@@ -68,17 +70,21 @@ export function typePreviewServerQueries(
   const insertions: { readonly position: number; readonly text: string }[] = [];
   const occurrences = new Map<string, number>();
   let typedQueries = 0;
-  const visit = (node: ts.Node): void => {
+  const visit = (node: ts.Node): true | undefined => {
+    if (typedQueries >= MAX_TYPED_QUERIES_PER_MODULE) return true;
     if (ts.isCallExpression(node)) {
-      // Count every call by text in pre-order, as the oracle indexes call sites.
-      const callText = node.getText(sourceFile);
-      const occurrence = occurrences.get(callText) ?? 0;
-      occurrences.set(callText, occurrence + 1);
-      if (typedQueries < MAX_TYPED_QUERIES_PER_MODULE && isContractQuery(node, contractBindings)) {
+      const receiverImport = readContractQueryImport(node, contractBindings);
+      if (receiverImport !== undefined) {
+        // Identical call text has the same receiver syntax. Count candidates even when shadowed,
+        // preserving the oracle's preorder occurrence while avoiding unrelated call strings.
+        const callText = node.getText(sourceFile);
+        const occurrence = occurrences.get(callText) ?? 0;
+        occurrences.set(callText, occurrence + 1);
         const settled = readSettledValue(
           options.oracle.readTypedCallValue({
             callText,
             occurrence,
+            receiverImport,
             requiredPaths: [],
             sourcePath,
             unknownPlaceholders: true,
@@ -104,15 +110,20 @@ export function typePreviewServerQueries(
         }
       }
     }
-    ts.forEachChild(node, visit);
+    return ts.forEachChild(node, visit);
   };
   visit(sourceFile);
   if (insertions.length === 0) return sourceText;
-  let result = sourceText;
+  const pieces: string[] = [];
+  let end = sourceText.length;
+  // Collect each source interval once instead of copying the complete module for every insertion.
   // Later positions first; at one position a closing suffix precedes an opening prefix.
   for (const insertion of [...insertions].sort((left, right) => right.position - left.position)) {
-    result = `${result.slice(0, insertion.position)}${insertion.text}${result.slice(insertion.position)}`;
+    pieces.push(sourceText.slice(insertion.position, end), insertion.text);
+    end = insertion.position;
   }
+  pieces.push(sourceText.slice(0, end));
+  const result = pieces.reverse().join('');
   return `${result}${result.endsWith('\n') ? '' : '\n'}/** Settles a server contract query to its declared result. */\nfunction ${QUERY_HELPER}(pending, build) { return Promise.resolve(pending).then((neutral) => build(neutral)); }\n`;
 }
 
@@ -121,8 +132,8 @@ function readContractBindings(
   sourceFile: ts.SourceFile,
   sourcePath: string,
   options: PreviewServerQueryTypingOptions,
-): ReadonlySet<string> {
-  const bindings = new Set<string>();
+): ReadonlyMap<string, PreviewTypedCallImportBinding> {
+  const bindings = new Map<string, PreviewTypedCallImportBinding>();
   for (const statement of sourceFile.statements) {
     if (
       !ts.isImportDeclaration(statement) ||
@@ -137,12 +148,16 @@ function readContractBindings(
       continue;
     }
     const clause = statement.importClause;
-    if (clause.name !== undefined) bindings.add(clause.name.text);
+    const moduleSpecifier = statement.moduleSpecifier.text;
+    const append = (localName: string): void => {
+      bindings.set(localName, { localName, moduleSpecifier });
+    };
+    if (clause.name !== undefined) append(clause.name.text);
     const named = clause.namedBindings;
-    if (named !== undefined && ts.isNamespaceImport(named)) bindings.add(named.name.text);
+    if (named !== undefined && ts.isNamespaceImport(named)) append(named.name.text);
     if (named !== undefined && ts.isNamedImports(named)) {
       for (const element of named.elements) {
-        if (!element.isTypeOnly) bindings.add(element.name.text);
+        if (!element.isTypeOnly) append(element.name.text);
       }
     }
   }
@@ -150,12 +165,15 @@ function readContractBindings(
 }
 
 /** Reports `binding.model.findMany(…)`-style calls rooted at a contract binding. */
-function isContractQuery(node: ts.CallExpression, bindings: ReadonlySet<string>): boolean {
-  if (!ts.isPropertyAccessExpression(node.expression)) return false;
-  if (!PREVIEW_PRISMA_QUERY_METHOD_PATTERN.test(node.expression.name.text)) return false;
+function readContractQueryImport(
+  node: ts.CallExpression,
+  bindings: ReadonlyMap<string, PreviewTypedCallImportBinding>,
+): PreviewTypedCallImportBinding | undefined {
+  if (!ts.isPropertyAccessExpression(node.expression)) return undefined;
+  if (!PREVIEW_PRISMA_QUERY_METHOD_PATTERN.test(node.expression.name.text)) return undefined;
   let receiver: ts.Expression = node.expression.expression;
   while (ts.isPropertyAccessExpression(receiver)) receiver = receiver.expression;
-  return ts.isIdentifier(receiver) && bindings.has(receiver.text);
+  return ts.isIdentifier(receiver) ? bindings.get(receiver.text) : undefined;
 }
 
 /** Reads the model of a `binding.delegate.method(…)` call from its delegate name. */

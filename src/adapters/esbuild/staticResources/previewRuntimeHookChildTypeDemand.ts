@@ -557,7 +557,9 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
           consumerHints,
           activeTypes,
           budget,
-          includeOptionalProperties,
+          // JSX supplies this prop, not every optional field inside its value. Nested optional
+          // fields need their own authored usage proof, so layout/event defaults stay in control.
+          false,
         );
       }
       if (child !== undefined) {

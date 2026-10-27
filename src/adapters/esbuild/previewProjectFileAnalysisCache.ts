@@ -1,7 +1,8 @@
 /**
  * Retains bounded file snapshots and syntax-only React render facts across preview rebuilds.
  * Disk entries are identified by normalized path, modification time, and size; unsaved editor
- * entries hash exact UTF-16 text. Pending reads share work only for equal caller byte ceilings.
+ * entries hash exact UTF-16 text. Pending checks and reads share work only for equal byte ceilings.
+ * Superseded reads cannot restore cleared facts or overwrite newer editor snapshots.
  * Only the changed file loses its module/import facts, allowing a
  * target edit to reuse the rest of a large monorepo's static analysis safely.
  */
@@ -79,6 +80,8 @@ export interface ReadPreviewProjectSourceOptions {
 export class PreviewProjectFileAnalysisCache {
   private readonly importFactsByPath = new Map<string, ImportFactsCacheEntry>();
   private readonly pendingSourceReads = new Map<string, Promise<SourceCacheEntry | undefined>>();
+  /** Latest unfinished validation/read; removed on completion, editor replacement, or clear. */
+  private readonly sourceReadOwners = new Map<string, Promise<SourceCacheEntry | undefined>>();
   private readonly renderAnalysisByPath = new Map<string, RenderAnalysisCacheEntry>();
   private readonly sourceByPath = new Map<string, SourceCacheEntry>();
   private retainedSourceBytes = 0;
@@ -97,78 +100,7 @@ export class PreviewProjectFileAnalysisCache {
       return this.readSnapshot(normalizedPath, options.snapshotText, options.maximumBytes);
     }
 
-    const cached = this.sourceByPath.get(normalizedPath);
-    if (cached?.origin === 'yarn-zip') {
-      const archiveFingerprint = await readPreviewYarnZipArchiveFingerprint(cached.archivePath);
-      if (
-        archiveFingerprint === cached.archiveFingerprint &&
-        cached.record.byteLength <= options.maximumBytes
-      ) {
-        refreshMapEntry(this.sourceByPath, normalizedPath, cached);
-        return cached.record;
-      }
-      this.deleteSource(normalizedPath);
-    }
-    if (cached?.origin !== 'disk') {
-      const pendingKey = `${normalizedPath}\0first-read\0${options.maximumBytes.toString()}`;
-      const pending = this.pendingSourceReads.get(pendingKey);
-      if (pending !== undefined) {
-        return (await pending)?.record;
-      }
-      /*
-       * A cold entry has no metadata identity to validate. Opening it directly removes one `stat`
-       * syscall per source from the first package graph while `loadDiskSource` still performs an
-       * fstat before reading, preserving the exact file and byte ceilings.
-       */
-      const readPromise = this.loadStoredSource(normalizedPath, options.maximumBytes);
-      this.pendingSourceReads.set(pendingKey, readPromise);
-      try {
-        const entry = await readPromise;
-        if (entry !== undefined) {
-          this.storeSource(normalizedPath, entry);
-        }
-        return entry?.record;
-      } finally {
-        this.pendingSourceReads.delete(pendingKey);
-      }
-    }
-
-    let metadata;
-    try {
-      metadata = await stat(normalizedPath);
-    } catch {
-      this.deleteSource(normalizedPath);
-      return undefined;
-    }
-    if (!metadata.isFile() || metadata.size > options.maximumBytes) {
-      this.deleteSource(normalizedPath);
-      return undefined;
-    }
-    const fingerprint = createDiskFingerprint(metadata.mtimeMs, metadata.size);
-    if (
-      cached.record.fingerprint === fingerprint &&
-      cached.record.byteLength <= options.maximumBytes
-    ) {
-      refreshMapEntry(this.sourceByPath, normalizedPath, cached);
-      return cached.record;
-    }
-
-    const pendingKey = `${normalizedPath}\0${fingerprint}\0${options.maximumBytes.toString()}`;
-    const pending = this.pendingSourceReads.get(pendingKey);
-    if (pending !== undefined) {
-      return (await pending)?.record;
-    }
-    const readPromise = this.loadStoredSource(normalizedPath, options.maximumBytes);
-    this.pendingSourceReads.set(pendingKey, readPromise);
-    try {
-      const entry = await readPromise;
-      if (entry !== undefined) {
-        this.storeSource(normalizedPath, entry);
-      }
-      return entry?.record;
-    } finally {
-      this.pendingSourceReads.delete(pendingKey);
-    }
+    return this.readPendingSource(normalizedPath, options.maximumBytes);
   }
 
   /**
@@ -217,6 +149,7 @@ export class PreviewProjectFileAnalysisCache {
   public clear(): void {
     this.importFactsByPath.clear();
     this.pendingSourceReads.clear();
+    this.sourceReadOwners.clear();
     this.renderAnalysisByPath.clear();
     this.sourceByPath.clear();
     this.retainedSourceBytes = 0;
@@ -228,13 +161,22 @@ export class PreviewProjectFileAnalysisCache {
     sourceText: string,
     maximumBytes: number,
   ): PreviewProjectSourceRecord | undefined {
+    this.sourceReadOwners.delete(sourcePath);
+    const cached = this.sourceByPath.get(sourcePath);
+    if (
+      cached?.origin === 'snapshot' &&
+      cached.record.sourceText === sourceText &&
+      cached.record.byteLength <= maximumBytes
+    ) {
+      refreshMapEntry(this.sourceByPath, sourcePath, cached);
+      return cached.record;
+    }
     const byteLength = Buffer.byteLength(sourceText, 'utf8');
     if (byteLength > maximumBytes) {
       this.deleteSource(sourcePath);
       return undefined;
     }
     const fingerprint = createSnapshotFingerprint(sourceText);
-    const cached = this.sourceByPath.get(sourcePath);
     if (cached?.origin === 'snapshot' && cached.record.fingerprint === fingerprint) {
       refreshMapEntry(this.sourceByPath, sourcePath, cached);
       return cached.record;
@@ -242,6 +184,81 @@ export class PreviewProjectFileAnalysisCache {
     const record = Object.freeze({ byteLength, filePath: sourcePath, fingerprint, sourceText });
     this.storeSource(sourcePath, { origin: 'snapshot', record });
     return record;
+  }
+
+  /**
+   * Owns the entire metadata/read operation before its first await and shares equal ceilings.
+   * A superseded validation still returns to its caller, but cannot take ownership from a newer
+   * operation, refresh/delete its cache entry, or remove its pending read after completion.
+   */
+  private async readPendingSource(
+    sourcePath: string,
+    maximumBytes: number,
+  ): Promise<PreviewProjectSourceRecord | undefined> {
+    const pendingKey = `${sourcePath}\0${maximumBytes.toString()}`;
+    const pending = this.pendingSourceReads.get(pendingKey);
+    if (pending !== undefined && this.sourceReadOwners.get(sourcePath) === pending) {
+      return (await pending)?.record;
+    }
+    const expectedSource = this.sourceByPath.get(sourcePath);
+    const readPromise = this.loadCurrentSource(sourcePath, maximumBytes, expectedSource);
+    this.pendingSourceReads.set(pendingKey, readPromise);
+    this.sourceReadOwners.set(sourcePath, readPromise);
+    try {
+      const entry = await readPromise;
+      if (
+        this.pendingSourceReads.get(pendingKey) === readPromise &&
+        this.sourceReadOwners.get(sourcePath) === readPromise &&
+        this.sourceByPath.get(sourcePath) === expectedSource
+      ) {
+        if (entry === undefined) this.deleteSource(sourcePath);
+        else if (entry === expectedSource) refreshMapEntry(this.sourceByPath, sourcePath, entry);
+        else this.storeSource(sourcePath, entry);
+      }
+      return entry?.record;
+    } finally {
+      if (this.pendingSourceReads.get(pendingKey) === readPromise) {
+        this.pendingSourceReads.delete(pendingKey);
+      }
+      if (this.sourceReadOwners.get(sourcePath) === readPromise) {
+        this.sourceReadOwners.delete(sourcePath);
+      }
+    }
+  }
+
+  /**
+   * Rechecks saved identities without mutating cache ownership across asynchronous boundaries.
+   * Cold and editor-to-disk reads open directly; the handle still checks file kind and byte size.
+   * Completed validations are never retained, so the next sequential call observes new edits.
+   */
+  private async loadCurrentSource(
+    sourcePath: string,
+    maximumBytes: number,
+    cached: SourceCacheEntry | undefined,
+  ): Promise<SourceCacheEntry | undefined> {
+    if (cached?.origin === 'yarn-zip') {
+      const archiveFingerprint = await readPreviewYarnZipArchiveFingerprint(cached.archivePath);
+      if (
+        archiveFingerprint === cached.archiveFingerprint &&
+        cached.record.byteLength <= maximumBytes
+      ) {
+        return cached;
+      }
+    } else if (cached?.origin === 'disk') {
+      try {
+        const metadata = await stat(sourcePath);
+        if (!metadata.isFile() || metadata.size > maximumBytes) return undefined;
+        if (
+          cached.record.fingerprint === createDiskFingerprint(metadata.mtimeMs, metadata.size) &&
+          cached.record.byteLength <= maximumBytes
+        ) {
+          return cached;
+        }
+      } catch {
+        return undefined;
+      }
+    }
+    return this.loadStoredSource(sourcePath, maximumBytes);
   }
 
   /** Opens and reads one changed disk file while guarding against oversized or non-file entries. */
@@ -324,6 +341,7 @@ export class PreviewProjectFileAnalysisCache {
 
   /** Deletes one source record and updates the aggregate retained-byte counter. */
   private deleteSource(sourcePath: string): void {
+    this.sourceReadOwners.delete(sourcePath);
     const existing = this.sourceByPath.get(sourcePath);
     if (existing !== undefined) {
       this.retainedSourceBytes -= existing.record.byteLength;

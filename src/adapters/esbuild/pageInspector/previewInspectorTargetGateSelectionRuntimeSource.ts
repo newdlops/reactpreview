@@ -272,10 +272,11 @@ function hasPreviewInspectorTargetBranchProof(condition, evidence, desiredValue)
   if (typeof readPreviewInspectorTargetConditionLabelEvidence !== 'function') return true;
   const labelText = desiredValue ? condition.truthyLabel : condition.falsyLabel;
   const label = readPreviewInspectorTargetConditionLabelEvidence(labelText, evidence);
-  if (label.exactTarget === true || label.score > 0 || label.componentScore > 0) return true;
+  // A wrapper name can surround unrelated siblings; only actual component steps prove this branch.
+  if (label.exactTarget === true || label.componentScore > 0) return true;
   // A corridor component rendered twice (create and edit modal) is ambiguous for choosing an
   // instance, yet a branch naming it still leads toward the target ('modalOpen && <FormModal/>').
-  const corridor = evidence.corridorOwnerNames;
+  const corridor = evidence.componentCorridorNames ?? evidence.corridorOwnerNames;
   return corridor instanceof Set && String(labelText ?? '').replace(/[<>]/gu, ' ')
     .split(/[^A-Za-z0-9_$]+/u).some((name) => name.length > 0 && corridor.has(name));
 }

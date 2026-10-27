@@ -24,6 +24,10 @@ import {
 } from './previewRecordKeyInference';
 import { readPreviewReturnedPayloadType } from './previewReturnedPayloadType';
 import {
+  isPreviewTypedCallImportBinding,
+  type PreviewTypedCallImportBinding,
+} from './previewTypedCallImportBinding';
+import {
   readPreviewTypedComponentProps,
   type PreviewTypedPropValue,
 } from './previewTypedComponentProps';
@@ -62,6 +66,8 @@ export interface PreviewTypedCallRequest {
   readonly callText: string;
   /** Zero-based position among call expressions with identical text in that module. */
   readonly occurrence: number;
+  /** Optional runtime import proof; shadowed or ambiguous receivers keep their authored result. */
+  readonly receiverImport?: PreviewTypedCallImportBinding;
   /** Authored usage paths that guide union selection and optional fields. */
   readonly requiredPaths: readonly string[];
   /** Absolute module path. */
@@ -153,7 +159,7 @@ export interface PreviewTypeOracleView {
    * `apiClient.get<T>('/path')` on an imported HTTP client instance.
    */
   readTypedCallResponseShape(
-    request: Omit<PreviewTypedCallRequest, 'requiredPaths'>,
+    request: Omit<PreviewTypedCallRequest, 'requiredPaths' | 'receiverImport'>,
   ): PreviewTypedPayloadShape | undefined;
   /** Typed values for the required props of one component export (plain JSON only). */
   readTypedComponentProps(request: {
@@ -427,6 +433,16 @@ export class PreviewTypeOracle {
         );
         if (found === undefined) return undefined;
         try {
+          if (
+            request.receiverImport !== undefined &&
+            !isPreviewTypedCallImportBinding(
+              found.analysis.checker,
+              found.node,
+              request.receiverImport,
+            )
+          ) {
+            return undefined;
+          }
           const type = found.analysis.checker.getTypeAtLocation(found.node);
           return synthesize(
             found.analysis,

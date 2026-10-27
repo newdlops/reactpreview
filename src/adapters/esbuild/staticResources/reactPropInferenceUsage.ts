@@ -248,6 +248,7 @@ export function collectLocalPropAliases(
             const propertyName = readBindingPropertyName(element);
             if (
               propertyName !== undefined &&
+              element.initializer === undefined &&
               !BLOCKED_PROPERTY_NAMES.has(propertyName) &&
               ts.isIdentifier(element.name)
             ) {

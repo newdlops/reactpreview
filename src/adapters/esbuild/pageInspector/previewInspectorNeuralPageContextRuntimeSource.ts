@@ -567,9 +567,9 @@ function selectPreviewInspectorNeuralPageContextCandidate(descriptor, options = 
     inventory,
     record,
   );
-  const verifiedCandidate = record.coverageComplete === true
-    ? bestVerifiedCandidate
-    : preferredVerifiedCandidate;
+  // Ordinary reconciliation keeps the mounted verified path. Explicit coverage below still
+  // chooses the best retained contract when exploration or failure calls for a replacement.
+  const verifiedCandidate = preferredVerifiedCandidate ?? bestVerifiedCandidate;
   if (verifiedCandidate !== undefined && options.exploreUnevaluated !== true) {
     record.selectedCandidateId = verifiedCandidate.id;
     record.selectionReason = 'target-output-verified';
@@ -714,6 +714,8 @@ function schedulePreviewInspectorNeuralPageContextSelection() {
     const descriptor = findSelectedPreviewInspectorDescriptor();
     const executableId = descriptor?.inspector?.executablePageCandidateId;
     const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
+    // Same-document replacement keeps old verdicts, but the requested page owns this new commit.
+    if (typeof executableId === 'string' && record?.awaitingCurrentCandidateId === executableId) return;
     const verifiedCandidateId = previewInspectorSession.verifiedPageCandidateId;
     const verifiedScopeMatches = previewInspectorSession.verifiedPageContextScope ===
       createPreviewInspectorNeuralPageContextPersistedScope(descriptor);
@@ -747,11 +749,18 @@ function reconcilePreviewInspectorNeuralPageContextSelection(descriptor) {
   const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
   if (record !== undefined) {
     const executableCandidateId = descriptor?.inspector?.executablePageCandidateId;
+    const executableRevision = typeof previewEntryRevision === 'number' ? previewEntryRevision : undefined;
+    const changedCommit = record.executableCandidateId !== executableCandidateId ||
+      record.executableRevision !== executableRevision;
+    const awaitingCommittedPath = typeof executableCandidateId === 'string' && changedCommit &&
+      record.pendingExecutionContractCandidateId === executableCandidateId;
+    if (awaitingCommittedPath) record.awaitingCurrentCandidateId = executableCandidateId;
     record.executableCandidateId = executableCandidateId;
+    record.executableRevision = executableRevision;
     if (
       typeof executableCandidateId === 'string' &&
       record.pendingExecutionContractCandidateId === executableCandidateId &&
-      record.evaluatedCandidateIds.has(executableCandidateId) !== true
+      (awaitingCommittedPath || record.evaluatedCandidateIds.has(executableCandidateId) !== true)
     ) {
       record.selectedCandidateId = executableCandidateId;
       record.selectionOrigin = 'neural';

@@ -42,6 +42,7 @@ export interface PageCandidateFixture {
 }
 
 interface PageContextFixture {
+  readonly advanceEntryRevision: () => void;
   readonly candidates: readonly PageCandidateFixture[];
   readonly activateContract: (candidateId: string) => boolean;
   readonly autoConditions: () => readonly [string, boolean][];
@@ -71,6 +72,7 @@ interface PageContextFixture {
   }[];
   readonly pinTemporal: () => boolean;
   readonly rankingCalls: () => number;
+  readonly reconcile: () => void;
   readonly runAuthoredStateTimers: () => void;
   readonly scheduleAuthoredStateContinuation: (state: Record<string, unknown>) => boolean;
   readonly setPaused: (paused: boolean) => void;
@@ -79,6 +81,7 @@ interface PageContextFixture {
   readonly prepareContract: (candidateId: string, origin: 'neural' | 'user') => boolean;
   readonly persistenceCount: () => number;
   readonly record: () => {
+    readonly awaitingCurrentCandidateId?: string;
     readonly authoredStateCandidateIds: Set<string>;
     readonly coverageComplete: boolean;
     readonly evaluatedCandidateIds: Set<string>;
@@ -117,7 +120,7 @@ interface PageContextFixture {
         readonly origin: string;
       }
     | undefined;
-  readonly setExecutableCandidateId: (candidateId: string) => void;
+  readonly setExecutableCandidateId: (candidateId: string | undefined) => void;
   readonly session: {
     neuralHumanControlRevision?: number;
     pendingPageCandidateId?: string | undefined;
@@ -184,7 +187,7 @@ export function createPageContextFixture(
   });
   vm.runInContext(
     `
-      const previewEntryRevision = 31;
+      let previewEntryRevision = 31;
       const authoredStateTimers = [];
       let assistancePaused = false;
       let currentReachability;
@@ -286,6 +289,7 @@ export function createPageContextFixture(
         return originalSelectPreviewInspectorNeuralResidualCandidate(...args);
       };
       globalThis.__fixture = {
+        advanceEntryRevision: () => { previewEntryRevision += 1; },
         activateContract: (candidateId) =>
           activatePreviewInspectorNeuralPageContextExecutionContract(descriptor, candidateId),
         autoConditions: () => [...previewInspectorSession.renderConditionAutoOverrides],
@@ -313,6 +317,7 @@ export function createPageContextFixture(
             origin,
           ),
         rankingCalls: () => neuralPageContextRankingCalls,
+        reconcile: () => reconcilePreviewInspectorNeuralPageContextSelection(descriptor),
         runAuthoredStateTimers: () => { for (const callback of authoredStateTimers.splice(0)) callback(); },
         scheduleAuthoredStateContinuation: (state) =>
           schedulePreviewInspectorNeuralPageAuthoredStateContinuation(

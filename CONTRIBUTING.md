@@ -37,9 +37,15 @@ JSON manifest나 lockfile처럼 주석을 허용하지 않는 형식은 인접 R
 ## 변경 절차
 
 ```bash
-npm install
+npm install --legacy-peer-deps
 npm run watch
 ```
+
+검증용 React 18·React DOM 18은 기본 React 19와 별칭 패키지로 함께 설치합니다. npm은 이
+별칭의 React 18 peer를 루트 React 19에 대입하므로 새 설치에는 위 옵션이 필요합니다.
+빌드는 React 18 패키지를 별도 `dist/runtime/react18/node_modules`에 정식 패키지 이름으로
+배치하며, 두 런타임의 분리와 렌더링은 전체 검사에서 검증합니다. 이 옵션을 전역 npm 설정에
+등록하지 않습니다.
 
 작업 중에는 영향받은 계층과 같은 경로 아래 테스트를 추가합니다. 완료 전에는 다음 한 명령을
 실행합니다.

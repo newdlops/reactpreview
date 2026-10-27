@@ -63,13 +63,18 @@ Marketplace는 사용자 제공 SVG icon을 거부하므로 manifest icon은 `as
 
 ```bash
 nvm use
-npm install
+npm install --legacy-peer-deps
 npm run check
 ```
 
 이 저장소는 1,000줄 제한을 생성 텍스트에도 적용하므로 npm lockfile을 만들지 않습니다. 직접
 의존성 버전은 `package.json`에 정확히 고정되어 있지만, 릴리스 후보는 반드시 깨끗한 환경에서
 재설치하고 테스트해야 합니다.
+
+검증용 React 18·React DOM 18 별칭과 기본 React 19가 함께 있으므로 새 설치에는
+`--legacy-peer-deps`가 필요합니다. 실제 React 18 런타임은 빌드가 별도 디렉터리에 정식
+패키지 이름으로 배치합니다. 전체 검사와 VSIX 검수에서 두 런타임을 확인하며, 이 설치 옵션을
+전역 npm 설정에 등록하지 않습니다.
 
 `vsce publish patch|minor|major`는 package.json 수정뿐 아니라 git commit과 tag를 자동으로 만들
 수 있습니다. 이 프로젝트에서는 버전 변경과 검토를 분리하기 위해 자동 증가 명령을 사용하지
@@ -82,7 +87,7 @@ target이 현재 호스트와 다르면 패키징을 중단하므로 각 target�
 다음 명령을 실행합니다.
 
 ```bash
-npm install
+npm install --legacy-peer-deps
 npm run package:vsix
 ```
 

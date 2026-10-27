@@ -3,12 +3,7 @@
     "codeidx": {
       "type": "stdio",
       "command": "node",
-      "args": [
-        ".codeidx/codeidx-mcp-stdio.js",
-        "stdio",
-        "--workspace",
-        "."
-      ]
+      "args": [".codeidx/codeidx-mcp-stdio.js", "stdio", "--workspace", "."]
     }
   }
 }

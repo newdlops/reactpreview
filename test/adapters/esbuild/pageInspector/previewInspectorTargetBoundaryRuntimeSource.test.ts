@@ -123,6 +123,39 @@ describe('Preview Inspector selected-target boundary runtime', () => {
   });
 
   /** Defers only the exact outside-Router hook invariant for the candidate provider retry. */
+  it('defers only branded Next control signals without running signal accessors', () => {
+    const sandbox = createTargetBoundarySandbox({
+      rememberedErrors: [],
+      mountedOwnerExports: [],
+      remountedExports: [],
+      smartEvidenceReads: [],
+      targetOwnershipPhases: [],
+      warnings: [],
+    });
+    runInContext(
+      `${createPreviewInspectorTargetBoundaryRuntimeSource()}
+      globalThis.__TestBoundary = createPreviewInspectorTargetBoundaryFactory({ React });`,
+      createContext(sandbox),
+    );
+    const Boundary = sandbox.__TestBoundary;
+    if (Boundary === undefined) throw new Error('Missing test boundary.');
+    const key = Symbol.for('newdlops.react-file-preview.next-app-control-signal');
+    const redirect = Object.assign(new Error('Redirect'), {
+      [key]: { kind: 'redirect', destination: '/profile' },
+    });
+    expect(() => Boundary.getDerivedStateFromError(redirect)).toThrow(redirect);
+    let reads = 0;
+    const ordinary = Object.defineProperty(new Error('Ordinary failure'), key, {
+      get() {
+        reads += 1;
+        return { kind: 'redirect' };
+      },
+    });
+    expect(Boundary.getDerivedStateFromError(ordinary)).toEqual({ error: ordinary });
+    expect(reads).toBe(0);
+  });
+
+  /** Defers only the exact outside-Router hook invariant for the candidate provider retry. */
   it('rethrows an exact outside-Router hook invariant but contains unrelated hook failures', () => {
     const source = [
       "const activePreviewRouterBridge = { isPreviewRouterRetryError: (error) => /Router>|useLocation\\(\\)/.test(String(error?.message ?? '')) };",

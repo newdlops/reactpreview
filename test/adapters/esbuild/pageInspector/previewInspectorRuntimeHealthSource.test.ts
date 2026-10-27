@@ -114,6 +114,88 @@ describe('Preview Inspector runtime health source', () => {
     ]);
   });
 
+  /** Dense diagnostic trees must not erase the proof used to decide whether the actual page rendered. */
+  it.each([true, false])(
+    'retains target and route evidence after dense diagnostics (output: %s)',
+    (hasOutput) => {
+      const runtime = createRuntimeHealthFixture();
+      runtime.record({
+        category: 'page-composition',
+        detail: {
+          activeBlockerProvenance: Array.from({ length: 48 }, (_, index) => ({
+            active: !hasOutput,
+            kind: 'runtime-fallback',
+            name: `Hook ${index.toString()}`,
+            ownerPath: `/workspace/Owner${index.toString()}.tsx`,
+            source: { line: index + 1, sourcePath: '/workspace/Shell.tsx' },
+            state: 'observed',
+          })),
+          applicationPath: Array.from({ length: 48 }, (_, index) => `Shell${index.toString()}`),
+          pageExecution: { fidelity: 'page-authentic', candidateId: 'exact-page' },
+          route: { pathname: '/company/1/meeting/1' },
+          requirementSearch: { settled: true, searchStatus: 'settled', exhausted: !hasOutput },
+          statusCounts: { currentFileMounted: 1, hostOutput: hasOutput ? 3 : 0 },
+          targetState: {
+            exportName: 'MeetingDeleteModal',
+            hasOutput,
+            mounted: true,
+            pageRootCommitted: true,
+            stage: hasOutput ? 'target-output' : 'target-mounted-no-output',
+          },
+        },
+        event: 'page-composition-snapshot',
+      });
+
+      expect(runtime.messages[0]?.event.detail).toMatchObject({
+        pageExecution: { fidelity: 'page-authentic', candidateId: 'exact-page' },
+        route: { pathname: '/company/1/meeting/1' },
+        requirementSearch: { settled: true, searchStatus: 'settled', exhausted: !hasOutput },
+        statusCounts: { currentFileMounted: 1, hostOutput: hasOutput ? 3 : 0 },
+        targetState: { exportName: 'MeetingDeleteModal', hasOutput, mounted: true },
+      });
+      expect(readPreviewRuntimeHealthMessage(runtime.messages[0])).toBeDefined();
+      expect(JSON.stringify(runtime.messages[0]).length).toBeLessThan(64 * 1024);
+    },
+  );
+
+  /** Nested ownership diagnostics cannot consume sibling target flags or other critical sections. */
+  it('reserves shallow render proof before expanding nested ownership diagnostics', () => {
+    const runtime = createRuntimeHealthFixture();
+    runtime.record({
+      category: 'page-composition',
+      detail: {
+        targetState: {
+          ownershipPhases: Array.from({ length: 48 }, (_, index) => ({
+            owner: `Owner${index.toString()}`,
+            boundary: 'authored',
+            source: '/workspace/Owner.tsx',
+            observed: true,
+            mounted: true,
+            output: true,
+            nested: { count: index, phase: 'commit' },
+          })),
+          exportName: 'MeetingDeleteModal',
+          hasOutput: true,
+          mounted: true,
+          stage: 'target-output',
+        },
+        statusCounts: { currentFileMounted: 1, hostOutput: 3 },
+        route: { pathname: '/company/1/meeting/1' },
+        pageExecution: { fidelity: 'page-authentic' },
+        requirementSearch: { settled: true, searchStatus: 'settled' },
+      },
+      event: 'page-composition-snapshot',
+    });
+
+    expect(runtime.messages[0]?.event.detail).toMatchObject({
+      targetState: { exportName: 'MeetingDeleteModal', hasOutput: true, mounted: true },
+      statusCounts: { currentFileMounted: 1, hostOutput: 3 },
+      pageExecution: { fidelity: 'page-authentic' },
+      requirementSearch: { settled: true, searchStatus: 'settled' },
+    });
+    expect(readPreviewRuntimeHealthMessage(runtime.messages[0])).toBeDefined();
+  });
+
   /** The host keeps the latest snapshot, so a return to an earlier state must be delivered again. */
   it('re-emits a page composition snapshot that returns to an earlier state', () => {
     const runtime = createRuntimeHealthFixture();
@@ -397,7 +479,7 @@ describe('Preview Inspector runtime health source', () => {
   it('demotes reached output to a fallback blocker with original owner evidence', () => {
     const runtime = createRuntimeHealthFixture();
     runtime.error({
-      componentStack: 'at FiStaManagementApp\n at GlobalErrorBoundary',
+      componentStack: 'at ApplicationWrapper\n at GlobalErrorBoundary',
       exportName: 'Header',
       level: 'error',
       message: 'Error: Unreachable',
@@ -413,7 +495,7 @@ describe('Preview Inspector runtime health source', () => {
     });
     expect(runtime.readTargetError('Header')).toMatchObject({
       message: 'Error: Unreachable',
-      ownerName: 'FiStaManagementApp',
+      ownerName: 'ApplicationWrapper',
       phase: 'unhandled browser error',
       source: 'preview-runtime',
     });

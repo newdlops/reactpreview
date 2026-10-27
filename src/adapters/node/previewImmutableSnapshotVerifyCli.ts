@@ -3,6 +3,7 @@ import path from 'node:path';
 import { verifyPreviewDependencyView } from './previewDependencyView';
 import { verifyPreviewTrackedSourceSnapshot } from './previewTrackedSourceSnapshot';
 
+/** Runs snapshot verification from CLI arguments and reports validation failures through its exit code. */
 export async function runPreviewImmutableSnapshotVerifyCli(
   arguments_: readonly string[],
 ): Promise<number> {

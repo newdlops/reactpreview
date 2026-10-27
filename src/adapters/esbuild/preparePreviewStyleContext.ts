@@ -9,6 +9,7 @@ import { getPreviewSourceLanguage } from '../../domain/previewTarget';
 import type { PreviewPreparationPolicy } from './previewPreparationPolicy';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { collectPreviewApplicationStylesheetLinks } from './previewApplicationStylesheetLinks';
+import { selectPreviewApplicationEntry } from './previewApplicationEntrySelection';
 import {
   selectPreviewApplicationStylesheetImports,
   type PreviewApplicationStylesheetImportSelection,
@@ -35,10 +36,11 @@ import {
 } from './previewStyleSheetManagerSelection';
 import type { PreviewStyledComponentsPlan } from './previewStyledComponentsPlan';
 import { collectPreviewTailwindCandidateSnapshotGraph } from './previewTailwindCandidateSnapshotGraph';
+import { PREVIEW_TAILWIND_MAX_SNAPSHOT_FILES } from './previewTailwindCandidates';
 import type { PreviewThemeImportSelection } from './previewTargetExports';
 
 /** Final exact execution closure can safely fill the complete Tailwind scanner envelope. */
-const MAX_FINAL_TAILWIND_CANDIDATE_FILES = 192;
+const MAX_FINAL_TAILWIND_CANDIDATE_FILES = PREVIEW_TAILWIND_MAX_SNAPSHOT_FILES;
 const MAX_FINAL_TAILWIND_CANDIDATE_BYTES = 4 * 1024 * 1024;
 const MAX_FINAL_TAILWIND_SOURCE_BYTES = 1024 * 1024;
 const TAILWIND_SOURCE_PATTERN = /\.[cm]?[jt]sx?$/iu;
@@ -71,6 +73,8 @@ export interface PreparePreviewStyleContextOptions {
 
 /** Style evidence plus the snapshot map reused by later runtime-global and GraphQL analysis. */
 export interface PreparedPreviewStyleContext {
+  /** Inert application-owner proof inputs watched even though their modules are never executed. */
+  readonly applicationStyleDependencyPaths: readonly string[];
   /** Conventional app-root CSS loaded only when no authentic page/layout root can own styles. */
   readonly applicationStylesheetImports: readonly PreviewApplicationStylesheetImportSelection[];
   readonly documentShellEvidence?: PreviewDocumentShellEvidence;
@@ -111,8 +115,19 @@ export async function preparePreviewStyleContext(
     importerPath: options.mountedRoot?.sourcePath ?? options.request.documentPath,
     resolveModule: options.staticModuleResolver.resolve,
   });
+  const applicationEntry =
+    options.renderPath === undefined || options.renderPath.entryPoint !== undefined
+      ? undefined
+      : await selectPreviewApplicationEntry({
+          projectRoot: options.projectRoot,
+          readSource: readProjectSource,
+          resolveModule: options.staticModuleResolver.resolve,
+          rootSourcePaths: options.renderPath.steps.map((step) => step.sourcePath),
+        });
+  const applicationOwners = applicationEntry?.styleOwners ?? [];
   const applicationStyleRoots = [
     ...(options.applicationStyleRoots ?? []),
+    ...applicationOwners.filter((owner) => owner.exportName !== '*'),
     ...createConventionalNextPagesStyleRoots(options.projectRoot),
   ];
   const [
@@ -124,10 +139,13 @@ export async function preparePreviewStyleContext(
     wrapperStylesheetLinks,
   ] = await Promise.all([
     options.directThemeImport ??
-      (options.inspectorDependencyPaths.length === 0
+      (options.inspectorDependencyPaths.length === 0 && applicationOwners.length === 0
         ? undefined
         : selectPreviewGraphThemeImport({
-            dependencyPaths: options.inspectorDependencyPaths,
+            dependencyPaths: [
+              ...applicationOwners.map((owner) => owner.sourcePath),
+              ...options.inspectorDependencyPaths,
+            ],
             readSource,
             ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
             resolveModule: options.staticModuleResolver.resolve,
@@ -144,6 +162,7 @@ export async function preparePreviewStyleContext(
       resolveModule: options.staticModuleResolver.resolve,
     }),
     selectPreviewApplicationStylesheetImports({
+      applicationEntry: applicationEntry ?? null,
       projectRoot: options.projectRoot,
       readSource: readProjectSource,
       ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
@@ -155,7 +174,10 @@ export async function preparePreviewStyleContext(
       : collectPreviewApplicationStylesheetLinks({
           readSource: readProjectSource,
           resolveModule: options.staticModuleResolver.resolve,
-          rootSourcePaths: options.renderPath.steps.map((step) => step.sourcePath),
+          rootSourcePaths: [
+            ...applicationOwners.map((owner) => owner.sourcePath),
+            ...options.renderPath.steps.map((step) => step.sourcePath),
+          ],
         }),
   ]);
   const documentShellEvidence = mergePreviewDocumentShellStylesheetLinks(
@@ -200,6 +222,9 @@ export async function preparePreviewStyleContext(
       : Promise.resolve<readonly PreviewSourceSnapshot[]>(Object.freeze([])),
   ]);
   return {
+    applicationStyleDependencyPaths: Object.freeze(
+      applicationOwners.map((owner) => owner.sourcePath),
+    ),
     applicationStylesheetImports,
     ...(documentShellEvidence === undefined ? {} : { documentShellEvidence }),
     globalStyleImports,

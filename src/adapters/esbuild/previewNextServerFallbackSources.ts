@@ -95,6 +95,13 @@ export default function dynamic(loader, options) {
 `;
 }
 
+/**
+ * Request-scoped `next/server` functions. A preview has no response to run `after()` work after,
+ * and that work is server side effects (for example audit writes), so callbacks are not run.
+ */
+const NEXT_SERVER_REQUEST_SCOPE_EXPORTS = `export function after() {}
+export function connection() { return Promise.resolve(); }`;
+
 /** Plain web `Request`/`Response` stand-ins for the middleware and route-handler surface. */
 export function createNextServerFallbackSource(): string {
   return `
@@ -123,7 +130,23 @@ export class NextResponse extends BaseResponse {
 export function userAgent() {
   return { browser: {}, cpu: {}, device: {}, engine: {}, isBot: false, os: {}, ua: '' };
 }
-export function after() {}
-export function connection() { return Promise.resolve(); }
+${NEXT_SERVER_REQUEST_SCOPE_EXPORTS}
+`;
+}
+
+/**
+ * Wraps an installed `next/server`. Its `after()` and `connection()` throw without Next's request
+ * async storage, which a preview never has, so those two use the inert forms above while every
+ * other export stays the installed implementation.
+ *
+ * @param installedPath Absolute path of the resolved installed module.
+ */
+export function createNextServerInstalledScopeSource(installedPath: string): string {
+  const specifier = JSON.stringify(installedPath);
+  return `
+import installed from ${specifier};
+export * from ${specifier};
+${NEXT_SERVER_REQUEST_SCOPE_EXPORTS}
+export default { ...installed, after, connection };
 `;
 }

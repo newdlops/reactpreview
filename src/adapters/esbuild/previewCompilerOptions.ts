@@ -5,9 +5,12 @@
  */
 import type { PreviewManagedDependencyStoreOptions } from '../node/previewManagedDependencyStore';
 import type { PreviewVendorModuleCacheBackend } from './previewVendorModuleBuilder';
+import type { PreviewSassTaskFactory } from './previewSassCompiler';
 
 /** Optional compiler policy overrides used by production bootstrap and deterministic tests. */
 export interface EsbuildPreviewCompilerOptions {
+  /** Finite Sass task transport supplied by the standalone compiler composition root. */
+  readonly createSassTask?: PreviewSassTaskFactory;
   /** Global-storage directory for verified per-package-version adapter strategies. */
   readonly adapterLearningRoot?: string;
   /** Extension-packaged node_modules containing the compatible baseline React runtime. */

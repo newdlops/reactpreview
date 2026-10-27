@@ -6,8 +6,7 @@ import {
   materializePreviewInspectorRoutePattern,
 } from '../../../../src/adapters/esbuild/inspector/previewInspectorRoutePattern';
 
-const genericUuidConstraint =
-  '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const genericUuidConstraint = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const strictUuidV4Constraint =
   '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const deterministicUuid = '00000000-0000-4000-8000-000000000000';
@@ -78,22 +77,13 @@ describe('previewInspectorRoutePattern', () => {
   it.each([
     ['leading literal', `x${genericUuidConstraint}`],
     ['trailing structure', `${genericUuidConstraint}-[0-9a-f]{2}`],
-    [
-      'wrong separator',
-      '[0-9a-f]{8}_[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
-    ],
+    ['wrong separator', '[0-9a-f]{8}_[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'],
     [
       'broader character class',
       '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}',
     ],
-    [
-      'wrong v4 marker',
-      '[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',
-    ],
-    [
-      'wrong v4 variant',
-      '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[79ab][0-9a-f]{3}-[0-9a-f]{12}',
-    ],
+    ['wrong v4 marker', '[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'],
+    ['wrong v4 variant', '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[79ab][0-9a-f]{3}-[0-9a-f]{12}'],
   ])('does not infer UUID semantics from the %s near miss', (_name, constraint) => {
     expect(materializePreviewInspectorRoutePattern(`/values/:value(${constraint})`)).toBe(
       '/values/aaaaaaaa',

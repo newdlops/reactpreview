@@ -96,16 +96,18 @@ export interface PreviewInspectorBundleDiagnosticsCollector {
 }
 
 type MutableCounters = {
-  -readonly [Key in keyof Omit<
-    PreviewInspectorBundleDiagnostics,
-    'bundleMeasuredMicros' | 'diagnosticsVersion'
-  >]: number;
+  -readonly [
+    Key in keyof Omit<
+      PreviewInspectorBundleDiagnostics,
+      'bundleMeasuredMicros' | 'diagnosticsVersion'
+    >
+  ]: number;
 };
 
 /** Creates no object and reads no clock unless the unchanged sampling policy enabled diagnostics. */
 export function createPreviewInspectorBundleDiagnosticsCollector(
   enabled: boolean,
-  clock: PreviewInspectorBundleDiagnosticsClock = process.hrtime.bigint,
+  clock: PreviewInspectorBundleDiagnosticsClock = () => process.hrtime.bigint(),
 ): PreviewInspectorBundleDiagnosticsCollector | undefined {
   if (!enabled) return undefined;
   const startedAt = clock();

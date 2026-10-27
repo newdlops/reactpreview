@@ -5,7 +5,8 @@
  * XMLHttpRequest boundary without a shape. Modules queue `[method, path pattern, shape]` for their
  * typed calls (see `previewTypedRestEndpointRegistrations`); a request matches when the pattern's
  * segments equal the tail of its path, so a client base URL prefix does not matter and a `*`
- * segment matches one path segment. The longest matching pattern wins, newest first on ties.
+ * segment matches one path segment. Longer patterns win, then more literal segments; registrations
+ * with equal specificity retain newest-first precedence so edited declarations replace old ones.
  */
 
 /** Creates the plain JavaScript lookup embedded into the Page Inspector data runtime. */
@@ -41,19 +42,26 @@ function readPreviewInspectorTypedRestShape(method, url) {
   const requestSegments = readPreviewInspectorTypedRestSegments(pathname);
   let bestShape;
   let bestLength = 0;
+  let bestLiteralCount = -1;
   for (let index = registry.length - 1; index >= 0; index -= 1) {
     const entry = registry[index];
     if (!Array.isArray(entry) || entry[0] !== method || typeof entry[1] !== 'string') continue;
     const patternSegments = entry[1].split('/').filter((segment) => segment !== '');
-    if (patternSegments.length <= bestLength || patternSegments.length > requestSegments.length) {
+    if (patternSegments.length < bestLength || patternSegments.length > requestSegments.length) {
       continue;
     }
     const offset = requestSegments.length - patternSegments.length;
-    const matches = patternSegments.every((segment, position) =>
-      segment === '*' || segment === requestSegments[offset + position]);
-    if (matches && entry[2] !== null && typeof entry[2] === 'object') {
+    let literalCount = 0;
+    const matches = patternSegments.every((segment, position) => {
+      if (segment === '*') return true;
+      literalCount += 1;
+      return segment === requestSegments[offset + position];
+    });
+    if (matches && entry[2] !== null && typeof entry[2] === 'object' &&
+        (patternSegments.length > bestLength || literalCount > bestLiteralCount)) {
       bestShape = entry[2];
       bestLength = patternSegments.length;
+      bestLiteralCount = literalCount;
     }
   }
   return bestShape;

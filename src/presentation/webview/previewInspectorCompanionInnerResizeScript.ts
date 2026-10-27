@@ -312,6 +312,10 @@ function updatePreviewInspectorCompanionAccordionToggle(button, collapsed) {
   if (button === null || button === undefined) return;
   button.setAttribute('aria-expanded', String(!collapsed));
   button.setAttribute('data-rpi-collapsed', String(collapsed));
+  const title = button.getAttribute?.('title');
+  if (typeof title === 'string' && /^(?:Expand|Collapse) /u.test(title)) {
+    button.setAttribute('title', title.replace(/^(?:Expand|Collapse) /u, collapsed ? 'Expand ' : 'Collapse '));
+  }
   const chevron = button.querySelector?.('[data-rpi-accordion-chevron]');
   if (chevron !== null && chevron !== undefined) chevron.textContent = collapsed ? '▸' : '▾';
 }

@@ -1,12 +1,11 @@
 /**
  * Defines bounded, stage-aware watchdog budgets for isolated preview compilation.
  *
- * Page Inspector bundling can legitimately take longer than source discovery because esbuild must
- * resolve an authored page corridor and its styles. Native bundling cannot report meaningful
- * sub-stage progress, but it still needs a finite recovery boundary: otherwise one wedged esbuild
- * service leaves the visible preview on `Preparing` forever. Queue acquisition, cancellation
- * acknowledgement, worker memory isolation, and explicit host overrides remain independent
- * recovery boundaries.
+ * Page Inspector's fast graph is still an authored page analysis: healthy discovery can exceed
+ * 45 seconds under load. Its analysis and bundling share the existing finite full-page allowance.
+ * Preparation mode continues to select graph depth, without imposing a shorter visible-page
+ * cutoff. Queue acquisition, cancellation acknowledgement, worker memory isolation, and explicit
+ * host overrides remain independent recovery boundaries.
  */
 import type { PreviewBuildRequest } from '../../domain/preview';
 import type { PreviewProgressStage } from '../../domain/previewProgress';
@@ -47,13 +46,16 @@ export function createPreviewCompilerWorkerBudget(
     });
   }
   const mode = request.preparationMode ?? 'full';
-  const initialStageTimeoutMs =
+  const modeStageTimeoutMs =
     mode === 'fast'
       ? FAST_STAGE_TIMEOUT_MS
       : mode === 'corridor'
         ? CORRIDOR_STAGE_TIMEOUT_MS
         : FULL_STAGE_TIMEOUT_MS;
   const pageInspector = request.renderMode === 'page-inspector';
+  const initialStageTimeoutMs = pageInspector
+    ? Math.max(modeStageTimeoutMs, PAGE_INSPECTOR_BUNDLE_TIMEOUT_MS)
+    : modeStageTimeoutMs;
   return Object.freeze({
     fixed: false,
     initialStageTimeoutMs,
@@ -64,10 +66,10 @@ export function createPreviewCompilerWorkerBudget(
 /**
  * Selects the inactivity budget after one new compiler milestone.
  *
- * Page Inspector's native bundling phase receives a larger fixed inactivity deadline because it has
- * no internal heartbeat. This is deliberately independent from repository size: a healthy build may
- * use the full allowance, while a wedged worker is eventually recycled instead of leaving the panel
- * on `Preparing` forever. All other work must report a distinct stage within the normal mode budget.
+ * Page Inspector analysis and native bundling retain the same finite stage allowance. This is
+ * independent from repository size: a healthy stage may use the full allowance, while a wedged
+ * worker is eventually recycled. Repeated reports of the same stage do not renew the client timer.
+ * Component previews and explicit host overrides retain their existing compact or fixed budget.
  */
 export function selectPreviewCompilerStageTimeoutMs(
   request: PreviewBuildRequest,

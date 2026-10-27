@@ -39,7 +39,7 @@ function createFixture(): Fixture {
       let condition = { id: 'responded', reachabilityKey: state.key, reached: true,
         expression: 'hasResponded', effectiveEnabled: false, sourcePath: '/fixture/RequestPage.tsx',
         line: 26, truthyLabel: '<ResponseBody />', falsyLabel: '<RequestBody />' };
-      let active = true, blocking = true, observation, execution;
+      let active = true, blocking = true, observation, execution, resolving = false;
       const previewInspectorSession = { activeTargetReachabilityKey: state.key };
       const findSelectedPreviewInspectorDescriptor = () => ({});
       const readSelectedPreviewInspectorPageCandidate = () => candidate;
@@ -47,7 +47,7 @@ function createFixture(): Fixture {
       const readPreviewInspectorPageExecutionContextObservation = () => observation;
       const readPreviewInspectorRenderScenario = () => 'authored-page';
       const selectPreviewInspectorMainComponent = () => undefined;
-      const isPreviewInspectorTargetReachabilityResolving = () => false;
+      const isPreviewInspectorTargetReachabilityResolving = () => resolving;
       const readPreviewInspectorActiveBlockerSummary = () => {
         const nodes = active ? [{ id: 'render-condition:responded', blocksCurrentTarget: blocking,
           blockerKind: 'render-condition', condition }] : [];
@@ -75,6 +75,7 @@ function createFixture(): Fixture {
           if (options.key) previewInspectorSession.activeTargetReachabilityKey = options.key;
           if (typeof options.active === 'boolean') active = options.active;
           if (typeof options.blocking === 'boolean') blocking = options.blocking;
+          if (typeof options.resolving === 'boolean') resolving = options.resolving;
         },
       };
     `,
@@ -133,6 +134,74 @@ describe('Inspector visibility diagnosis', () => {
     expect(fixture.read().path).toContain('Not verified');
     expect(fixture.activate(fixture.read())).toBe(true);
     expect(fixture.calls).toEqual(['path-evidence']);
+  });
+
+  it('distinguishes a previous target mount from a target that was never reached', () => {
+    const fixture = createFixture();
+    fixture.update({ active: false, state: { targetWasMounted: true } });
+    expect(fixture.read()).toMatchObject({
+      kind: 'unmounted-target',
+      action: 'details',
+      title: 'The target was reached earlier on this path',
+    });
+    expect(fixture.read().logic).toContain('not mounted now');
+    expect(fixture.read().description).not.toContain('has not been observed');
+    expect(fixture.badge()).toBe('TARGET UNMOUNTED');
+    expect(fixture.friendly().diagnosis?.kind).toBe('unmounted-target');
+    expect(fixture.friendly().title).toBe(fixture.read().title);
+  });
+
+  it('does not reuse earlier target history for a newly selected path or an error fallback', () => {
+    const fixture = createFixture();
+    fixture.update({ active: false, state: { targetWasMounted: true }, key: 'another-path' });
+    expect(fixture.read().kind).toBe('pending');
+    fixture.update({ key: 'page:ResponseBody', state: { targetOutputKind: 'fallback-output' } });
+    expect(fixture.read().kind).toBe('render-error');
+  });
+
+  it('keeps a live verified code gate ahead of historical mount evidence', () => {
+    const fixture = createFixture();
+    fixture.update({ state: { targetWasMounted: true } });
+    expect(fixture.read().kind).toBe('code-condition');
+  });
+
+  it('keeps an in-flight render check pending after an earlier target mount', () => {
+    const fixture = createFixture();
+    fixture.update({ active: false, resolving: true, state: { targetWasMounted: true } });
+    expect(fixture.read()).toMatchObject({ kind: 'pending', action: undefined });
+    expect(fixture.badge()).toBe('CHECKING FILE');
+    expect(fixture.calls).toEqual([]);
+  });
+
+  it.each([
+    { sourcePath: '/fixture/OtherBody.tsx', exportName: 'ResponseBody' },
+    { sourcePath: '/fixture/ResponseBody.tsx', exportName: 'OtherBody' },
+  ])('rejects earlier history when the selected target identity changed: %j', (target) => {
+    const fixture = createFixture();
+    fixture.update({
+      active: false,
+      state: { targetWasMounted: true },
+      candidate: { id: 'page', target },
+    });
+    expect(fixture.read().kind).toBe('pending');
+    expect(fixture.badge()).toBe('CHECKING FILE');
+  });
+
+  it('does not let retained history shadow live output or a component-only execution', () => {
+    const fixture = createFixture();
+    fixture.update({
+      active: false,
+      state: { targetWasMounted: true },
+      execution: { fidelity: 'target-only' },
+    });
+    expect(fixture.read().kind).toBe('page-context');
+    fixture.update({
+      execution: { fidelity: 'page-authentic' },
+      observation: { contextComplete: true },
+      state: { targetMounted: true, targetHasOutput: true, status: 'reached' },
+    });
+    expect(fixture.read().kind).toBe('visible');
+    expect(fixture.badge()).toBe('PAGE READY');
   });
 
   it('rejects stale condition navigation after a route change or blocker resolution', () => {

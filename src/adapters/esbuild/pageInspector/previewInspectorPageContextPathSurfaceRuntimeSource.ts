@@ -7,6 +7,8 @@ function readPreviewInspectorPageContextPossibilities(descriptor) {
   if (candidates.length === 0) return [];
   const inventory = createPreviewInspectorPageContextPathInventory(candidates);
   const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
+  const verifiedPaths = typeof readPreviewInspectorVerifiedPageContextPathKeys === 'function'
+    ? readPreviewInspectorVerifiedPageContextPathKeys(record, inventory) : new Set();
   const activeId = previewInspectorSession.selectedPageCandidateId;
   const pendingId = previewInspectorSession.pendingPageCandidateId;
   const queuedId = previewInspectorSession.queuedPageCandidateId;
@@ -185,7 +187,7 @@ function readPreviewInspectorPageContextPossibilities(descriptor) {
               : state === 'checking'
                 ? 'VERIFYING OUTPUT'
                 : state === 'verified'
-              ? evaluatedVariantCount < candidateIds.length
+              ? evaluatedVariantCount < candidateIds.length && !verifiedPaths.has(group.key)
                 ? 'STABLE · TESTING ALTERNATIVES'
                 : 'STABLE OUTPUT'
               : state === 'user'

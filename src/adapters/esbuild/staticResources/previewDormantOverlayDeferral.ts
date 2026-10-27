@@ -422,7 +422,7 @@ function resolveWorkspaceSource(
   if (resolvedPath === undefined || resolvedPath.split(path.sep).includes('node_modules')) {
     return undefined;
   }
-  const relative = path.relative(path.resolve(workspaceRoot), path.resolve(resolvedPath));
+  const relative = path.relative(workspaceRoot, resolvedPath);
   return relative.length === 0 ||
     (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
     ? resolvedPath

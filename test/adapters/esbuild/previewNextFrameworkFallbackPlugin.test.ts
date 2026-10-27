@@ -1,8 +1,4 @@
 /** Verifies inert Next.js render facades for declared projects without installed framework files. */
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import vm from 'node:vm';
 import {
   build,
   context,
@@ -11,6 +7,10 @@ import {
   type OnLoadResult,
   type Plugin,
 } from 'esbuild';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import vm from 'node:vm';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createPreviewInstalledPackageExternalizationPlugin } from '../../../src/adapters/esbuild/previewInstalledPackageExternalizationPlugin';
 import { createPreviewNextFrameworkFallbackPlugin } from '../../../src/adapters/esbuild/previewNextFrameworkFallbackPlugin';
@@ -265,6 +265,68 @@ describe('Next framework render fallback', () => {
     const exports = executeCommonJs(result.outputFiles[0]?.text ?? '');
 
     expect(exports.result).toBe('installed-next-link');
+    expect(result.warnings).toEqual([]);
+  });
+
+  /** Keeps installed next/server exports but makes request-scoped `after`/`connection` inert. */
+  it('makes installed request-scoped next/server functions inert', async () => {
+    const projectRoot = await createProject('next-installed-server-', {
+      dependencies: { next: '16.3.0' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    const nextRoot = path.join(projectRoot, 'node_modules', 'next');
+    await Promise.all([
+      mkdir(path.dirname(entryPath), { recursive: true }),
+      mkdir(nextRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(nextRoot, 'package.json'),
+        JSON.stringify({ exports: { './server': './server.js' }, name: 'next', version: '16.3.0' }),
+        'utf8',
+      ),
+      writeFile(
+        path.join(nextRoot, 'server.js'),
+        [
+          "function after() { throw new Error('`after` was called outside a request scope.'); }",
+          "function connection() { throw new Error('`connection` outside a request scope.'); }",
+          "class NextResponse { static marker() { return 'installed-next-response'; } }",
+          'const serverExports = { NextResponse, after, connection };',
+          'module.exports = serverExports;',
+          'exports.NextResponse = serverExports.NextResponse;',
+          'exports.after = serverExports.after;',
+          'exports.connection = serverExports.connection;',
+        ].join('\n'),
+        'utf8',
+      ),
+      writeFile(
+        entryPath,
+        [
+          "import server, { after, connection, NextResponse } from 'next/server';",
+          'const ran: string[] = [];',
+          "after(() => { ran.push('after'); });",
+          "server.after(() => { ran.push('default after'); });",
+          'export const result = { connection: connection(), marker: NextResponse.marker(), ran };',
+        ].join('\n'),
+        'utf8',
+      ),
+    ]);
+
+    const result = await buildFixture(entryPath, projectRoot, [
+      createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+    ]);
+    const { result: value } = executeCommonJs(result.outputFiles[0]?.text ?? '') as {
+      readonly result: {
+        readonly connection: Promise<unknown>;
+        readonly marker: string;
+        readonly ran: readonly string[];
+      };
+    };
+
+    expect(value.marker).toBe('installed-next-response');
+    expect(value.ran).toEqual([]);
+    await expect(value.connection).resolves.toBeUndefined();
+    expect(Object.keys(result.metafile.inputs)).toContain('node_modules/next/server.js');
     expect(result.warnings).toEqual([]);
   });
 

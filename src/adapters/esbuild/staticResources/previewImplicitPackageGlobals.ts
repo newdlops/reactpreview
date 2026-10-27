@@ -132,8 +132,12 @@ export function collectPreviewImplicitPackageGlobals(
     });
   }
   const sourceFile = analysis.getSourceFile();
-  const checker = createLexicalChecker(options.sourcePath, sourceFile);
-  const referencesByName = collectPackageShapedFreeIdentifiers(sourceFile, checker, candidateNames);
+  let checker: ts.TypeChecker | undefined;
+  const referencesByName = collectPackageShapedFreeIdentifiers(
+    sourceFile,
+    () => (checker ??= createLexicalChecker(options.sourcePath, sourceFile)),
+    candidateNames,
+  );
   const freeNames = [...referencesByName.keys()].sort();
   const selectedNames = freeNames.slice(0, maximumCandidates);
   const globals: PreviewImplicitPackageGlobal[] = [];
@@ -201,11 +205,12 @@ function createLexicalChecker(sourcePath: string, sourceFile: ts.SourceFile): ts
 /** Collects deterministic package-shaped names whose value references have no runtime binding. */
 function collectPackageShapedFreeIdentifiers(
   sourceFile: ts.SourceFile,
-  checker: ts.TypeChecker,
+  readChecker: () => ts.TypeChecker,
   candidateNames: ReadonlySet<string> | undefined,
 ): ReadonlyMap<string, readonly PreviewImplicitPackageGlobalReference[]> {
   const referencesByName = new Map<string, PreviewImplicitPackageGlobalReference[]>();
   const writtenGlobalNames = new Set<string>();
+  const runtimeImports = collectExplicitRuntimeImportNames(sourceFile);
 
   /** Visits value-bearing syntax while retaining TypeScript's exact lexical symbol classification. */
   function visit(node: ts.Node): void {
@@ -214,7 +219,8 @@ function collectPackageShapedFreeIdentifiers(
       isRuntimeIdentifierReference(node) &&
       isPackageGlobalCandidateName(node.text) &&
       (candidateNames === undefined || candidateNames.has(node.text)) &&
-      !hasRuntimeLexicalBinding(node, checker)
+      !runtimeImports.has(node.text) &&
+      !hasRuntimeLexicalBinding(node, readChecker())
     ) {
       if (isDirectRuntimeWriteReference(node)) {
         writtenGlobalNames.add(node.text);
@@ -236,6 +242,29 @@ function collectPackageShapedFreeIdentifiers(
       .sort(([leftName], [rightName]) => leftName.localeCompare(rightName))
       .map(([name, references]) => [name, Object.freeze(references)]),
   );
+}
+
+/**
+ * A module's explicit value imports bind the same names throughout every nested scope. Removing
+ * these known-bound names before lexical checking avoids creating a TypeScript program for common
+ * fully imported modules. Type-only imports remain on the checker's existing semantic path.
+ */
+function collectExplicitRuntimeImportNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const clause = statement.importClause;
+    if (clause === undefined || clause.phaseModifier === ts.SyntaxKind.TypeKeyword) continue;
+    if (clause.name !== undefined) names.add(clause.name.text);
+    const bindings = clause.namedBindings;
+    if (bindings === undefined) continue;
+    if (ts.isNamespaceImport(bindings)) names.add(bindings.name.text);
+    else
+      for (const element of bindings.elements) {
+        if (isRuntimeDeclaration(element)) names.add(element.name.text);
+      }
+  }
+  return names;
 }
 
 /**

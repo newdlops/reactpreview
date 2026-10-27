@@ -214,9 +214,10 @@ describe('createReactContextHookFallbackTransform', () => {
     );
 
     expect(transform.replacements).toHaveLength(1);
-    expect(transform.declarations).toEqual([
-      'const __reactPreviewContextHookFallback0 = Object.freeze({ "user": Object.freeze({}) });',
-    ]);
+    expect(evaluateFallback(transform)).toEqual({
+      isStaffMode: false,
+      user: { isLegalPartnerStaff: false, isStaff: false },
+    });
     expect(transform.registrations[0]?.hookExpression).toBe('useAppContext');
   });
 
@@ -233,9 +234,12 @@ describe('createReactContextHookFallbackTransform', () => {
     const transform = createReactContextHookFallbackTransform('/workspace/filter.tsx', source);
 
     expect(transform.replacements).toHaveLength(1);
-    expect(transform.declarations).toEqual([
-      'const __reactPreviewContextHookFallback0 = Object.freeze({ "values": Object.freeze({ "map": Object.freeze(() => undefined) }) });',
-    ]);
+    expect(
+      evaluateFallback(
+        transform,
+        (binding) => `new Set(${binding}.values.map((value) => value.id)).size`,
+      ),
+    ).toBe(1);
   });
 
   /** Propagates an object requirement through a bounded local helper into a nested destructure. */
@@ -256,9 +260,10 @@ describe('createReactContextHookFallbackTransform', () => {
     const transform = createReactContextHookFallbackTransform('/workspace/focus.tsx', source);
 
     expect(transform.replacements).toHaveLength(1);
-    expect(transform.declarations).toEqual([
-      'const __reactPreviewContextHookFallback0 = Object.freeze({ "formikProps": Object.freeze({ "errors": Object.freeze({}) }), "options": Object.freeze({}) });',
-    ]);
+    expect(evaluateFallback(transform)).toEqual({
+      formikProps: { errors: {}, isValid: false },
+      options: { focusOnError: null },
+    });
   });
 
   /** Carries an imported helper's nested Array demand into a Context-hook fallback. */
@@ -383,8 +388,8 @@ describe('createReactContextHookFallbackTransform', () => {
     }
   });
 
-  /** Leaves primitive leaves absent and blocks prototype-sensitive property materialization. */
-  it('does not invent leaf values or prototype-sensitive paths', () => {
+  /** Keeps semantic booleans false and blocks prototype-sensitive property materialization. */
+  it('uses neutral semantic leaves and rejects prototype-sensitive paths', () => {
     const leafSource = [
       `import { useAppContext } from './app-context';`,
       'function View() { const { isStaffMode } = useAppContext(); return isStaffMode; }',
@@ -395,8 +400,8 @@ describe('createReactContextHookFallbackTransform', () => {
     ].join('\n');
 
     expect(
-      createReactContextHookFallbackTransform('/workspace/leaf.tsx', leafSource).declarations,
-    ).toEqual(['const __reactPreviewContextHookFallback0 = Object.freeze({});']);
+      evaluateFallback(createReactContextHookFallbackTransform('/workspace/leaf.tsx', leafSource)),
+    ).toEqual({ isStaffMode: false });
     expect(createReactContextHookFallbackTransform('/workspace/unsafe.tsx', unsafeSource)).toEqual({
       declarations: [],
       registrations: [],
@@ -451,6 +456,19 @@ describe('createReactContextHookFallbackTransform', () => {
     ]);
   });
 });
+
+/** Executes only compiler-generated declarations so assertions check actual receiver behavior. */
+function evaluateFallback(
+  transform: ReactContextHookFallbackTransform,
+  expression: (binding: string) => string = (binding) => binding,
+): unknown {
+  const binding = transform.registrations[0]?.fallbackBinding;
+  if (binding === undefined) throw new Error('Expected a registered Context fallback.');
+  return runInContext(
+    `${transform.declarations.join('\n')}\n${expression(binding)}`,
+    createContext({}),
+  );
+}
 
 /** Applies generated source ranges right-to-left and appends their stable module declarations. */
 function applyTransform(source: string, transform: ReactContextHookFallbackTransform): string {

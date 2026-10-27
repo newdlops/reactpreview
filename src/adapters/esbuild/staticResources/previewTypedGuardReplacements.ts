@@ -18,6 +18,7 @@ import {
 } from '../typeOracle/previewTypeOracle';
 import { createPreviewTypedValueExpression } from '../typeOracle/previewTypedValueExpression';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
+import type { StaticSourceAnalysis } from './staticCallParser';
 
 const MAX_GUARDS_PER_MODULE = 32;
 const MAX_GUARD_EXPRESSION_LENGTH = 20_000;
@@ -38,6 +39,7 @@ export interface PreviewTypedGuardInstrumentation {
  * @param oracle Build-scoped declared-type oracle.
  * @param allocate Allocates a collision-free module binding name.
  * @param occupied Replacements already selected for this module; overlapping reads are skipped.
+ * @param sourceAnalysis Private transformer analysis reused only for the exact input path and text.
  * @returns Declarations and replacements, both empty when nothing qualified.
  */
 export function createPreviewTypedGuardReplacements(
@@ -46,16 +48,21 @@ export function createPreviewTypedGuardReplacements(
   oracle: PreviewTypeOracleView,
   allocate: (kind: string) => string,
   occupied: readonly PreviewSourceReplacement[],
+  sourceAnalysis?: StaticSourceAnalysis,
 ): PreviewTypedGuardInstrumentation {
   const empty = { declarations: [], replacements: [] };
   if (!sourceText.includes('<') && !sourceText.includes('createElement')) return empty;
-  const sourceFile = ts.createSourceFile(
-    sourcePath,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    /\.[jt]sx$/u.test(sourcePath) ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
+  const prepared = sourceAnalysis?.getSourceFile();
+  const sourceFile =
+    prepared?.fileName === sourcePath && prepared.text === sourceText
+      ? prepared
+      : ts.createSourceFile(
+          sourcePath,
+          sourceText,
+          ts.ScriptTarget.Latest,
+          true,
+          /\.[jt]sx$/u.test(sourcePath) ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+        );
   const occurrenceByNode = indexOccurrences(sourceFile);
   const declarations: string[] = [];
   const replacements: PreviewSourceReplacement[] = [];
@@ -66,6 +73,12 @@ export function createPreviewTypedGuardReplacements(
     if (reads === undefined || reads.length === 0 || text.length > MAX_GUARD_EXPRESSION_LENGTH) {
       continue;
     }
+    const free = reads.filter(
+      (read) =>
+        !occupied.some((item) => read.start < item.end && read.end > item.start) &&
+        !replacements.some((item) => read.start < item.end && read.end > item.start),
+    );
+    if (free.length === 0) continue;
     const typed = oracle.readTypedGuardValue({
       expressionText: text,
       kind: guard.kind,
@@ -73,12 +86,7 @@ export function createPreviewTypedGuardReplacements(
       requiredPaths: [...new Set(reads.map((read) => read.path).filter((path) => path.length > 0))],
       sourcePath,
     });
-    const free = reads.filter(
-      (read) =>
-        !occupied.some((item) => read.start < item.end && read.end > item.start) &&
-        !replacements.some((item) => read.start < item.end && read.end > item.start),
-    );
-    if (typed?.nullable !== true || free.length === 0) continue;
+    if (typed?.nullable !== true) continue;
     const binding = allocate('typedGuard');
     declarations.push(`const ${binding} = ${createPreviewTypedValueExpression(typed.value)};`);
     for (const read of free) {

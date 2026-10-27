@@ -7,6 +7,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
 
 const MAX_LITERAL_DYNAMIC_IMPORTS = 4096;
 
@@ -32,11 +33,9 @@ export function collectPreviewDynamicImportInventory(
   sourceText: string,
 ): PreviewDynamicImportInventory {
   if (!sourceText.includes('import')) return EMPTY_DYNAMIC_IMPORT_INVENTORY;
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = readPreviewAnalysisSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     selectScriptKind(sourcePath),
   );
   if (hasParseDiagnostics(sourceFile)) return UNRELIABLE_DYNAMIC_IMPORT_INVENTORY;

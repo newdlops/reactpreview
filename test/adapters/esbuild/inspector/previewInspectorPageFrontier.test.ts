@@ -270,8 +270,12 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     expect(selection.executionPlan.candidate.fidelity).toBe('page-authentic');
     expect(selection.executionPlan.alternatives).toEqual([
       { candidateId: 'page-authentic', fidelity: 'page-authentic' },
-      { candidateId: 'target-contextual', fidelity: 'target-contextual' },
-      { candidateId: 'target-only', fidelity: 'target-only' },
+      {
+        candidateId: 'target-contextual',
+        fidelity: 'target-contextual',
+        reason: 'deferred-until-selected',
+      },
+      { candidateId: 'target-only', fidelity: 'target-only', reason: 'deferred-until-selected' },
     ]);
     const connectedPageSelection = await preparePreviewInspectorPageExecutionSelection({
       candidates: [
@@ -614,7 +618,7 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     });
   });
 
-  it('shares exact authentic and sliced inventories without changing candidate proof or traces', async () => {
+  it('shares the winning inventory while alternate slices remain deferred', async () => {
     const workspaceRoot = '/workspace';
     const pagePath = '/workspace/Page.tsx';
     const targetPath = '/workspace/Target.tsx';
@@ -744,12 +748,7 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     expect(JSON.stringify(second.selection)).toBe(JSON.stringify(withoutMemo.selection));
     expect(first.sourceReads).toEqual(withoutMemo.sourceReads);
     expect(second.sourceReads).toEqual([]);
-    expect(first.resolutions).toEqual([
-      `${pagePath}\0./Target`,
-      `${pagePath}\0./Target`,
-      `${pagePath}\0./unused`,
-      `${pagePath}\0./Target`,
-    ]);
+    expect(first.resolutions).toEqual([`${pagePath}\0./Target`, `${pagePath}\0./unused`]);
     expect(second.resolutions).toEqual([]);
     expect(JSON.stringify(withDiagnostics.selection)).toBe(JSON.stringify(withoutMemo.selection));
     expect(JSON.stringify(withDiagnosticsHit.selection)).toBe(
@@ -768,65 +767,64 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     ]);
     expect(first.selection.executionPlan.candidate.id).toBe('authentic');
     expect(memo.getStatistics()).toEqual({
-      computations: 4,
-      entries: 4,
+      computations: 2,
+      entries: 2,
       hits: 0,
       released: false,
-      requests: 4,
+      requests: 2,
     });
     expect(memo.getSliceStatistics()).toEqual({
       released: false,
-      sliceComputations: 2,
-      sliceEntries: 2,
+      sliceComputations: 0,
+      sliceEntries: 0,
       sliceHits: 0,
-      sliceRequests: 2,
+      sliceRequests: 0,
     });
     expect(memo.getClosureStatistics()).toEqual({
-      closureComputations: 3,
-      closureEntries: 3,
-      closureHits: 3,
-      closureRequests: 6,
+      closureComputations: 1,
+      closureEntries: 1,
+      closureHits: 1,
+      closureRequests: 2,
       released: false,
     });
-    // Each of the three candidates seeds Page and Target. Processing Page also enqueues its
+    // The selected authentic candidate seeds Page and Target. Processing Page also enqueues its
     // resolved Target support before the already-seeded Target is admitted, so every frontier
-    // performs three deterministic queue iterations (9 total). Authentic Page exposes its
-    // static Target and unused dynamic edge; the local and selected slices expose only Target,
-    // yielding four visited/resolved edges in total.
+    // performs three deterministic queue iterations. Lower-fidelity slices remain inert until
+    // selected, so only the authentic static Target and unused dynamic edge are resolved.
     expect(bundleDiagnostics.snapshot()).toMatchObject({
-      authoredPathCheckCount: 9,
-      authoredPathCheckMicros: 9,
+      authoredPathCheckCount: 3,
+      authoredPathCheckMicros: 3,
       candidateSelectionMicros: 2,
       candidateSelectionSortCount: 2,
-      edgeVisitCount: 4,
-      frontierCount: 6,
-      frontierFinalizeMicros: 18,
-      frontierIdentityMicros: 6,
-      inventoryComputationCount: 4,
+      edgeVisitCount: 2,
+      frontierCount: 2,
+      frontierFinalizeMicros: 6,
+      frontierIdentityMicros: 2,
+      inventoryComputationCount: 2,
       inventoryHitCount: 0,
-      inventoryLookupMicros: 4,
+      inventoryLookupMicros: 2,
       inventoryReadPathCacheHitCount: 0,
-      inventoryReadRequestCount: 4,
+      inventoryReadRequestCount: 2,
       optionalClosureMicros: 0,
       optionalClosureProbeCount: 0,
-      queueIterationCount: 9,
+      queueIterationCount: 3,
       queuePeakLength: 2,
-      queueSortCount: 9,
-      queueSortMicros: 9,
+      queueSortCount: 3,
+      queueSortMicros: 3,
       rawSourceReadCount: 2,
       rawSourceReadMicros: 2,
-      resolveModuleCount: 4,
-      resolveModuleMicros: 4,
-      sliceComputationCount: 2,
+      resolveModuleCount: 2,
+      resolveModuleMicros: 2,
+      sliceComputationCount: 0,
       sliceHitCount: 0,
-      sliceLookupMicros: 2,
-      sliceRequestCount: 2,
+      sliceLookupMicros: 0,
+      sliceRequestCount: 0,
     });
     expect(diagnosticsMemo.getClosureStatistics()).toEqual({
-      closureComputations: 3,
-      closureEntries: 3,
-      closureHits: 3,
-      closureRequests: 6,
+      closureComputations: 1,
+      closureEntries: 1,
+      closureHits: 1,
+      closureRequests: 2,
       released: false,
     });
     for (const requestMemo of [memo, diagnosticsMemo])
@@ -834,10 +832,10 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
         dynamicResolutionEntries: 1,
         proposalEntries: 0,
         released: false,
-        resolvedNodeComputations: 4,
-        resolvedNodeEntries: 4,
-        resolvedNodeHits: 2,
-        resolvedNodeRequests: 6,
+        resolvedNodeComputations: 2,
+        resolvedNodeEntries: 2,
+        resolvedNodeHits: 0,
+        resolvedNodeRequests: 2,
         rootedGraphEntries: 0,
       });
     memo.release();

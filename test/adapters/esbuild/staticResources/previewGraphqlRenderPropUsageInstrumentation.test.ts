@@ -245,7 +245,7 @@ describe('preview GraphQL render-prop usage instrumentation', () => {
       '<QueryRenderer query={QUERY}>',
       '  {({ data: { director } }) => (',
       '    <div>',
-      ...Array.from({ length: 32 }, (_, index) => `    <Irrelevant${index} />`),
+      ...Array.from({ length: 32 }, (_, index) => `    <Irrelevant${index.toString()} />`),
       '    <DirectorCompensationChangeLogPanel events={director.userActivities as any} />',
       '    </div>',
       '  )}',

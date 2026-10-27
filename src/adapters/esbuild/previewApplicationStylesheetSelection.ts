@@ -5,7 +5,11 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
-import { selectPreviewApplicationEntry } from './previewApplicationEntrySelection';
+import { readPreviewAnalysisSourceFile } from './previewAnalysisSourceFile';
+import {
+  selectPreviewApplicationEntry,
+  type PreviewApplicationEntry,
+} from './previewApplicationEntrySelection';
 import type { ReadPreviewProjectSourceOptions } from './previewProjectFileAnalysisCache';
 import type { PreviewRenderChainCandidate } from './renderGraph/previewRenderGraphTypes';
 
@@ -24,6 +28,8 @@ export interface PreviewApplicationStylesheetImportSelection {
 
 /** Inputs for bounded Next application-root stylesheet selection. */
 export interface SelectPreviewApplicationStylesheetImportsOptions {
+  /** Shared entry proof; null means the caller already checked and found no application owner. */
+  readonly applicationEntry?: PreviewApplicationEntry | null;
   /** Nearest package boundary containing the selected preview target. */
   readonly projectRoot: string;
   /** Cached byte-bounded source reader shared with the rest of preview preparation. */
@@ -99,15 +105,27 @@ async function collectApplicationStyleRoots(
     options.resolveModule !== undefined &&
     steps.length > 0
   ) {
-    const entry = await selectPreviewApplicationEntry({
-      projectRoot: options.projectRoot,
-      readSource: options.readSource,
-      resolveModule: options.resolveModule,
-      rootSourcePaths: steps.map((step) => step.sourcePath),
-    });
+    const entry =
+      options.applicationEntry === undefined
+        ? await selectPreviewApplicationEntry({
+            projectRoot: options.projectRoot,
+            readSource: options.readSource,
+            resolveModule: options.resolveModule,
+            rootSourcePaths: steps.map((step) => step.sourcePath),
+          })
+        : (options.applicationEntry ?? undefined);
     if (entry !== undefined) {
       roots.push(entry);
       seen.add(path.normalize(entry.sourcePath));
+      for (const owner of entry.styleOwners) {
+        if (seen.has(path.normalize(owner.sourcePath))) continue;
+        seen.add(path.normalize(owner.sourcePath));
+        const sourceText = await options.readSource({
+          maximumBytes: MAXIMUM_APPLICATION_ROOT_BYTES,
+          sourcePath: owner.sourcePath,
+        });
+        if (sourceText !== undefined) roots.push({ sourcePath: owner.sourcePath, sourceText });
+      }
     }
   }
   const conventional = await selectConventionalApplicationRoot(options);
@@ -178,7 +196,7 @@ function createApplicationRootSourceFile(sourcePath: string, sourceText: string)
         : extension === '.js'
           ? ts.ScriptKind.JS
           : ts.ScriptKind.TS;
-  return ts.createSourceFile(sourcePath, sourceText, ts.ScriptTarget.Latest, true, scriptKind);
+  return readPreviewAnalysisSourceFile(sourcePath, sourceText, scriptKind);
 }
 
 /** Rejects parser recovery so a partially edited layout cannot emit incomplete style imports. */

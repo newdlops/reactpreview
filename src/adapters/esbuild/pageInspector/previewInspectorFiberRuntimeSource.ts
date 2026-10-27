@@ -7,6 +7,7 @@
  * the adapter separate from the toolbar lets the UI consume a stable snapshot contract without
  * depending on React's private objects.
  */
+import { createPreviewInspectorCurrentFiberRuntimeSource } from './previewInspectorCurrentFiberRuntimeSource';
 import { createPreviewInspectorFiberStructureRuntimeSource } from './previewInspectorFiberStructureRuntimeSource';
 import { createPreviewInspectorFiberTargetReservationRuntimeSource } from './previewInspectorFiberTargetReservationRuntimeSource';
 
@@ -31,6 +32,7 @@ export const PREVIEW_INSPECTOR_TREE_NODE_LIMIT = 512;
  * @returns Plain JavaScript source with no React DevTools dependency and no Fiber mutation.
  */
 export function createPreviewInspectorFiberRuntimeSource(): string {
+  const currentFiberRuntimeSource = createPreviewInspectorCurrentFiberRuntimeSource();
   const structureRuntimeSource = createPreviewInspectorFiberStructureRuntimeSource();
   const targetReservationRuntimeSource =
     createPreviewInspectorFiberTargetReservationRuntimeSource();
@@ -63,6 +65,7 @@ const previewInspectorOwnedComponentNames = new Set([
 
 ${structureRuntimeSource}
 ${targetReservationRuntimeSource}
+${currentFiberRuntimeSource}
 
 /** Reads only an own data descriptor and deliberately declines accessors and inherited getters. */
 function readPreviewInspectorOwnData(value, propertyName) {
@@ -83,35 +86,6 @@ function readPreviewInspectorOwnData(value, propertyName) {
 function readPreviewInspectorFiberLink(fiber, propertyName) {
   const value = readPreviewInspectorOwnData(fiber, propertyName);
   return value !== null && typeof value === 'object' ? value : undefined;
-}
-
-/** Reads the current boundary Fiber across React 16-19 class-instance field spellings. */
-function readPreviewInspectorBoundaryFiber(boundary) {
-  const modernFiber = readPreviewInspectorOwnData(boundary, '_reactInternals');
-  const legacyFiber = readPreviewInspectorOwnData(boundary, '_reactInternalFiber');
-  const primary = modernFiber !== null && typeof modernFiber === 'object'
-    ? modernFiber
-    : legacyFiber !== null && typeof legacyFiber === 'object'
-      ? legacyFiber
-      : undefined;
-  if (primary === undefined) return undefined;
-  const alternate = readPreviewInspectorFiberLink(primary, 'alternate');
-  const candidates = [primary, alternate].filter((candidate) => candidate !== undefined && (
-    readPreviewInspectorOwnData(candidate, 'stateNode') === undefined ||
-    readPreviewInspectorOwnData(candidate, 'stateNode') === boundary
-  ));
-  for (const candidate of candidates) {
-    let root = candidate;
-    let steps = 0;
-    while (readPreviewInspectorFiberLink(root, 'return') !== undefined && steps < 256) {
-      root = readPreviewInspectorFiberLink(root, 'return');
-      steps += 1;
-    }
-    const current = readPreviewInspectorOwnData(readPreviewInspectorOwnData(root, 'stateNode'), 'current');
-    if (current !== undefined && current === root) return candidate;
-  }
-  return candidates.find((candidate) =>
-    readPreviewInspectorFiberLink(candidate, 'child') !== undefined) ?? candidates[0];
 }
 
 /** Returns a descriptor-safe component name through memo, forward-ref, and lazy-like wrappers. */
@@ -679,9 +653,18 @@ function findPreviewInspectorApplicationSliceFiber(boundaryFiber) {
     const kind = classifyPreviewInspectorFiber(current);
     const name = namePreviewInspectorFiber(current, kind);
     if (name === 'PreviewPageInspectorExportBoundary') {
+      const committed = resolvePreviewInspectorCommittedBoundary(
+        [current, readPreviewInspectorFiberLink(current, 'alternate')].filter(Boolean),
+      );
+      if (committed.rootObserved) return readPreviewInspectorFiberLink(committed.fiber, 'child');
       return readPreviewInspectorFiberLink(current, 'child') ?? childOnPath;
     }
-    if (name === 'PreviewPageInspectorShell') return childOnPath;
+    if (name === 'PreviewPageInspectorShell') {
+      const committed = resolvePreviewInspectorCommittedBoundary(
+        [childOnPath, readPreviewInspectorFiberLink(childOnPath, 'alternate')].filter(Boolean),
+      );
+      return committed.rootObserved ? committed.fiber : childOnPath;
+    }
     childOnPath = current;
     current = readPreviewInspectorFiberLink(current, 'return');
   }

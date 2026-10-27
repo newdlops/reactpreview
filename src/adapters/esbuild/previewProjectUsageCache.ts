@@ -10,6 +10,7 @@ import path from 'node:path';
 import { throwIfPreviewBuildCancelled } from '../../domain/previewBuildExecution';
 import { PreviewProjectFileAnalysisCache } from './previewProjectFileAnalysisCache';
 import type { ReadPreviewProjectSourceOptions } from './previewProjectFileAnalysisCache';
+import type { CreatePreviewRenderChainPlanOptions } from './renderGraph';
 import {
   collectPreviewTargetUsageSourcePaths,
   discoverPreviewTargetUsageProps,
@@ -91,6 +92,16 @@ export class PreviewProjectUsageCache {
   private readonly now: () => number;
   private readonly sourceInventories = new Map<string, SourceInventoryCacheEntry>();
   private readonly usageResults = new Map<string, UsageResultCacheEntry>();
+
+  /** Exact-text inert render/import facts from the existing bounded file cache, without ASTs. */
+  public readonly renderSourceAnalysis: Readonly<
+    Pick<CreatePreviewRenderChainPlanOptions, 'analyzeSource' | 'collectModuleSpecifiers'>
+  > = Object.freeze({
+    analyzeSource: (sourcePath: string, sourceText: string) =>
+      this.fileAnalysisCache.analyzeRenderSource(sourcePath, sourceText),
+    collectModuleSpecifiers: (sourcePath: string, sourceText: string) =>
+      this.fileAnalysisCache.collectModuleSpecifiers(sourcePath, sourceText),
+  });
 
   /** Creates an empty cache owned by one compiler instance. */
   public constructor(options: PreviewProjectUsageCacheOptions = {}) {
@@ -384,9 +395,9 @@ function createUsageResultKey(options: PreviewProjectUsageDiscoveryOptions): str
   return `${createPackageCacheKey(options.workspaceRoot, options.projectRoot)}\0${path.normalize(options.documentPath)}\0${exportKey}\0${climbKey}\0${inspectorKey}\0${routeSelectionKey}\0${tsconfigKey}`;
 }
 
-/** Hashes current editor text without embedding every hot revision into the bounded map key. */
+/** Hashes exact UTF-16 editor text without embedding every revision into the bounded map key. */
 function createSourceTextFingerprint(sourceText: string): string {
-  return createHash('sha256').update(sourceText).digest('hex');
+  return createHash('sha256').update(sourceText, 'utf16le').digest('hex');
 }
 
 /** Reads stable metadata for selected consumers; an inaccessible dependency invalidates the cache. */

@@ -1,6 +1,7 @@
+import { asPreviewHeadlessError } from './previewHeadlessErrorEvidence';
 /** Creates and verifies deterministic tracked-only Git source snapshots. */
-import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -154,15 +155,20 @@ export async function verifyPreviewTrackedSourceSnapshot(
   snapshotPath: string,
 ): Promise<PreviewTrackedSourceSnapshotManifest> {
   const manifestPath = path.join(snapshotPath, 'manifests', 'source-manifest.json');
-  const parsed = JSON.parse(
-    await readFile(manifestPath, 'utf8'),
-  ) as PreviewTrackedSourceSnapshotManifest;
-  const { manifestDigest: _digest, ...unsigned } = parsed;
+  const manifestValue: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
   if (
-    parsed.kind !== 'react-preview-tracked-source-snapshot' ||
-    parsed.version !== 1 ||
-    digestJson(unsigned) !== parsed.manifestDigest
+    typeof manifestValue !== 'object' ||
+    manifestValue === null ||
+    !('kind' in manifestValue) ||
+    manifestValue.kind !== 'react-preview-tracked-source-snapshot' ||
+    !('version' in manifestValue) ||
+    manifestValue.version !== 1
   ) {
+    throw new Error('Source snapshot manifest identity is invalid.');
+  }
+  const parsed = manifestValue as PreviewTrackedSourceSnapshotManifest;
+  const { manifestDigest, ...unsigned } = parsed;
+  if (digestJson(unsigned) !== manifestDigest) {
     throw new Error('Source snapshot manifest identity is invalid.');
   }
   const sourcePath = path.join(snapshotPath, 'source');
@@ -202,6 +208,7 @@ export function assertPreviewSnapshotTrackedFiles(
   }
 }
 
+/** Rejects archive paths that are absolute, ambiguous, or capable of escaping the snapshot root. */
 function normalizeSafeRelativePath(candidate: string, allowDirectory: boolean): string {
   if (
     candidate.length === 0 ||
@@ -232,6 +239,7 @@ function normalizeSafeRelativePath(candidate: string, allowDirectory: boolean): 
   return normalized;
 }
 
+/** Decodes Git’s tracked-file records into a bounded source inventory without consulting untracked files. */
 function parseTrackedFiles(output: Buffer): PreviewTrackedSourceSnapshotFile[] {
   return output
     .toString('utf8')
@@ -251,6 +259,7 @@ function parseTrackedFiles(output: Buffer): PreviewTrackedSourceSnapshotFile[] {
     .sort((left, right) => compareText(left.path, right.path));
 }
 
+/** Normalizes and orders archive member paths before extraction admission. */
 function normalizeArchiveEntries(entries: readonly string[]): readonly string[] {
   const normalized = entries
     .filter((entry) => entry.length > 0 && !entry.endsWith('/'))
@@ -262,6 +271,7 @@ function normalizeArchiveEntries(entries: readonly string[]): readonly string[] 
   return Object.freeze(normalized);
 }
 
+/** Checks extracted regular files against their tracked path, size, and digest evidence. */
 async function verifyExtractedFiles(
   sourcePath: string,
   expectedFiles: readonly PreviewTrackedSourceSnapshotFile[],
@@ -299,6 +309,7 @@ async function verifyExtractedFiles(
   return Object.freeze(verified);
 }
 
+/** Walks an extracted snapshot and rejects unsupported entries while collecting its regular files. */
 async function collectRegularFilePaths(rootPath: string): Promise<readonly string[]> {
   const files: string[] = [];
   const visit = async (directoryPath: string): Promise<void> => {
@@ -317,6 +328,7 @@ async function collectRegularFilePaths(rootPath: string): Promise<readonly strin
   return Object.freeze(files.sort());
 }
 
+/** Requires an absent destination before creating owned snapshot output. */
 async function assertPathMissing(candidatePath: string, message: string): Promise<void> {
   try {
     await stat(candidatePath);
@@ -332,6 +344,7 @@ async function assertPathMissing(candidatePath: string, message: string): Promis
   }
 }
 
+/** Runs the fixed snapshot tool invocation with bounded captured bytes and propagates subprocess failure. */
 function runBuffer(command: string, arguments_: readonly string[]): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -339,25 +352,29 @@ function runBuffer(command: string, arguments_: readonly string[]): Promise<Buff
       [...arguments_],
       { encoding: 'buffer', maxBuffer: MAX_GIT_OUTPUT_BYTES },
       (error, stdout) => {
-        if (error !== null) reject(error);
+        if (error !== null) reject(asPreviewHeadlessError(error));
         else resolve(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
       },
     );
   });
 }
 
+/** Decodes the fixed subprocess’s captured output as UTF-8 after successful execution. */
 async function runText(command: string, arguments_: readonly string[]): Promise<string> {
   return (await runBuffer(command, arguments_)).toString('utf8');
 }
 
+/** Hashes a stable JSON serialization so equivalent manifest records share an identity. */
 export function digestPreviewManifest(value: unknown): string {
   return digestJson(value);
 }
 
+/** Hashes the canonical JSON representation used for campaign identity and artifact comparisons. */
 function digestJson(value: unknown): string {
   return sha256(Buffer.from(stableJson(value)));
 }
 
+/** Serializes JSON with recursively stable object-key ordering for reproducible manifest digests. */
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   if (value !== null && typeof value === 'object') {
@@ -370,10 +387,12 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** Returns a hexadecimal SHA-256 for the exact supplied binary payload. */
 function sha256(value: Buffer): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+/** Provides deterministic lexical ordering independent of the host locale. */
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }

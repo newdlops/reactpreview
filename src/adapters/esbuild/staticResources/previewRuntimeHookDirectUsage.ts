@@ -8,6 +8,7 @@
 import ts from 'typescript';
 import { createPreviewSampleLabel } from '../previewSampleLabel';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
+import { reusePreviewRuntimeHookReferenceTraversal } from './previewRuntimeHookReferenceTraversal';
 import { readPreviewRuntimeCallResultBinding } from './previewRuntimeHookSyntax';
 
 /** Static expression and user-facing description emitted for one proven direct use. */
@@ -46,6 +47,10 @@ export function createPreviewRuntimeHookDirectUsageFallback(
 ): PreviewRuntimeHookDirectUsageFallback | undefined {
   const owner = findNearestRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
+  const visitReferencedChildren = reusePreviewRuntimeHookReferenceTraversal(
+    owner,
+    new Set([identifier.text]),
+  );
   const usage = {
     called: false,
     callResultBindings: [] as ts.BindingName[],
@@ -109,7 +114,7 @@ export function createPreviewRuntimeHookDirectUsageFallback(
         usage.rendered = true;
       }
     }
-    ts.forEachChild(node, visit);
+    visitReferencedChildren(node, visit);
   };
   visit(owner);
   if (usage.called) {

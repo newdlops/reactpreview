@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { build } from 'esbuild';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { registerPreviewInspectorBundleFrontierGuard } from '../../../../src/adapters/esbuild/inspector/previewInspectorBundleFrontierGuard';
 import { isPreviewFrontierMismatchEvidence } from '../../../../src/domain/previewBuildExecution';

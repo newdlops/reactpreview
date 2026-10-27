@@ -1,33 +1,56 @@
-/* eslint-disable jsdoc/require-jsdoc */
-/**
- * Prunes unrelated project-owned route branches from a statically proven Page Inspector corridor.
- *
- * A large application root commonly declares hundreds of React.lazy route branches. Esbuild must
- * otherwise emit every branch even though the pinned Inspector session can activate only the
- * candidate paths already proven by static render analysis. This plugin replaces out-of-path
- * project dynamic imports and syntax-proven eager leaf choices with inert ESM placeholders.
- * Ambiguous static imports, installed dependencies, setup loading, layouts, and every selected
- * target/ancestor module remain untouched.
- */
-import { readFile, stat } from 'node:fs/promises';
-import path from 'node:path';
+/** Coordinates CorridorPlugin using bounded authored-source evidence. */
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
+import path from 'node:path';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
 import { createPreviewLargePackageBarrelPlugin } from '../previewLargePackageBarrelPlugin';
 import { PREVIEW_RESOLVE_GUARD } from '../previewPluginProtocol';
-import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 import { collectPreviewDynamicImportInventory } from '../staticResources/previewDynamicImportInventory';
 import { collectRenderedNextDynamicSpecifiers } from '../staticResources/previewNextDynamicInstrumentation';
-import type {
-  PreviewInspectorAncestorPlan,
-  PreviewInspectorPageCandidate,
-} from './previewInspectorAncestorPlan';
+import { hasPreviewInspectorAuthoredHookLogic } from './previewInspectorAuthoredHookLogic';
+import { registerPreviewInspectorBundleFrontierGuard } from './previewInspectorBundleFrontierGuard';
 import {
-  collectPreviewStaticRouteProjectionInventory,
-  createPreviewStaticRouteProjectionSource,
-  type PreviewStaticRouteProjection,
-  type PreviewStaticRouteProjectionInventory,
-} from './previewInspectorStaticRouteProjection';
+  collectPreviewInspectorFrozenProjectedEdges,
+  collectPreviewInspectorRuntimeHookExportsByPath,
+  collectPreviewInspectorShallowExportsByPath,
+  containsDependencyDirectory,
+  createPreviewInspectorCorridorModuleStemSet,
+  createPreviewInspectorCorridorPathSet,
+  createPreviewInspectorFrozenProjectedEdgeKey,
+  isPathInside,
+  matchesPreviewCorridorModuleStem,
+  readBoundedSource,
+} from './previewInspectorCorridorDemands';
+import {
+  createOmittedDeferredBranch,
+  createOmittedStaticRouteBranch,
+  createShallowVisualProjection,
+  createVirtualPageComponentFacade,
+  readShallowProjectionPluginData,
+  readStaticProjectionPluginData,
+  readVirtualPageComponentPluginData,
+  shouldExpandVirtualPageComponent,
+} from './previewInspectorCorridorFacades';
+import {
+  INSPECTOR_CORRIDOR_NAMESPACE,
+  INSPECTOR_CORRIDOR_PLACEHOLDER_PATH,
+  INSPECTOR_SHALLOW_CORRIDOR_NAMESPACE,
+  INSPECTOR_STATIC_CORRIDOR_NAMESPACE,
+  INSPECTOR_VIRTUAL_PAGE_COMPONENT_NAMESPACE,
+  INSPECTOR_VIRTUAL_PAGE_COMPONENT_RUNTIME_NAMESPACE,
+  MAX_SMALL_DYNAMIC_IMPORTS,
+  MAX_SMALL_STATIC_ROUTE_IMPORTS,
+  MINIMUM_SELECTED_PACKAGE_BARREL_EXPORTS,
+  type PreviewDynamicImporterEvidence,
+  type PreviewInspectorCorridorPluginOptions,
+  SOURCE_MODULE_PATTERN,
+} from './previewInspectorCorridorModel';
+import { loadPreviewDeferredCorridorBranch } from './previewInspectorDeferredDynamicSurface';
+import { createPreviewInspectorPackageDemandPathSet } from './previewInspectorPackageDemand';
+import { readPreviewInspectorPageSurfaceImporterPath } from './previewInspectorPageExecutionPlugin';
+import {
+  collectPreviewInspectorRouteParameterGroups,
+  matchesPreviewInspectorRouteParameterBranch,
+} from './previewInspectorRouteParameterBranch';
 import {
   collectPreviewInspectorRuntimeHookProjectionInventory,
   collectPreviewInspectorShallowProjectionInventory,
@@ -35,66 +58,18 @@ import {
   type PreviewInspectorShallowProjection,
   type PreviewInspectorShallowProjectionInventory,
 } from './previewInspectorShallowProjection';
-import { hasPreviewInspectorAuthoredHookLogic } from './previewInspectorAuthoredHookLogic';
 import {
-  createPreviewDeferredCorridorBranch,
-  loadPreviewDeferredCorridorBranch,
-} from './previewInspectorDeferredDynamicSurface';
-import { createPreviewInspectorPackageDemandPathSet } from './previewInspectorPackageDemand';
-import { readPreviewInspectorPageSurfaceImporterPath } from './previewInspectorPageExecutionPlugin';
-import { registerPreviewInspectorBundleFrontierGuard } from './previewInspectorBundleFrontierGuard';
-import {
-  collectPreviewInspectorRouteParameterGroups,
-  matchesPreviewInspectorRouteParameterBranch,
-} from './previewInspectorRouteParameterBranch';
-import {
-  createPreviewInspectorVirtualPageComponentSource,
-  type PreviewInspectorVirtualPageComponent,
-} from './previewInspectorVirtualPageComponentSource';
-import type {
-  PreviewInspectorFrontierComponentExports,
-  PreviewInspectorProjectedEdge,
-} from './previewInspectorBundleFrontierTypes';
+  collectPreviewStaticRouteProjectionInventory,
+  createPreviewStaticRouteProjectionSource,
+  type PreviewStaticRouteProjection,
+  type PreviewStaticRouteProjectionInventory,
+} from './previewInspectorStaticRouteProjection';
 import {
   createPreviewInspectorVirtualPageComponentRuntimeSource,
   PREVIEW_INSPECTOR_VIRTUAL_PAGE_COMPONENT_RUNTIME_SPECIFIER,
 } from './previewInspectorVirtualPageComponentRuntimeSource';
-
-const INSPECTOR_CORRIDOR_NAMESPACE = 'react-preview-inspector-corridor';
-const INSPECTOR_CORRIDOR_PLACEHOLDER_PATH = 'omitted-deferred-route';
-const INSPECTOR_STATIC_CORRIDOR_NAMESPACE = 'react-preview-inspector-static-corridor';
-const INSPECTOR_SHALLOW_CORRIDOR_NAMESPACE = 'react-preview-inspector-shallow-corridor';
-const INSPECTOR_VIRTUAL_PAGE_COMPONENT_NAMESPACE = 'react-preview-inspector-virtual-page-component';
-const INSPECTOR_VIRTUAL_PAGE_COMPONENT_RUNTIME_NAMESPACE =
-  'react-preview-inspector-virtual-page-component-runtime';
-const MAX_DYNAMIC_IMPORTER_SOURCE_BYTES = 1024 * 1024;
-const MAX_SMALL_DYNAMIC_IMPORTS = 24;
-const MAX_SMALL_STATIC_ROUTE_IMPORTS = 0;
-const MINIMUM_SELECTED_PACKAGE_BARREL_EXPORTS = 64;
-const SOURCE_MODULE_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
-
-interface PreviewDynamicImporterEvidence {
-  readonly hasCorridorTarget: boolean;
-  readonly isBroadRegistry: boolean;
-  readonly renderedNextDynamicSpecifiers: ReadonlySet<string>;
-}
-
-export interface PreviewInspectorCorridorPluginOptions {
-  /** Immutable optional-component demands recorded by the frozen frontier. */
-  readonly authenticComponentExports?: readonly PreviewInspectorFrontierComponentExports[];
-  readonly frozenAuthenticSourcePaths?: readonly string[];
-  /** Exact omitted authored edges already proven by the frozen frontier. */
-  readonly projectedEdges?: readonly PreviewInspectorProjectedEdge[];
-  readonly packageDemandSourcePaths?: readonly string[];
-  readonly maximumSmallDynamicImports?: number;
-  readonly maximumSmallStaticRouteImports?: number;
-  readonly optimizeSelectedPackageBarrels?: boolean;
-  readonly plan: PreviewInspectorAncestorPlan;
-  readonly projectRoot: string;
-  readonly readSource?: (sourcePath: string) => string | undefined;
-  readonly resolveModule: ResolvePreviewRenderGraphModule;
-  readonly workspaceRoot: string;
-}
+import { createPreviewInspectorVirtualPageComponentSource } from './previewInspectorVirtualPageComponentSource';
+import { readPreviewInspectorUnresolvedRouteFactoryOwner } from './previewInspectorUnresolvedRouteFactoryOwner';
 
 /** Maps imports emitted by a virtual page slice back to the authored module it was cut from. */
 function readPreviewInspectorAuthoredImporterPath(arguments_: OnResolveArgs): string | undefined {
@@ -104,6 +79,7 @@ function readPreviewInspectorAuthoredImporterPath(arguments_: OnResolveArgs): st
   return readPreviewInspectorPageSurfaceImporterPath(arguments_.pluginData);
 }
 
+/** Builds the admitted corridor facades; authored targets retain their exact source identity and frozen frontier limits. */
 export function createPreviewInspectorCorridorPlugin(
   options: PreviewInspectorCorridorPluginOptions,
 ): Plugin {
@@ -126,6 +102,7 @@ export function createPreviewInspectorCorridorPlugin(
     Math.floor(options.maximumSmallStaticRouteImports ?? MAX_SMALL_STATIC_ROUTE_IMPORTS),
   );
   const contextMayCrossPackages = options.plan.contextModule !== undefined;
+  const unresolvedFactoryOwner = readPreviewInspectorUnresolvedRouteFactoryOwner(options.plan);
   // prettier-ignore
   const frozenAuthenticSourcePaths = new Set((options.frozenAuthenticSourcePaths ?? []).map((sourcePath) => canonicalizePath(sourcePath)));
   const usesFrozenAuthenticFrontier = options.frozenAuthenticSourcePaths !== undefined;
@@ -189,6 +166,7 @@ export function createPreviewInspectorCorridorPlugin(
   const authoredHookEvidenceByPath = new Map<string, Promise<boolean>>();
   const expandedVirtualPageModuleExports = new Set<string>();
 
+  /** Tests membership against the frozen frontier when present, otherwise the current authored target set. */
   function shouldRetainAuthenticTarget(
     sourcePath: string,
     nonFrozenAuthenticPaths: ReadonlySet<string>,
@@ -198,6 +176,7 @@ export function createPreviewInspectorCorridorPlugin(
       : nonFrozenAuthenticPaths.has(sourcePath);
   }
 
+  /** Resolves only proven visual child edges from admitted importers; unrelated imports retain ordinary resolution. */
   async function resolveShallowVisualChild(
     arguments_: OnResolveArgs,
   ): Promise<OnResolveResult | undefined> {
@@ -261,6 +240,7 @@ export function createPreviewInspectorCorridorPlugin(
     return createShallowVisualProjection(canonicalImporter, projection);
   }
 
+  /** Accumulates reached exports and hook demands, invalidating shallow evidence only when new exports are admitted. */
   function registerTransitiveVirtualPageModule(
     importerPath: string,
     sourcePath: string,
@@ -291,6 +271,7 @@ export function createPreviewInspectorCorridorPlugin(
     return true;
   }
 
+  /** Resolves deferred authored branches through their proven importer evidence without broadening the corridor. */
   async function resolveDeferredBranch(
     arguments_: OnResolveArgs,
   ): Promise<OnResolveResult | undefined> {
@@ -441,6 +422,7 @@ export function createPreviewInspectorCorridorPlugin(
     return pending;
   }
 
+  /** Memoizes bounded static projection evidence for one authored importer within this build. */
   function readStaticImporterEvidence(
     sourcePath: string,
   ): Promise<PreviewStaticRouteProjectionInventory> {
@@ -455,12 +437,17 @@ export function createPreviewInspectorCorridorPlugin(
             projectionsBySpecifier: new Map<string, PreviewStaticRouteProjection>(),
             routeBranchSpecifiers: new Set<string>(),
           }
-        : collectPreviewStaticRouteProjectionInventory(sourcePath, sourceText),
+        : collectPreviewStaticRouteProjectionInventory(
+            sourcePath,
+            sourceText,
+            unresolvedFactoryOwner,
+          ),
     );
     staticImporterEvidenceByPath.set(sourcePath, pending);
     return pending;
   }
 
+  /** Memoizes projections for the importer’s reached component and runtime-hook exports. */
   function readShallowImporterEvidence(
     sourcePath: string,
   ): Promise<PreviewInspectorShallowProjectionInventory> {
@@ -677,422 +664,4 @@ export function createPreviewInspectorCorridorPlugin(
     },
   };
 }
-
-/**
- * Selects a statically rendered component boundary for authentic VirtualPage traversal.
- *
- * Hook-only imports remain demand-shaped stubs and wildcard surfaces fail open because neither is
- * a component identity. All ordinary named/default component projections are admitted regardless
- * of semantic filename, allowing headers, sidebars, feature content, overlays, and the selected
- * file to be represented by their authored code at any graph depth.
- */
-function shouldExpandVirtualPageComponent(projection: PreviewInspectorShallowProjection): boolean {
-  const runtimeHookExportNames = new Set(projection.runtimeHookExportNames);
-  return (
-    !projection.exportNames.includes('*') &&
-    projection.exportNames.some((exportName) => !runtimeHookExportNames.has(exportName))
-  );
-}
-
-/** Returns one stable virtual identity so thousands of discarded registry edges share output. */
-function createOmittedDeferredBranch(targetPath?: string): OnResolveResult {
-  return createPreviewDeferredCorridorBranch(
-    INSPECTOR_CORRIDOR_NAMESPACE,
-    INSPECTOR_CORRIDOR_PLACEHOLDER_PATH,
-    targetPath,
-  );
-}
-
-/** Returns an importer-scoped virtual identity so different named ESM demands cannot collide. */
-function createOmittedStaticRouteBranch(
-  importerPath: string,
-  projection: PreviewStaticRouteProjection,
-): OnResolveResult {
-  return {
-    namespace: INSPECTOR_STATIC_CORRIDOR_NAMESPACE,
-    path: `${importerPath}\0${projection.moduleSpecifier}`,
-    pluginData: projection,
-    sideEffects: false,
-  };
-}
-
-/** Creates an importer-scoped virtual identity for one shallow child component surface. */
-function createShallowVisualProjection(
-  importerPath: string,
-  projection: PreviewInspectorShallowProjection,
-): OnResolveResult {
-  return {
-    namespace: INSPECTOR_SHALLOW_CORRIDOR_NAMESPACE,
-    path: `${importerPath}\0${projection.moduleSpecifier}`,
-    pluginData: projection,
-    sideEffects: false,
-  };
-}
-
-/**
- * Creates one stable module/export identity for an authentic transitive VirtualPage component.
- *
- * The identity deliberately excludes the importer. If authored modules form a render cycle,
- * esbuild reaches the same virtual module again and closes the graph instead of generating another
- * hop. Different demanded export sets remain distinct so named ESM surfaces stay exact.
- */
-function createVirtualPageComponentFacade(
-  sourcePath: string,
-  projection: PreviewInspectorShallowProjection,
-): OnResolveResult {
-  const exportIdentity = [...projection.exportNames].sort().join(',');
-  return {
-    namespace: INSPECTOR_VIRTUAL_PAGE_COMPONENT_NAMESPACE,
-    path: JSON.stringify([sourcePath, exportIdentity]),
-    pluginData: {
-      projection,
-      sourcePath,
-    } satisfies PreviewInspectorVirtualPageComponent,
-    sideEffects: false,
-  };
-}
-
-/** Validates private projection data before generating executable ESM source. */
-function readStaticProjectionPluginData(value: unknown): PreviewStaticRouteProjection | undefined {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    !('moduleSpecifier' in value) ||
-    typeof value.moduleSpecifier !== 'string' ||
-    !('exportNames' in value) ||
-    !Array.isArray(value.exportNames) ||
-    !value.exportNames.every((name) => typeof name === 'string')
-  ) {
-    return undefined;
-  }
-  let neutralRouteBasePath: string | undefined;
-  if ('neutralRouteBasePath' in value) {
-    if (typeof value.neutralRouteBasePath !== 'string') return undefined;
-    neutralRouteBasePath = value.neutralRouteBasePath;
-  }
-  return {
-    exportNames: value.exportNames,
-    moduleSpecifier: value.moduleSpecifier,
-    ...(neutralRouteBasePath === undefined ? {} : { neutralRouteBasePath }),
-  };
-}
-
-/** Validates shallow projection metadata before generating a browser module. */
-function readShallowProjectionPluginData(
-  value: unknown,
-): PreviewInspectorShallowProjection | undefined {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    !('moduleSpecifier' in value) ||
-    typeof value.moduleSpecifier !== 'string' ||
-    !('exportNames' in value) ||
-    !Array.isArray(value.exportNames) ||
-    !value.exportNames.every((name) => typeof name === 'string') ||
-    !('runtimeHookExportNames' in value) ||
-    !Array.isArray(value.runtimeHookExportNames) ||
-    !value.runtimeHookExportNames.every((name) => typeof name === 'string') ||
-    ('neutralRouteBasePath' in value && typeof value.neutralRouteBasePath !== 'string')
-  ) {
-    return undefined;
-  }
-  return {
-    exportNames: Object.freeze([...value.exportNames]),
-    moduleSpecifier: value.moduleSpecifier,
-    ...('neutralRouteBasePath' in value && typeof value.neutralRouteBasePath === 'string'
-      ? { neutralRouteBasePath: value.neutralRouteBasePath }
-      : {}),
-    runtimeHookExportNames: Object.freeze([...value.runtimeHookExportNames]),
-  };
-}
-
-/** Validates private authentic-component data before importing a project source into a facade. */
-function readVirtualPageComponentPluginData(
-  value: unknown,
-): PreviewInspectorVirtualPageComponent | undefined {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    !('sourcePath' in value) ||
-    typeof value.sourcePath !== 'string' ||
-    !path.isAbsolute(value.sourcePath) ||
-    !('projection' in value)
-  ) {
-    return undefined;
-  }
-  const projection = readShallowProjectionPluginData(value.projection);
-  if (projection === undefined) return undefined;
-  return {
-    projection,
-    sourcePath: value.sourcePath,
-  };
-}
-
-/**
- * Creates cheap lexical hints for the rare selected module hidden in a broad generated registry.
- * Resolving every branch defeats the fast corridor, while resolving matching stems preserves a
- * direct selected route even when no dynamic route parameter was statically available.
- */
-function createPreviewInspectorCorridorModuleStemSet(
-  plan: PreviewInspectorAncestorPlan,
-): ReadonlySet<string> {
-  const stems = new Set<string>();
-  const selectedPaths = [
-    plan.root.sourcePath,
-    plan.target.sourcePath,
-    ...plan.pageCandidates.flatMap((candidate) => [
-      candidate.root.sourcePath,
-      ...collectPreviewInspectorRouteComponentSourcePaths(candidate),
-      ...(candidate.renderPath?.steps.flatMap((step) => [
-        step.sourcePath,
-        ...(step.evidenceSourcePaths ?? []),
-      ]) ?? []),
-    ]),
-    ...Object.values(plan.renderChainsByExport).flatMap((chain) =>
-      chain.paths.flatMap((candidate) =>
-        candidate.steps.flatMap((step) => [step.sourcePath, ...(step.evidenceSourcePaths ?? [])]),
-      ),
-    ),
-    ...(plan.shallowVisualPaths?.map((item) => item.sourcePath) ?? []),
-  ];
-  for (const sourcePath of selectedPaths) {
-    const extension = path.extname(sourcePath);
-    const fileStem = path.basename(sourcePath, extension).toLowerCase();
-    stems.add(
-      fileStem === 'index' ? path.basename(path.dirname(sourcePath)).toLowerCase() : fileStem,
-    );
-  }
-  return stems;
-}
-
-/** Groups retained shallow roots by exact source and runtime export for plugin-time analysis. */
-function collectPreviewInspectorShallowExportsByPath(
-  plan: PreviewInspectorAncestorPlan,
-  authenticComponentExports: readonly PreviewInspectorFrontierComponentExports[] = [],
-): ReadonlyMap<string, ReadonlySet<string>> {
-  const exportsByPath = new Map<string, Set<string>>();
-  for (const item of plan.shallowVisualPaths ?? []) {
-    /*
-     * Route alternatives are inactive page outcomes and wrappers already belong to the exact
-     * corridor. Siblings and ordinary component props are requested first-depth page composition:
-     * a frame's `component={Header}` must keep Header authentic while projecting its descendants.
-     */
-    if (item.relation === 'wrapper' || item.relation === 'route-alternative') continue;
-    const sourcePath = canonicalizeExistingPath(item.sourcePath);
-    const exportNames = exportsByPath.get(sourcePath) ?? new Set<string>();
-    exportNames.add(item.exportName);
-    exportsByPath.set(sourcePath, exportNames);
-  }
-  // The frozen frontier already established these source/export pairs.  They
-  // are roots only for shallow projection; authentic membership remains under
-  // the separate fail-closed guard.
-  for (const item of authenticComponentExports) {
-    const sourcePath = canonicalizeExistingPath(item.sourcePath);
-    const exportNames = exportsByPath.get(sourcePath) ?? new Set<string>();
-    for (const exportName of item.exportNames) exportNames.add(exportName);
-    exportsByPath.set(sourcePath, exportNames);
-  }
-  return new Map(
-    [...exportsByPath].map(([sourcePath, exportNames]) => [
-      sourcePath,
-      new Set(exportNames) as ReadonlySet<string>,
-    ]),
-  );
-}
-
-/** Carries frontier-recorded hook surfaces through rebuild-safe shallow state. */
-function collectPreviewInspectorRuntimeHookExportsByPath(
-  authenticComponentExports: readonly PreviewInspectorFrontierComponentExports[] = [],
-): ReadonlyMap<string, ReadonlySet<string>> {
-  const exportsByPath = new Map<string, Set<string>>();
-  for (const item of authenticComponentExports) {
-    if (item.runtimeHookExportNames.length === 0) continue;
-    const sourcePath = canonicalizeExistingPath(item.sourcePath);
-    const exportNames = exportsByPath.get(sourcePath) ?? new Set<string>();
-    for (const exportName of item.runtimeHookExportNames) exportNames.add(exportName);
-    exportsByPath.set(sourcePath, exportNames);
-  }
-  return new Map(
-    [...exportsByPath].map(([sourcePath, exportNames]) => [
-      sourcePath,
-      new Set(exportNames) as ReadonlySet<string>,
-    ]),
-  );
-}
-
-interface PreviewInspectorFrozenProjectedEdge {
-  readonly projection: PreviewInspectorShallowProjection;
-  readonly targetPath: string;
-}
-
-/** Indexes only exact importer/specifier/target demands already frozen by frontier planning. */
-function collectPreviewInspectorFrozenProjectedEdges(
-  projectedEdges: readonly PreviewInspectorProjectedEdge[] = [],
-  canonicalizePath: (sourcePath: string) => string,
-): ReadonlyMap<string, PreviewInspectorFrozenProjectedEdge> {
-  const grouped = new Map<
-    string,
-    {
-      readonly componentNames: Set<string>;
-      readonly exportNames: Set<string>;
-      readonly neutralRouteBasePaths: Set<string>;
-      readonly runtimeHookNames: Set<string>;
-      targetPath?: string;
-      valid: boolean;
-    }
-  >();
-  for (const edge of projectedEdges) {
-    if (edge.targetPath === undefined) continue;
-    const importerPath = canonicalizePath(edge.importerPath);
-    const targetPath = canonicalizePath(edge.targetPath);
-    const key = createPreviewInspectorFrozenProjectedEdgeKey(importerPath, edge.moduleSpecifier);
-    const item = grouped.get(key) ?? {
-      componentNames: new Set<string>(),
-      exportNames: new Set<string>(),
-      neutralRouteBasePaths: new Set<string>(),
-      runtimeHookNames: new Set<string>(),
-      targetPath,
-      valid: true,
-    };
-    if (item.targetPath !== targetPath) item.valid = false;
-    if (edge.neutralRouteBasePath !== undefined) {
-      item.neutralRouteBasePaths.add(edge.neutralRouteBasePath);
-      if (item.neutralRouteBasePaths.size > 1) item.valid = false;
-    }
-    const hookNames = new Set(edge.runtimeHookExportNames);
-    for (const exportName of edge.exportNames) {
-      item.exportNames.add(exportName);
-      if (hookNames.has(exportName)) item.runtimeHookNames.add(exportName);
-      else item.componentNames.add(exportName);
-    }
-    if ([...item.componentNames].some((name) => item.runtimeHookNames.has(name))) {
-      item.valid = false;
-    }
-    grouped.set(key, item);
-  }
-  const result = new Map<string, PreviewInspectorFrozenProjectedEdge>();
-  for (const [key, item] of grouped) {
-    if (!item.valid || item.targetPath === undefined || item.exportNames.size === 0) continue;
-    result.set(key, {
-      projection: Object.freeze({
-        exportNames: Object.freeze([...item.exportNames].sort()),
-        moduleSpecifier: key.slice(key.indexOf('\0') + 1),
-        ...(item.neutralRouteBasePaths.size === 1
-          ? { neutralRouteBasePath: [...item.neutralRouteBasePaths][0] }
-          : {}),
-        runtimeHookExportNames: Object.freeze([...item.runtimeHookNames].sort()),
-      }),
-      targetPath: item.targetPath,
-    });
-  }
-  return result;
-}
-
-/** Preserves the authored module specifier verbatim inside an importer-scoped edge identity. */
-function createPreviewInspectorFrozenProjectedEdgeKey(
-  importerPath: string,
-  moduleSpecifier: string,
-): string {
-  return `${importerPath}\0${moduleSpecifier}`;
-}
-
-/** Checks only a dynamic specifier's final path segment before paying for project resolution. */
-function matchesPreviewCorridorModuleStem(
-  moduleSpecifier: string,
-  corridorModuleStems: ReadonlySet<string>,
-): boolean {
-  const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0] ?? moduleSpecifier;
-  const finalSegment = cleanSpecifier.split(/[\\/]/u).filter(Boolean).at(-1);
-  if (finalSegment === undefined) return false;
-  const extension = path.extname(finalSegment);
-  return corridorModuleStems.has(path.basename(finalSegment, extension).toLowerCase());
-}
-
-/** Reads a source only after a file-size check so resolver-time evidence remains memory-bounded. */
-async function readBoundedSource(sourcePath: string): Promise<string | undefined> {
-  try {
-    const sourceStats = await stat(sourcePath);
-    if (!sourceStats.isFile() || sourceStats.size > MAX_DYNAMIC_IMPORTER_SOURCE_BYTES) {
-      return undefined;
-    }
-    const sourceText = await readFile(sourcePath, 'utf8');
-    return Buffer.byteLength(sourceText, 'utf8') <= MAX_DYNAMIC_IMPORTER_SOURCE_BYTES
-      ? sourceText
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Collects every normalized source that proves a selectable candidate or render-chain path. */
-function createPreviewInspectorCorridorPathSet(
-  plan: PreviewInspectorAncestorPlan,
-): ReadonlySet<string> {
-  const sourcePaths = new Set<string>([
-    plan.root.sourcePath,
-    plan.target.sourcePath,
-    ...(plan.contextModule === undefined ? [] : plan.contextModule.importPath),
-    ...plan.pageCandidates.flatMap((candidate) => [
-      candidate.root.sourcePath,
-      ...collectPreviewInspectorRouteComponentSourcePaths(candidate),
-      ...(candidate.nextAppLayoutChain?.map((layout) => layout.sourcePath) ?? []),
-      ...(candidate.renderPath?.steps.flatMap((step) => [
-        step.sourcePath,
-        ...(step.evidenceSourcePaths ?? []),
-      ]) ?? []),
-      ...(candidate.renderPath?.entryPoint === undefined
-        ? []
-        : [candidate.renderPath.entryPoint.sourcePath]),
-    ]),
-    ...Object.values(plan.renderChainsByExport).flatMap((renderChain) => [
-      ...renderChain.paths.flatMap((candidate) => [
-        ...candidate.steps.flatMap((step) => [
-          step.sourcePath,
-          ...(step.evidenceSourcePaths ?? []),
-        ]),
-        ...(candidate.entryPoint === undefined ? [] : [candidate.entryPoint.sourcePath]),
-      ]),
-    ]),
-    ...(plan.shallowVisualPaths
-      ?.filter((item) => item.relation === 'wrapper')
-      .map((item) => item.sourcePath) ?? []),
-  ]);
-  return new Set([...sourcePaths].map(canonicalizeExistingPath));
-}
-
-/** Reads a generic route-factory page module while ignoring framework route-location variants. */
-function collectPreviewInspectorRouteComponentSourcePaths(
-  candidate: PreviewInspectorPageCandidate,
-): readonly string[] {
-  const routeLocation = candidate.routeLocation;
-  if (
-    routeLocation === undefined ||
-    !('componentSourcePath' in routeLocation) ||
-    typeof routeLocation.componentSourcePath !== 'string'
-  ) {
-    return [];
-  }
-  const recursivePathValue: unknown =
-    'componentSourcePaths' in routeLocation ? routeLocation.componentSourcePaths : undefined;
-  const recursivePaths = Array.isArray(recursivePathValue)
-    ? recursivePathValue.filter((item: unknown): item is string => typeof item === 'string')
-    : [];
-  return [...new Set([routeLocation.componentSourcePath, ...recursivePaths])];
-}
-
-/** Checks trusted-root containment while rejecting sibling-prefix lookalikes. */
-function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(rootPath, candidatePath);
-  return (
-    relativePath.length === 0 ||
-    (relativePath !== '..' &&
-      !relativePath.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relativePath))
-  );
-}
-
-/** Leaves installed or vendored dependency graphs under their normal package runtime semantics. */
-function containsDependencyDirectory(rootPath: string, candidatePath: string): boolean {
-  // prettier-ignore
-  return path.relative(rootPath, candidatePath).split(path.sep).some((segment) => segment === 'node_modules');
-}
+export type { PreviewInspectorCorridorPluginOptions } from './previewInspectorCorridorModel';

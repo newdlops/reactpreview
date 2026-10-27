@@ -7,11 +7,20 @@
  */
 import type * as vscode from 'vscode';
 import { handlePreviewBlockerTraceMessage } from './previewBlockerTraceLogger';
-import { handlePreviewRuntimeHealthMessage } from './previewRuntimeHealthLogger';
 import {
-  handlePreviewInspectorSourceNavigationMessage,
-  type PreviewInspectorSourceNavigationContext,
-} from './previewInspectorSourceNavigation';
+  isPreviewInspectorNeuralModelSyncMessage,
+  readPreviewInspectorNeuralModelSyncRequest,
+  type PreviewInspectorNeuralModel,
+} from './previewInspectorNeuralModelProtocol';
+import {
+  isPreviewInspectorPageCandidateSelectionMessage,
+  readPreviewInspectorPageCandidateSelectionRequest,
+  type PreviewInspectorPageCandidateSelectionRequest,
+} from './previewInspectorPageCandidateSelectionProtocol';
+import {
+  readPreviewInspectorPageExecutionRetryRequest,
+  type PreviewInspectorPageExecutionRetryRequest,
+} from './previewInspectorPageExecutionRetryProtocol';
 import {
   isPreviewInspectorBranchSourceDecorationMessage,
   isPreviewInspectorSourceSelectionMessage,
@@ -23,21 +32,12 @@ import {
   readPreviewInspectorRouteSelectionRequest,
   type PreviewInspectorRouteSelectionRequest,
 } from './previewInspectorRouteSelectionProtocol';
-import {
-  isPreviewInspectorPageCandidateSelectionMessage,
-  readPreviewInspectorPageCandidateSelectionRequest,
-  type PreviewInspectorPageCandidateSelectionRequest,
-} from './previewInspectorPageCandidateSelectionProtocol';
 import type { PreviewInspectorSourceDecoration } from './previewInspectorSourceDecoration';
 import {
-  readPreviewInspectorPageExecutionRetryRequest,
-  type PreviewInspectorPageExecutionRetryRequest,
-} from './previewInspectorPageExecutionRetryProtocol';
-import {
-  isPreviewInspectorNeuralModelSyncMessage,
-  readPreviewInspectorNeuralModelSyncRequest,
-  type PreviewInspectorNeuralModel,
-} from './previewInspectorNeuralModelProtocol';
+  handlePreviewInspectorSourceNavigationMessage,
+  type PreviewInspectorSourceNavigationContext,
+} from './previewInspectorSourceNavigation';
+import { handlePreviewRuntimeHealthMessage } from './previewRuntimeHealthLogger';
 import {
   readPreviewRuntimeHealthMessage,
   type PreviewRuntimeHealthJson,
@@ -194,7 +194,7 @@ function isVerifiedTargetOutput(message: PreviewRuntimeHealthMessage): boolean {
     target.projectedCompatibilityOutput !== true &&
     candidate?.complete === true &&
     projection?.observed === true &&
-    projection?.count === 0 &&
+    projection.count === 0 &&
     blockers?.active === 0 &&
     Array.isArray(provenance) &&
     provenance.length === 0

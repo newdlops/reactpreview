@@ -220,7 +220,8 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
       const javascript = decodeBundleJavascript(bundle);
 
       expect(decodeBundleJavascript(fastBundle)).not.toContain('STORYBOOK_DECORATOR_MARKER');
-      expect(fastBundle.dependencies).not.toContain(storybookPreviewPath);
+      // Future setup edits must invalidate fast output even while setup execution is deferred.
+      expect(fastBundle.dependencies).toContain(storybookPreviewPath);
       expect(fastBundle.chunks).toEqual([]);
       expect(javascript).toContain('STORYBOOK_DECORATOR_MARKER');
       expect(javascript).toContain('STORY_GLOBAL');

@@ -181,6 +181,49 @@ describe('collectPreviewEntryPointEvidence', () => {
 
     expect(collectPreviewEntryPointEvidence(SOURCE_PATH, sourceFile)).toHaveLength(1);
   });
+
+  it('accepts decoded package escapes and keeps alias and namespace entry evidence', () => {
+    expect(
+      collect(
+        String.raw`import { createRoot as mount } from "\x72eact-dom/client"; mount(container).render(<App />);`,
+      ),
+    ).toMatchObject([{ kind: 'create-root', wrapperNames: ['App'] }]);
+    expect(
+      collect(String.raw`import DOM from "react-\u0064om"; DOM.render(<Legacy />, container);`),
+    ).toMatchObject([{ kind: 'legacy-render', wrapperNames: ['Legacy'] }]);
+  });
+
+  it('does not promote package mentions, side effects, portal imports, or type-only bindings', () => {
+    for (const source of [
+      'const note = "react-dom/client"; createRoot(container).render(<App />);',
+      'import "react-dom/client"; createRoot(container).render(<App />);',
+      'import { createPortal } from "react-dom"; createRoot(container).render(<App />);',
+      'import type { createRoot } from "react-dom/client"; createRoot(container).render(<App />);',
+      'import { type createRoot } from "react-dom/client"; createRoot(container).render(<App />);',
+    ])
+      expect(collect(source)).toEqual([]);
+  });
+
+  it('keeps caller path identity and newly parsed editor text authoritative', () => {
+    const source =
+      'import { createRoot } from "react-dom/client"; createRoot(container).render(<First />);';
+    const parsed = ts.createSourceFile(
+      SOURCE_PATH,
+      source,
+      ts.ScriptTarget.Latest,
+      false,
+      ts.ScriptKind.TSX,
+    );
+    const alternatePath = '/workspace/client/entry.tsx';
+    expect(collectPreviewEntryPointEvidence(SOURCE_PATH, parsed)[0]?.sourcePath).toBe(SOURCE_PATH);
+    expect(collectPreviewEntryPointEvidence(alternatePath, parsed)[0]?.sourcePath).toBe(
+      alternatePath,
+    );
+    expect(collectPreviewEntryPointEvidence(SOURCE_PATH, parsed)[0]?.sourcePath).toBe(SOURCE_PATH);
+    expect(collect(source.replace('First', 'Second'))[0]).toMatchObject({
+      wrapperNames: ['Second'],
+    });
+  });
 });
 
 /**

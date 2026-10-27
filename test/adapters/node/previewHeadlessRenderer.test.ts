@@ -118,10 +118,10 @@ describe('preview headless renderer', () => {
         ...healthy,
         rootHtml: '',
         stabilization: {
-          ...healthy.stabilization!,
+          ...healthy.stabilization,
           mountMutationCount: 0,
           compositionSnapshot: {
-            ...healthy.stabilization!.compositionSnapshot!,
+            ...healthy.stabilization.compositionSnapshot,
             currentFileMounted: 0,
             hostOutput: 0,
             targetRenderedEmpty: true,
@@ -132,9 +132,9 @@ describe('preview headless renderer', () => {
     const blocked = {
       ...healthy,
       stabilization: {
-        ...healthy.stabilization!,
+        ...healthy.stabilization,
         compositionSnapshot: {
-          ...healthy.stabilization!.compositionSnapshot!,
+          ...healthy.stabilization.compositionSnapshot,
           activeBlockers: 1,
           targetOutputKind: 'fallback-output',
         },
@@ -144,7 +144,7 @@ describe('preview headless renderer', () => {
     expect(
       classifyPreviewHeadlessStabilizedOutcome({
         ...healthy,
-        stabilization: { ...healthy.stabilization!, progressVisible: true },
+        stabilization: { ...healthy.stabilization, progressVisible: true },
       }),
     ).toBe('partial-blocked');
     expect(
@@ -166,7 +166,7 @@ describe('preview headless renderer', () => {
     const activeAfterConclusiveTarget = {
       ...healthy,
       stabilization: {
-        ...healthy.stabilization!,
+        ...healthy.stabilization,
         capReached: true,
         quiet: false,
       },
@@ -178,7 +178,7 @@ describe('preview headless renderer', () => {
         stabilization: {
           ...activeAfterConclusiveTarget.stabilization,
           compositionSnapshot: {
-            ...activeAfterConclusiveTarget.stabilization.compositionSnapshot!,
+            ...activeAfterConclusiveTarget.stabilization.compositionSnapshot,
             targetHasOutput: false,
           },
         },
@@ -387,7 +387,12 @@ describe('preview headless renderer', () => {
   }, 60_000);
 });
 
-function createStabilizedHeadlessResult(): PreviewHeadlessResult {
+/** Supplies complete committed target evidence for outcome classification mutations. */
+function createStabilizedHeadlessResult(): PreviewHeadlessResult & {
+  readonly stabilization: NonNullable<PreviewHeadlessResult['stabilization']> & {
+    readonly compositionSnapshot: PreviewHeadlessCompositionDiagnostic;
+  };
+} {
   const composition: PreviewHeadlessCompositionDiagnostic = {
     activeBlockerProvenance: [],
     activeBlockers: 0,
@@ -461,8 +466,12 @@ function createBridgeCompositionFixture(
     };
     setTimeout(): number;
   } = {
+    /** Inert observer: the fixture drives evidence reads synchronously without a live browser DOM. */
     MutationObserver: class {
-      public observe(): void {}
+      /** Mutation delivery is outside this synchronous evidence probe fixture. */
+      public observe(): void {
+        /* The fixture has no asynchronous DOM mutation source. */
+      }
     },
     addEventListener: () => undefined,
     console: { error: () => undefined, warn: () => undefined },

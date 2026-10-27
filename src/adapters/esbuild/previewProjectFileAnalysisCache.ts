@@ -1,7 +1,8 @@
 /**
  * Retains bounded file snapshots and syntax-only React render facts across preview rebuilds.
  * Disk entries are identified by normalized path, modification time, and size; unsaved editor
- * entries use a content hash. Only the changed file loses its module/import facts, allowing a
+ * entries hash exact UTF-16 text. Pending reads share work only for equal caller byte ceilings.
+ * Only the changed file loses its module/import facts, allowing a
  * target edit to reuse the rest of a large monorepo's static analysis safely.
  */
 import { createHash } from 'node:crypto';
@@ -109,7 +110,7 @@ export class PreviewProjectFileAnalysisCache {
       this.deleteSource(normalizedPath);
     }
     if (cached?.origin !== 'disk') {
-      const pendingKey = `${normalizedPath}\0first-read`;
+      const pendingKey = `${normalizedPath}\0first-read\0${options.maximumBytes.toString()}`;
       const pending = this.pendingSourceReads.get(pendingKey);
       if (pending !== undefined) {
         return (await pending)?.record;
@@ -152,7 +153,7 @@ export class PreviewProjectFileAnalysisCache {
       return cached.record;
     }
 
-    const pendingKey = `${normalizedPath}\0${fingerprint}`;
+    const pendingKey = `${normalizedPath}\0${fingerprint}\0${options.maximumBytes.toString()}`;
     const pending = this.pendingSourceReads.get(pendingKey);
     if (pending !== undefined) {
       return (await pending)?.record;
@@ -336,9 +337,9 @@ function createDiskFingerprint(modifiedAt: number, size: number): string {
   return `disk:${modifiedAt.toString()}:${size.toString()}`;
 }
 
-/** Hashes an editor snapshot so equal unsaved text shares facts across rebuild requests. */
+/** Hashes exact UTF-16 editor text so distinct unpaired characters cannot share source facts. */
 function createSnapshotFingerprint(sourceText: string): string {
-  return `snapshot:${createHash('sha256').update(sourceText).digest('hex')}`;
+  return `snapshot:${createHash('sha256').update(sourceText, 'utf16le').digest('hex')}`;
 }
 
 /** Refreshes insertion order so active file facts remain resident under bounded LRU eviction. */

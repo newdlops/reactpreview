@@ -195,6 +195,21 @@ function collectVisibilityTypePaths(
       depth + 1,
       typeBindings,
     );
+    const baseType = unwrapped.typeArguments[0];
+    if (
+      name === 'Pick' &&
+      ts.isTypeReferenceNode(baseType) &&
+      ts.isIdentifier(baseType.typeName) &&
+      !localTypes.has(baseType.typeName.text) &&
+      isReactOverlayComponentName(baseType.typeName.text.replace(/(?:Props|Properties)$/u, ''))
+    ) {
+      // An unresolved overlay Pick still names its exact public keys. A resolved declaration
+      // keeps the stronger member-type evidence, and Omit cannot establish an included key.
+      for (const key of selectedKeys) {
+        if (isReactOverlayVisibilityPropName(key))
+          addVisibilityTypePath(candidates, [...prefix, key]);
+      }
+    }
     for (const path of inherited.values()) {
       const firstRelativeSegment = path[prefix.length];
       if (
@@ -293,12 +308,13 @@ function collectVisibilityMemberPaths(
     const propertyName = readPropertyName(member.name);
     if (propertyName === undefined) continue;
     const path = [...prefix, propertyName];
-    if (isReactOverlayVisibilityPropName(propertyName)) {
-      addVisibilityTypePath(candidates, path);
-    } else if (
+    if (
+      isReactOverlayVisibilityPropName(propertyName) &&
       member.type !== undefined &&
-      isNestedOverlayVisibilityCarrierName(propertyName)
+      isVisibilityBooleanType(member.type, localTypes, typeBindings, new Set(), 0)
     ) {
+      addVisibilityTypePath(candidates, path);
+    } else if (member.type !== undefined && isNestedOverlayVisibilityCarrierName(propertyName)) {
       collectVisibilityTypePaths(
         member.type,
         localTypes,
@@ -310,6 +326,55 @@ function collectVisibilityMemberPaths(
       );
     }
   }
+}
+
+/** Resolves only bounded boolean aliases; string, object, and mixed-union visibility keys stay absent. */
+function isVisibilityBooleanType(
+  node: ts.TypeNode,
+  localTypes: ReadonlyMap<string, LocalObjectType>,
+  typeBindings: VisibilityTypeBindings,
+  activeNames: Set<string>,
+  depth: number,
+): boolean {
+  if (depth > MAX_VISIBILITY_TYPE_DEPTH) return false;
+  if (node.kind === ts.SyntaxKind.BooleanKeyword) return true;
+  if (ts.isLiteralTypeNode(node)) {
+    return (
+      node.literal.kind === ts.SyntaxKind.TrueKeyword ||
+      node.literal.kind === ts.SyntaxKind.FalseKeyword
+    );
+  }
+  if (ts.isParenthesizedTypeNode(node)) {
+    return isVisibilityBooleanType(node.type, localTypes, typeBindings, activeNames, depth + 1);
+  }
+  if (ts.isUnionTypeNode(node)) {
+    const members = node.types.filter(
+      (member) =>
+        member.kind !== ts.SyntaxKind.UndefinedKeyword &&
+        !(ts.isLiteralTypeNode(member) && member.literal.kind === ts.SyntaxKind.NullKeyword),
+    );
+    return (
+      members.length > 0 &&
+      members.every((member) =>
+        isVisibilityBooleanType(member, localTypes, typeBindings, new Set(activeNames), depth + 1),
+      )
+    );
+  }
+  if (!ts.isTypeReferenceNode(node) || !ts.isIdentifier(node.typeName)) return false;
+  const name = node.typeName.text;
+  if (activeNames.has(name)) return false;
+  activeNames.add(name);
+  const binding = typeBindings.get(name);
+  const declaration = localTypes.get(name);
+  const resolved =
+    binding ??
+    (declaration !== undefined && ts.isTypeAliasDeclaration(declaration)
+      ? declaration.type
+      : undefined);
+  return (
+    resolved !== undefined &&
+    isVisibilityBooleanType(resolved, localTypes, typeBindings, activeNames, depth + 1)
+  );
 }
 
 /** Collects exact string-literal keys accepted by Pick/Omit without widening their domain. */

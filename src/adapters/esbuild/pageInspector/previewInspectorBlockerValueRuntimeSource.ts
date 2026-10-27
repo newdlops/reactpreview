@@ -450,13 +450,64 @@ function createPreviewInspectorRuntimeFallbackSmartValue(value, requiredPaths, s
   );
 }
 
-/** Builds a required-path overlay while retaining compiler values already present at a demanded leaf. */
-function createPreviewInspectorRuntimeFallbackRequirementTemplate(value, requiredPaths) {
-  let template = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
-  for (const path of normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)) {
-    template = materializePreviewInspectorRequiredPath(template, path);
+/** Copies only containers on one required path; existing runtime leaves never enter JSON. */
+function materializePreviewInspectorRuntimeRequiredPath(value, parsed, index = 0) {
+  const { callable, collection, methodName, path, stringReceiver } = parsed;
+  if (path.length === 0) {
+    const result = materializePreviewInspectorRequiredPath(value, methodName + '()');
+    return result === value ? value : materializePreviewInspectorRuntimeFallbackOverride(result);
   }
-  return materializePreviewInspectorRuntimeFallbackOverride(template);
+  const propertyName = path[index];
+  if (blockedInspectorPropNames.has(propertyName)) return value;
+  const isArray = Array.isArray(value);
+  const isRecord = isPreviewInspectorGeneratedPlainRecord(value);
+  const indexed = /^\d+$/u.test(propertyName);
+  if (index === 0 && (isArray || isRecord) && isArray !== indexed) return value;
+  const container = isArray || isRecord ? value : indexed ? [] : {};
+  const descriptors = readPreviewInspectorGeneratedValueDescriptors(container);
+  if (descriptors === undefined) return value;
+  const descriptor = descriptors[propertyName];
+  if (descriptor !== undefined && !Object.hasOwn(descriptor, 'value')) return value;
+  const previous = descriptor?.value;
+  let next;
+  if (index === path.length - 1) {
+    const holder = Array.isArray(container) ? [] : {};
+    if (descriptor !== undefined) holder[propertyName] = previous;
+    const leafPath = propertyName + (
+      collection || stringReceiver ? '.' + methodName + '()' : callable ? '()' : ''
+    );
+    materializePreviewInspectorRequiredPath(holder, leafPath);
+    next = holder[propertyName];
+    if (Object.is(next, previous) && descriptor !== undefined) return value;
+    next = materializePreviewInspectorRuntimeFallbackOverride(next);
+  } else {
+    const expectsArray = /^\d+$/u.test(path[index + 1]);
+    const child = previous === null || typeof previous !== 'object' ||
+      (expectsArray && !Array.isArray(previous))
+      ? expectsArray ? [] : {}
+      : previous;
+    if (!Array.isArray(child) && !isPreviewInspectorGeneratedPlainRecord(child)) return value;
+    next = materializePreviewInspectorRuntimeRequiredPath(child, parsed, index + 1);
+    if (Object.is(next, previous)) return value;
+  }
+  const replacements = new Map([
+    [propertyName, createPreviewInspectorGeneratedDescriptor(next, descriptor)],
+  ]);
+  return (Array.isArray(container)
+    ? clonePreviewInspectorGeneratedArray(container, descriptors, replacements)
+    : clonePreviewInspectorGeneratedRecord(container, descriptors, replacements)) ?? value;
+}
+
+/** Materializes bounded required paths while preserving unrelated runtime values and prototypes. */
+function createPreviewInspectorRuntimeFallbackRequirementTemplate(value, requiredPaths) {
+  let template = value;
+  for (const rawPath of normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)) {
+    const parsed = parsePreviewInspectorRequiredPath(rawPath);
+    if (parsed !== undefined) {
+      template = materializePreviewInspectorRuntimeRequiredPath(template, parsed);
+    }
+  }
+  return template;
 }
 
 /** Adds missing required leaves to a compiler value without replacing authored non-nullish data. */
@@ -521,6 +572,10 @@ function materializePreviewInspectorRuntimeFallbackOverride(
   if (depth > PREVIEW_INSPECTOR_BLOCKER_VALUE_DEPTH_LIMIT || value === null || typeof value !== 'object') {
     return value;
   }
+  if (value instanceof Date || isPreviewInspectorGeneratedSafeNativeValue(value)) return value;
+  const elementMarker = readPreviewInspectorGeneratedOwnValue(value, '$$typeof');
+  if (elementMarker === Symbol.for('react.element') ||
+    elementMarker === Symbol.for('react.transitional.element')) return value;
   if (
     !Array.isArray(value) &&
     Object.hasOwn(value, PREVIEW_INSPECTOR_CALL_RESULT_TEMPLATE_KEY) &&

@@ -3,9 +3,19 @@ import { isPreviewCompilerActivity } from '../../src/domain/previewCompilerActiv
 import { createPreviewCompilerFrontierPolicy } from '../../src/domain/previewCompilerFrontier';
 
 describe('preview compiler frontier policy', () => {
-  it('keeps automatic mode identity without a graph admission budget', () => {
-    expect(createPreviewCompilerFrontierPolicy('fast')).toEqual({ mode: 'fast' });
-    expect(createPreviewCompilerFrontierPolicy('corridor')).toEqual({ mode: 'corridor' });
+  it('retains frozen automatic projection budgets and leaves full mode unrestricted', () => {
+    expect(createPreviewCompilerFrontierPolicy('fast')).toEqual({
+      maximumAuthoredModules: 256,
+      maximumSourceBytes: 1024 * 1024,
+      mode: 'fast',
+    });
+    expect(createPreviewCompilerFrontierPolicy('corridor')).toEqual({
+      maximumAuthoredModules: 512,
+      maximumSourceBytes: 2 * 1024 * 1024,
+      mode: 'corridor',
+    });
+    expect(Object.isFrozen(createPreviewCompilerFrontierPolicy('fast'))).toBe(true);
+    expect(Object.isFrozen(createPreviewCompilerFrontierPolicy('corridor'))).toBe(true);
     expect(createPreviewCompilerFrontierPolicy('full')).toBeUndefined();
   });
 

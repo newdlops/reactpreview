@@ -271,7 +271,7 @@ async function readDirectory(directoryPath: string): Promise<readonly Dirent[]> 
 
 /** Segment-aware containment prevents one package sibling from becoming route evidence. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

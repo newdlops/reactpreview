@@ -6,6 +6,7 @@
  */
 import path from 'node:path';
 import type { Metafile, OutputFile } from 'esbuild';
+import { instrumentPreviewLazyStyleImports } from './previewLazyStyleImports';
 import {
   planPreviewLazyStyleOutputs,
   type PreviewJoinedBuildOutput,
@@ -166,7 +167,12 @@ export function planPreviewBuildOutputs(
   const basePlan = {
     auxiliaryJavaScript,
     auxiliaryStylesheets: lazyStylePlan?.stylesheets ?? [],
-    entryJavaScript: prependOutputBytes(lazyStylePlan?.entryPrefix, entryOutput.contents),
+    entryJavaScript: prependOutputBytes(
+      lazyStylePlan?.entryPrefix,
+      lazyStylePlan === undefined
+        ? entryOutput.contents
+        : instrumentOutputLazyImports(entryOutput, entryMetadata.metadata),
+    ),
   };
   const entryStylesheet =
     lazyStylePlan === undefined ? stylesheet?.contents : lazyStylePlan.entryStylesheet;
@@ -524,9 +530,24 @@ function createAuxiliaryJavaScriptOutput(
     );
   }
   return {
-    contents: prependOutputBytes(modulePrefix, output.contents),
+    contents: prependOutputBytes(
+      modulePrefix,
+      modulePrefix === undefined
+        ? output.contents
+        : instrumentOutputLazyImports(output, output.metadata),
+    ),
     relativePath: output.relativePath,
   };
+}
+
+/** Skips lexer work when esbuild proves that the output contains no dynamic import expressions. */
+function instrumentOutputLazyImports(
+  output: Pick<PreviewJoinedBuildOutput, 'contents' | 'relativePath'>,
+  metadata: Metafile['outputs'][string],
+): Uint8Array {
+  return metadata.imports.some((imported) => imported.kind === 'dynamic-import')
+    ? instrumentPreviewLazyStyleImports(output.contents, output.relativePath)
+    : output.contents;
 }
 
 /** Prepends generated ESM bootstrap bytes without decoding or copying the larger source twice. */

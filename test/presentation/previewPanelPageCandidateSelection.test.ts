@@ -2,6 +2,32 @@ import { describe, expect, it } from 'vitest';
 import { PreviewPanelPageCandidateSelection } from '../../src/presentation/previewPanelPageCandidateSelection';
 
 describe('PreviewPanelPageCandidateSelection', () => {
+  it('retains an input frontier across selections and replaces it for source or manual refreshes', () => {
+    const selection = new PreviewPanelPageCandidateSelection();
+    const target = { request: { documentPath: '/workspace/Target.tsx' } } as never;
+    selection.applyTo(target);
+    const frontier = selection.currentFrontierId();
+    expect(frontier).toMatch(/^[a-f0-9-]{36}$/u);
+    for (const candidate of ['page-a', 'page-b']) {
+      selection.begin(candidate);
+      selection.applyTo(target);
+      selection.applyTo(target);
+      selection.commit();
+      expect(selection.currentFrontierId()).toBe(frontier);
+    }
+    selection.applyTo(target);
+    expect(selection.currentFrontierId()).not.toBe(frontier);
+  });
+
+  it('isolates input frontier identities between panels and route resets', () => {
+    const first = new PreviewPanelPageCandidateSelection();
+    const second = new PreviewPanelPageCandidateSelection();
+    const frontier = first.currentFrontierId();
+    expect(second.currentFrontierId()).not.toBe(frontier);
+    first.clear();
+    expect(first.currentFrontierId()).not.toBe(frontier);
+  });
+
   it('seeds the automatic page candidate when its first execution retry comes from the runtime', () => {
     const selection = new PreviewPanelPageCandidateSelection();
     const target = { request: { documentPath: '/workspace/Target.tsx' } } as never;

@@ -1,66 +1,48 @@
-/** Discovers importable authored owners for Page Inspector. */
+/** Coordinates AncestorPlan using bounded authored-source evidence. */
 import path from 'node:path';
-import ts from 'typescript';
-import type { PreviewInspectorRouteSelectionStep } from '../../../domain/preview';
 import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecution';
+import { createPreviewStaticModuleResolutionMemo } from '../previewStaticModuleResolver';
+import { type PreviewRenderChainCandidate } from '../renderGraph';
 import {
-  analyzePreviewLocalParentSlices,
-  analyzePreviewParentSlices,
-  type MatchesPreviewParentSliceTargetImport,
-  type PreviewParentSlice,
-  type PreviewParentSliceStaticProps,
-} from '../parentSlice';
+  createInspectorPageCandidate,
+  createRenderPathPageCandidate,
+  readInspectorRenderChains,
+} from './previewInspectorAncestorCandidates';
+import { freezePreviewInspectorAncestorPlan } from './previewInspectorAncestorFreezing';
 import {
-  collectPreviewRenderModuleSpecifiers,
-  createPreviewRenderChainPlan,
-  type PreviewRenderChainCandidate,
-  type PreviewRenderChainPlan,
-  type PreviewRenderChainPlansByExport,
-  type ResolvePreviewRenderGraphModule,
-} from '../renderGraph';
-import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
-import {
-  freezePreviewInspectorAncestorPlan,
-  freezePreviewInspectorPageCandidate,
-} from './previewInspectorAncestorFreezing';
-import { isPreviewInspectorComponentShapedOwner } from './previewInspectorOwnerShape';
-import { createLexicalInspectorModuleResolver } from './previewInspectorLexicalResolver';
-import { collectPreviewInspectorFrameworkPageShell } from './previewInspectorFrameworkPageShell';
-import { collectPreviewInspectorNextAppDescendantPages } from './previewInspectorNextAppDescendantPages';
-import { collectPreviewInspectorRenderOutcomes } from './previewInspectorRenderOutcomeExpansion';
-import { collectPreviewInspectorNextPagesDescendantPages } from './previewInspectorNextPagesDescendantPages';
-import {
-  createPreviewInspectorNextPagesShellRefiner,
-  type PreviewInspectorNextPagesShellRefiner,
-} from './previewInspectorNextPagesParameterEvidence';
-import {
-  collectPreviewInspectorModuleFrontiers,
-  type PreviewInspectorModuleFrontier,
-} from './previewInspectorModuleFrontiers';
-import {
-  collectPreviewInspectorRenderPathRoots,
-  readPreviewInspectorRenderPathRootAutomaticProps,
-  readPreviewInspectorRootInference,
-  readPreviewInspectorRootOwnsRouter,
-  type PreviewInspectorRenderPathRoot,
-  type PreviewInspectorSourcePromiseCache,
-} from './previewInspectorRenderPathRoots';
-import { rankPreviewInspectorPageCandidates } from './previewInspectorPageCandidateRanking';
-import {
-  collectPreviewInspectorRouteBranchPlan,
-  type CollectPreviewInspectorRouteBranchPlanOptions,
-} from './previewInspectorRouteBranchPlan';
-import type { PreviewInspectorRouteLocation } from './previewInspectorRouteLocation';
-import { expandPreviewInspectorRouteChoiceCandidates } from './previewInspectorRouteChoiceCandidates';
+  createInspectorUsagePlanningContext,
+  type CreatePreviewInspectorAncestorPlanOptions,
+  createReferenceKey,
+  freezeReference,
+  type PreviewInspectorAncestorCandidateTemplates,
+  type PreviewInspectorAncestorPrelude,
+} from './previewInspectorAncestorModel';
+import { finalizePreviewInspectorRouteJsxOwners } from './previewInspectorAncestorPromotion';
 import type {
-  PreviewInspectorAncestorEdge,
   PreviewInspectorAncestorPlan,
-  PreviewInspectorAncestorStopReason,
   PreviewInspectorComponentReference,
   PreviewInspectorPageCandidate,
-  ReadPreviewInspectorAcceptedSpecifiers,
-  ReadPreviewInspectorSource,
 } from './previewInspectorAncestorTypes';
+import { collectPreviewInspectorNextAppDescendantPages } from './previewInspectorNextAppDescendantPages';
+import { collectPreviewInspectorNextPagesDescendantPages } from './previewInspectorNextPagesDescendantPages';
+import { rankPreviewInspectorPageCandidates } from './previewInspectorPageCandidateRanking';
+import { collectPreviewInspectorRenderOutcomes } from './previewInspectorRenderOutcomeExpansion';
+import { collectPreviewInspectorRenderPathRoots } from './previewInspectorRenderPathRoots';
+import {
+  collectPreviewInspectorRouteBranchPlan,
+  createPreviewInspectorRouteOwnerLocationInventoryMemo,
+  type CollectPreviewInspectorRouteBranchPlanOptions,
+  type PreviewInspectorRouteBranchPlan,
+} from './previewInspectorRouteBranchPlan';
+import { expandPreviewInspectorRouteChoiceCandidates } from './previewInspectorRouteChoiceCandidates';
+import type { PreviewInspectorRouteLocation } from './previewInspectorRouteLocation';
+
+export type {
+  CreatePreviewInspectorAncestorPlanOptions,
+  PreviewInspectorAncestorCandidateTemplates,
+  PreviewInspectorAncestorPrelude,
+  PreviewInspectorAncestorUsageContext,
+} from './previewInspectorAncestorModel';
 export type {
   PreviewInspectorAncestorEdge,
   PreviewInspectorAncestorPlan,
@@ -71,86 +53,29 @@ export type {
   ReadPreviewInspectorAcceptedSpecifiers,
   ReadPreviewInspectorSource,
 } from './previewInspectorAncestorTypes';
-const MAX_CONCURRENT_SOURCE_READS = 64;
-
-export interface CreatePreviewInspectorAncestorPlanOptions {
-  readonly acceptedImportSpecifiers?: ReadPreviewInspectorAcceptedSpecifiers;
-  readonly documentPath: string;
-  readonly exportName: string;
-  readonly matchesTargetImport?: MatchesPreviewParentSliceTargetImport;
-  readonly readSource: ReadPreviewInspectorSource;
-  readonly resolveModule?: ResolvePreviewRenderGraphModule;
-  readonly renderChainsByExport?: PreviewRenderChainPlansByExport;
-  readonly routeSelection?: readonly PreviewInspectorRouteSelectionStep[];
-  readonly signal?: AbortSignal;
-  readonly sourcePaths: readonly string[];
-  readonly usageContext?: PreviewInspectorAncestorUsageContext;
-}
-export interface PreviewInspectorAncestorPrelude {
-  readonly dependencyPaths: readonly string[];
-  readonly renderChain: PreviewRenderChainPlan;
-  readonly renderChainsByExport: PreviewRenderChainPlansByExport;
-  readonly renderOutcomesByExport: NonNullable<
-    PreviewInspectorAncestorPlan['renderOutcomesByExport']
-  >;
-  readonly sourcePaths: readonly string[];
-  readonly target: PreviewInspectorComponentReference;
-}
-export interface PreviewInspectorAncestorCandidateTemplates {
-  readonly candidates: readonly PreviewInspectorPageCandidate[];
-}
-export interface PreviewInspectorAncestorUsageContext {
-  readonly getAncestorPrelude: (
-    compute: () => Promise<PreviewInspectorAncestorPrelude>,
-  ) => Promise<PreviewInspectorAncestorPrelude>;
-  readonly getCandidateTemplates: (
-    compute: () => Promise<PreviewInspectorAncestorCandidateTemplates>,
-  ) => Promise<PreviewInspectorAncestorCandidateTemplates>;
-  readonly selectionPrefixProvider?: CollectPreviewInspectorRouteBranchPlanOptions['selectionPrefixProvider'];
-}
-interface SuccessfulOwnerPromotion {
-  readonly exportNames: readonly string[];
-  readonly kind: 'promoted';
-  readonly localOwnerNames: readonly string[];
-  readonly root: PreviewInspectorComponentReference;
-}
-interface StoppedOwnerPromotion {
-  readonly kind: 'stopped';
-  readonly stopReason: Extract<
-    PreviewInspectorAncestorStopReason,
-    'non-component-owner' | 'private-owner'
-  >;
-}
-type OwnerPromotionResult = SuccessfulOwnerPromotion | StoppedOwnerPromotion;
-interface InspectorUsageCandidate {
-  readonly frontier: PreviewInspectorModuleFrontier;
-  readonly reexportPaths: readonly string[];
-  readonly slice: PreviewParentSlice;
-  readonly sourceText: string;
-}
-interface InspectorCandidateSource {
-  readonly sourcePath: string;
-  readonly sourceText: string;
-}
-interface InspectorUsagePlanningContext {
-  readonly inferenceByReference: Map<string, Promise<PreviewInferredExportProps | undefined>>;
-  readonly nextPagesShellRefiner: PreviewInspectorNextPagesShellRefiner;
-  readonly routerOwnershipBySource: Map<string, Promise<boolean>>;
-  readonly rankedCandidatesByFrontier: Map<
-    string,
-    Promise<readonly RankedInspectorUsageCandidate[]>
-  >;
-  readonly sourceFileByPath: Map<string, ts.SourceFile>;
-  readonly sourceTextByPath: PreviewInspectorSourcePromiseCache;
-  sources?: Promise<readonly InspectorCandidateSource[]>;
-}
-interface RankedInspectorUsageCandidate {
-  readonly candidate: InspectorUsageCandidate;
-  readonly score: number;
-}
 
 /** Finds the outermost bounded exported owner reproducing the target's authored page branch. */
 export async function createPreviewInspectorAncestorPlan(
+  options: CreatePreviewInspectorAncestorPlanOptions,
+): Promise<PreviewInspectorAncestorPlan> {
+  const resolveModule = options.resolveModule;
+  if (resolveModule === undefined) return buildPreviewInspectorAncestorPlan(options);
+  const resolutionMemo = createPreviewStaticModuleResolutionMemo();
+  try {
+    return await buildPreviewInspectorAncestorPlan({
+      ...options,
+      resolveModule: (specifier, consumerPath) =>
+        resolutionMemo.resolve(specifier, consumerPath, () =>
+          resolveModule(specifier, consumerPath),
+        ),
+    });
+  } finally {
+    resolutionMemo.release();
+  }
+}
+
+/** Builds the complete plan using one immutable request's exact import-resolution results. */
+async function buildPreviewInspectorAncestorPlan(
   options: CreatePreviewInspectorAncestorPlanOptions,
 ): Promise<PreviewInspectorAncestorPlan> {
   throwIfPreviewBuildCancelled(options.signal);
@@ -166,26 +91,29 @@ export async function createPreviewInspectorAncestorPlan(
       ? await computePrelude()
       : await options.usageContext.getAncestorPrelude(computePrelude);
   assertPreviewInspectorAncestorPrelude(prelude, target);
-  const routeBranchPlan = await collectPreviewInspectorRouteBranchPlan({
-    documentPath: target.sourcePath,
-    exportName: target.exportName,
-    readSource: options.readSource,
-    ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
-    renderChain: prelude.renderChain,
-    ...(options.routeSelection === undefined ? {} : { selection: options.routeSelection }),
-    ...(options.usageContext?.selectionPrefixProvider === undefined
-      ? {}
-      : { selectionPrefixProvider: options.usageContext.selectionPrefixProvider }),
-    sourcePaths: prelude.sourcePaths,
-  });
-  const routeLocation = routeBranchPlan.activeLocation ?? routeBranchPlan.primary;
-  throwIfPreviewBuildCancelled(options.signal);
   const computeTemplates = (): Promise<PreviewInspectorAncestorCandidateTemplates> =>
     createPreviewInspectorAncestorCandidateTemplates(options, prelude);
-  const templates =
+  const readTemplates = (): Promise<PreviewInspectorAncestorCandidateTemplates> =>
     options.usageContext === undefined
-      ? await computeTemplates()
-      : await options.usageContext.getCandidateTemplates(computeTemplates);
+      ? computeTemplates()
+      : options.usageContext.getCandidateTemplates(computeTemplates);
+  const { templates, routeBranchPlan } = await prepareInspectorCandidateRouting(
+    {
+      documentPath: target.sourcePath,
+      exportName: target.exportName,
+      readSource: options.readSource,
+      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+      renderChain: prelude.renderChain,
+      ...(options.routeSelection === undefined ? {} : { selection: options.routeSelection }),
+      ...(options.usageContext?.selectionPrefixProvider === undefined
+        ? {}
+        : { selectionPrefixProvider: options.usageContext.selectionPrefixProvider }),
+      sourcePaths: prelude.sourcePaths,
+    },
+    readTemplates,
+  );
+  const routeLocation = routeBranchPlan.activeLocation ?? routeBranchPlan.primary;
+  throwIfPreviewBuildCancelled(options.signal);
   const discoveredCandidates = templates.candidates.map((candidate) =>
     attachPreviewInspectorSelectedRouteFallback(candidate, routeLocation),
   );
@@ -236,6 +164,44 @@ export async function createPreviewInspectorAncestorPlan(
     target,
     targetAutomaticProps: primary.targetAutomaticProps,
   });
+}
+
+/** Reads route evidence first and aligns ambiguous automatic choices without repeating discovery. */
+async function prepareInspectorCandidateRouting(
+  options: CollectPreviewInspectorRouteBranchPlanOptions,
+  readTemplates: () => Promise<PreviewInspectorAncestorCandidateTemplates>,
+): Promise<{
+  readonly routeBranchPlan: PreviewInspectorRouteBranchPlan;
+  readonly templates: PreviewInspectorAncestorCandidateTemplates;
+}> {
+  if ((options.selection?.length ?? 0) > 0) {
+    const routeBranchPlan = await collectPreviewInspectorRouteBranchPlan(options);
+    return { routeBranchPlan, templates: await readTemplates() };
+  }
+  const inventoryMemo = createPreviewInspectorRouteOwnerLocationInventoryMemo(options);
+  try {
+    const sharedOptions = { ...options, ownerLocationInventoryMemo: inventoryMemo };
+    const initialBranchPlan = await collectPreviewInspectorRouteBranchPlan(sharedOptions);
+    const inventory = await inventoryMemo.collect(options.documentPath, options.exportName);
+    const templates = await readTemplates();
+    if (inventory.choices.length <= 1) return { routeBranchPlan: initialBranchPlan, templates };
+    const preferredRenderPath = rankPreviewInspectorPageCandidates(
+      templates.candidates.map((candidate) =>
+        attachPreviewInspectorSelectedRouteFallback(
+          candidate,
+          initialBranchPlan.activeLocation ?? inventory.primary,
+        ),
+      ),
+    )[0]?.renderPath;
+    if (preferredRenderPath === undefined) return { routeBranchPlan: initialBranchPlan, templates };
+    const routeBranchPlan = await collectPreviewInspectorRouteBranchPlan({
+      ...sharedOptions,
+      preferredRenderPath,
+    });
+    return { routeBranchPlan, templates };
+  } finally {
+    inventoryMemo.release();
+  }
 }
 
 /** Computes the immutable render evidence shared by every route selection in one request. */
@@ -359,135 +325,6 @@ async function createPreviewInspectorAncestorCandidateTemplates(
   return Object.freeze({ candidates: Object.freeze(discoveredCandidates) });
 }
 
-/** Creates request-local caches for one bounded candidate-materialization pass. */
-function createInspectorUsagePlanningContext(
-  options: CreatePreviewInspectorAncestorPlanOptions,
-  sourcePaths: readonly string[],
-): InspectorUsagePlanningContext {
-  return {
-    inferenceByReference: new Map(),
-    nextPagesShellRefiner: createPreviewInspectorNextPagesShellRefiner({
-      readSource: options.readSource,
-      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-      sourcePaths,
-    }),
-    rankedCandidatesByFrontier: new Map(),
-    routerOwnershipBySource: new Map(),
-    sourceFileByPath: new Map(),
-    sourceTextByPath: new Map(),
-  };
-}
-
-/** Adds one exact owner checkpoint only when route JSX and ancestry agree within one render path. */
-async function finalizePreviewInspectorRouteJsxOwners(
-  candidates: readonly PreviewInspectorPageCandidate[],
-  options: CreatePreviewInspectorAncestorPlanOptions,
-  sourcePaths: readonly string[],
-  target: PreviewInspectorComponentReference,
-): Promise<readonly PreviewInspectorPageCandidate[]> {
-  type RouteJsxCandidate = PreviewInspectorPageCandidate & {
-    readonly routeLocation: PreviewInspectorRouteLocation & { readonly evidenceKind: 'route-jsx' };
-  };
-  const finalized = [...candidates];
-  const groups = new Map<string, PreviewInspectorPageCandidate[]>();
-  for (const candidate of candidates) {
-    const renderPathId = candidate.renderPath?.id;
-    if (renderPathId === undefined) continue;
-    const group = groups.get(renderPathId) ?? [];
-    group.push(candidate);
-    groups.set(renderPathId, group);
-  }
-  for (const group of groups.values()) {
-    const eligible = group.filter((candidate): candidate is RouteJsxCandidate => {
-      const location = candidate.routeLocation;
-      return location !== undefined && location.evidenceKind === 'route-jsx' &&
-        (location.routeMounts?.length ?? 0) === 0 &&
-        location.directRouteOwnerSourcePath === undefined;
-    });
-    const locations = new Map<string, PreviewInspectorRouteLocation>();
-    for (const candidate of eligible) {
-      const location = candidate.routeLocation;
-      if (location === undefined) continue;
-      locations.set(JSON.stringify({ sourcePath: path.normalize(location.sourcePath), componentSourcePath: location.componentSourcePath === undefined ? undefined : path.normalize(location.componentSourcePath), componentExportName: location.componentExportName, pathname: location.pathname, pattern: location.pattern }), location);
-    }
-    if (locations.size !== 1) continue;
-    const location = [...locations.values()][0];
-    if (location === undefined) continue;
-    const ownerEdges = new Map<string, PreviewInspectorAncestorEdge>();
-    for (const candidate of eligible) {
-      for (const edge of candidate.edges) {
-        if (
-          path.normalize(edge.owner.sourcePath) !== path.normalize(location.sourcePath) ||
-          path.normalize(edge.child.sourcePath) !== target.sourcePath ||
-          edge.child.exportName !== target.exportName
-        ) {
-          continue;
-        }
-        const identity = [
-          path.normalize(edge.owner.sourcePath), edge.owner.exportName,
-          path.normalize(edge.child.sourcePath), edge.child.exportName,
-        ].join('\u0000');
-        ownerEdges.set(identity, edge);
-      }
-    }
-    if (ownerEdges.size !== 1) continue;
-    const edge = [...ownerEdges.values()][0];
-    if (edge === undefined) continue;
-    const renderPath = group[0]?.renderPath;
-    if (renderPath === undefined) continue;
-    const matchingSteps = renderPath.steps
-      .map((step, index) => ({ step, index }))
-      .filter(({ step }) => path.normalize(step.sourcePath) === path.normalize(edge.owner.sourcePath));
-    if (matchingSteps.length !== 1) continue;
-    const routeLocation = Object.freeze({
-      ...location,
-      directRouteOwnerSourcePath: path.normalize(edge.owner.sourcePath),
-    });
-    const withLocation = (
-      candidate: PreviewInspectorPageCandidate,
-    ): PreviewInspectorPageCandidate => Object.freeze({ ...candidate, routeLocation });
-    const eligibleKeys = new Set<PreviewInspectorPageCandidate>(eligible);
-    for (let index = 0; index < finalized.length; index += 1) {
-      const candidate = finalized[index];
-      if (candidate !== undefined && eligibleKeys.has(candidate)) {
-        finalized[index] = withLocation(candidate);
-      }
-    }
-    const rootStepIndex = matchingSteps[0]?.index;
-    if (rootStepIndex === undefined) continue;
-    const checkpointExists = finalized.some(
-      (candidate) =>
-        candidate.renderPath?.id === renderPath.id &&
-        path.normalize(candidate.root.sourcePath) === path.normalize(edge.owner.sourcePath) &&
-        candidate.root.exportName === edge.owner.exportName,
-    );
-    if (checkpointExists) continue;
-    const base = eligible.find((candidate) =>
-      candidate.edges.some((candidateEdge) =>
-        path.normalize(candidateEdge.owner.sourcePath) === path.normalize(edge.owner.sourcePath) &&
-        candidateEdge.owner.exportName === edge.owner.exportName &&
-        path.normalize(candidateEdge.child.sourcePath) === path.normalize(edge.child.sourcePath) &&
-        candidateEdge.child.exportName === edge.child.exportName,
-      ),
-    );
-    if (base === undefined) continue;
-    const checkpoint = await createRenderPathPageCandidate({
-      base: withLocation(base),
-      options,
-      planningContext: createInspectorUsagePlanningContext(options, sourcePaths),
-      renderPathRoot: {
-        outermost: false,
-        reference: edge.owner,
-        stepIndex: rootStepIndex,
-      },
-      routeLocation,
-    });
-    finalized.push(checkpoint);
-  }
-  return Object.freeze(finalized);
-}
-
 /** Rejects a stage supplied for a different target or source inventory before route finalization. */
 function assertPreviewInspectorAncestorPrelude(
   prelude: PreviewInspectorAncestorPrelude,
@@ -519,610 +356,6 @@ function attachPreviewInspectorSelectedRouteFallback(
   });
 }
 
-/** Climbs one preferred render path while sharing all expensive syntax indexes with its siblings. */
-async function createInspectorPageCandidate(arguments_: {
-  readonly options: CreatePreviewInspectorAncestorPlanOptions;
-  readonly planningContext: InspectorUsagePlanningContext;
-  readonly renderPath: PreviewRenderChainCandidate | undefined;
-  readonly sourcePaths: readonly string[];
-  readonly target: PreviewInspectorComponentReference;
-  readonly routeLocation: PreviewInspectorRouteLocation | undefined;
-}): Promise<PreviewInspectorPageCandidate> {
-  const { options, planningContext, renderPath, routeLocation, sourcePaths, target } = arguments_;
-  const dependencies = new Set<string>([
-    target.sourcePath,
-    ...(renderPath?.steps.map((step) => step.sourcePath) ?? []),
-    ...(renderPath?.entryPoint === undefined ? [] : [renderPath.entryPoint.sourcePath]),
-  ]);
-  const preferredSourcePaths = new Set(
-    renderPath?.steps.map((step) => path.normalize(step.sourcePath)) ?? [],
-  );
-  const edges: PreviewInspectorAncestorEdge[] = [];
-  const visitedReferences = new Set<string>([createReferenceKey(target)]);
-  let currentAliases: readonly string[] = [target.exportName];
-  let currentRoot = target;
-  let rootAutomaticProps: PreviewParentSliceStaticProps = Object.freeze({});
-  let targetAutomaticProps: PreviewParentSliceStaticProps = Object.freeze({});
-
-  /** Freezes the current traversal state without retaining parser nodes or source text. */
-  const finish = async (
-    complete: boolean,
-    stopReason: PreviewInspectorAncestorStopReason,
-  ): Promise<PreviewInspectorPageCandidate> => {
-    const rootInference = await readPreviewInspectorRootInference(
-      currentRoot,
-      options.readSource,
-      planningContext.sourceTextByPath,
-      planningContext.inferenceByReference,
-      options.resolveModule,
-    );
-    const rootOwnsRouter = await readPreviewInspectorRootOwnsRouter({
-      ownershipCache: planningContext.routerOwnershipBySource,
-      readSource: options.readSource,
-      reference: currentRoot,
-      renderPath,
-      rootStepIndex: undefined,
-      sourceCache: planningContext.sourceTextByPath,
-    });
-    const frameworkShell = await collectPreviewInspectorFrameworkPageShell({
-      exportName: currentRoot.exportName,
-      nextPagesShellRefiner: planningContext.nextPagesShellRefiner,
-      pagePath: currentRoot.sourcePath,
-      readSource: options.readSource,
-      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
-      sourcePaths,
-      targetPath: target.sourcePath,
-    });
-    for (const dependencyPath of frameworkShell.dependencyPaths) dependencies.add(dependencyPath);
-    const { nextAppShell, nextPagesShell } = frameworkShell;
-    const candidateRouteLocation = frameworkShell.routeLocation ?? routeLocation;
-    return freezePreviewInspectorPageCandidate({
-      complete: nextAppShell === undefined && nextPagesShell === undefined ? complete : true,
-      dependencies,
-      edges,
-      id: renderPath?.id ?? 'nearest-authored-owner',
-      renderPath,
-      root: currentRoot,
-      rootAutomaticProps,
-      ...(rootInference === undefined ? {} : { rootInference }),
-      ...(nextAppShell === undefined ? {} : { nextAppLayoutChain: nextAppShell.layouts }),
-      ...(nextPagesShell === undefined ? {} : { nextPagesShell }),
-      rootOwnsRouter,
-      ...(candidateRouteLocation === undefined ? {} : { routeLocation: candidateRouteLocation }),
-      stopReason:
-        nextAppShell === undefined && nextPagesShell === undefined ? stopReason : 'root-reached',
-      targetAutomaticProps,
-    });
-  };
-
-  // Inventory and reference-cycle checks bound traversal without truncating deep authored owners.
-  for (;;) {
-    throwIfPreviewBuildCancelled(options.signal);
-    const candidate = await findInspectorUsage({
-      acceptedImportSpecifiers: options.acceptedImportSpecifiers?.(currentRoot) ?? [],
-      ...(options.matchesTargetImport === undefined
-        ? {}
-        : { matchesTargetImport: options.matchesTargetImport }),
-      readSource: options.readSource,
-      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-      planningContext,
-      sourcePaths,
-      targetExportNames: currentAliases,
-      targetPath: currentRoot.sourcePath,
-      preferredSourcePaths,
-    });
-    if (candidate === undefined) {
-      return finish(true, 'root-reached');
-    }
-
-    for (const reexportPath of candidate.reexportPaths) {
-      dependencies.add(reexportPath);
-    }
-
-    if (edges.length === 0) {
-      targetAutomaticProps = candidate.slice.targetProps;
-    }
-    if (candidate.slice.owner === null) {
-      rootAutomaticProps = candidate.slice.targetProps;
-      dependencies.add(candidate.slice.consumerPath);
-      return finish(true, 'root-reached');
-    }
-    const promotion = promoteInspectorOwner(candidate);
-    if (promotion.kind === 'stopped') {
-      rootAutomaticProps = candidate.slice.targetProps;
-      dependencies.add(candidate.slice.consumerPath);
-      return finish(false, promotion.stopReason);
-    }
-
-    const promotedKey = createReferenceKey(promotion.root);
-    if (visitedReferences.has(promotedKey)) {
-      rootAutomaticProps = candidate.slice.targetProps;
-      dependencies.add(candidate.slice.consumerPath);
-      return finish(false, 'cycle');
-    }
-
-    visitedReferences.add(promotedKey);
-    dependencies.add(candidate.slice.consumerPath);
-    edges.push(
-      Object.freeze({
-        child: freezeReference(candidate.frontier.sourcePath, candidate.slice.targetExportName),
-        childAutomaticProps: candidate.slice.targetProps,
-        localOwnerDepth: promotion.localOwnerNames.length,
-        localOwnerNames: Object.freeze([...promotion.localOwnerNames]),
-        occurrenceStart: candidate.slice.occurrenceStart,
-        owner: promotion.root,
-      }),
-    );
-    currentAliases = promotion.exportNames;
-    currentRoot = promotion.root;
-    rootAutomaticProps = Object.freeze({});
-  }
-}
-
-/** Creates a selectable mount root from one component export proven by the full render graph. */
-async function createRenderPathPageCandidate(arguments_: {
-  readonly base: PreviewInspectorPageCandidate;
-  readonly options: CreatePreviewInspectorAncestorPlanOptions;
-  readonly planningContext: InspectorUsagePlanningContext;
-  readonly renderPathRoot: PreviewInspectorRenderPathRoot;
-  readonly routeLocation: PreviewInspectorRouteLocation | undefined;
-}): Promise<PreviewInspectorPageCandidate> {
-  const { base, options, planningContext, renderPathRoot, routeLocation } = arguments_;
-  const renderPath = base.renderPath;
-  if (renderPath === undefined) return base;
-  const root = freezeReference(
-    renderPathRoot.reference.sourcePath,
-    renderPathRoot.reference.exportName,
-  );
-  const rootInference = await readPreviewInspectorRootInference(
-    root,
-    options.readSource,
-    planningContext.sourceTextByPath,
-    planningContext.inferenceByReference,
-    options.resolveModule,
-  );
-  const rootOwnsRouter = await readPreviewInspectorRootOwnsRouter({
-    ownershipCache: planningContext.routerOwnershipBySource,
-    readSource: options.readSource,
-    reference: root,
-    renderPath,
-    rootStepIndex: renderPathRoot.stepIndex,
-    sourceCache: planningContext.sourceTextByPath,
-  });
-  const rootAutomaticProps = await readPreviewInspectorRenderPathRootAutomaticProps({
-    acceptedImportSpecifiers: options.acceptedImportSpecifiers?.(root) ?? [],
-    ...(options.matchesTargetImport === undefined
-      ? {}
-      : { matchesTargetImport: options.matchesTargetImport }),
-    readSource: options.readSource,
-    renderPath,
-    root: renderPathRoot,
-    sourceCache: planningContext.sourceTextByPath,
-  });
-  const dependencies = new Set(base.dependencyPaths);
-  dependencies.add(root.sourcePath);
-  const frameworkShell = await collectPreviewInspectorFrameworkPageShell({
-    exportName: root.exportName,
-    nextPagesShellRefiner: planningContext.nextPagesShellRefiner,
-    pagePath: root.sourcePath,
-    readSource: options.readSource,
-    ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
-    sourcePaths: options.sourcePaths,
-    targetPath: options.documentPath,
-  });
-  for (const dependencyPath of frameworkShell.dependencyPaths) dependencies.add(dependencyPath);
-  const { nextAppShell, nextPagesShell } = frameworkShell;
-  const candidateRouteLocation = frameworkShell.routeLocation ?? routeLocation;
-  const complete =
-    nextAppShell !== undefined ||
-    nextPagesShell !== undefined ||
-    (renderPath.entryPoint !== undefined && renderPathRoot.outermost);
-  return freezePreviewInspectorPageCandidate({
-    complete,
-    dependencies,
-    edges: base.edges,
-    id: `${renderPath.id}:root:${renderPathRoot.stepIndex.toString()}`,
-    renderPath,
-    root,
-    rootAutomaticProps,
-    ...(rootInference === undefined ? {} : { rootInference }),
-    ...(nextAppShell === undefined ? {} : { nextAppLayoutChain: nextAppShell.layouts }),
-    ...(nextPagesShell === undefined ? {} : { nextPagesShell }),
-    rootOwnsRouter,
-    rootStepIndex: renderPathRoot.stepIndex,
-    ...(candidateRouteLocation === undefined ? {} : { routeLocation: candidateRouteLocation }),
-    stopReason: complete ? 'root-reached' : 'render-path-checkpoint',
-    targetAutomaticProps: base.targetAutomaticProps,
-  });
-}
-
-/** Reuses an all-export graph or discovers only the standalone selected target. */
-async function readInspectorRenderChains(
-  options: CreatePreviewInspectorAncestorPlanOptions,
-  target: PreviewInspectorComponentReference,
-  sourcePaths: readonly string[],
-): Promise<PreviewRenderChainPlansByExport> {
-  if (options.renderChainsByExport !== undefined) {
-    const plans = Object.freeze({ ...options.renderChainsByExport });
-    const selectedPlan = plans[target.exportName];
-    if (
-      selectedPlan === undefined ||
-      path.normalize(selectedPlan.target.sourcePath) !== path.normalize(target.sourcePath) ||
-      selectedPlan.target.exportName !== target.exportName
-    ) {
-      throw new TypeError(
-        'Precomputed Inspector render chains do not contain the selected target.',
-      );
-    }
-    return plans;
-  }
-  const selectedPlan = await createPreviewRenderChainPlan({
-    documentPath: target.sourcePath,
-    exportName: target.exportName,
-    readSource: options.readSource,
-    resolveModule:
-      options.resolveModule ?? createLexicalInspectorModuleResolver(options.sourcePaths),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-    sourcePaths,
-  });
-  return Object.freeze({ [target.exportName]: selectedPlan });
-}
-
-/** Selects the strongest page-like JSX usage across direct imports and bounded barrel chains. */
-async function findInspectorUsage(options: {
-  readonly acceptedImportSpecifiers: readonly string[];
-  readonly matchesTargetImport?: MatchesPreviewParentSliceTargetImport;
-  readonly planningContext: InspectorUsagePlanningContext;
-  readonly preferredSourcePaths: ReadonlySet<string>;
-  readonly readSource: ReadPreviewInspectorSource;
-  readonly resolveModule?: ResolvePreviewRenderGraphModule;
-  readonly signal?: AbortSignal;
-  readonly sourcePaths: readonly string[];
-  readonly targetExportNames: readonly string[];
-  readonly targetPath: string;
-}): Promise<InspectorUsageCandidate | undefined> {
-  const frontierKey = JSON.stringify([
-    path.normalize(options.targetPath),
-    [...options.targetExportNames].sort(),
-    [...options.acceptedImportSpecifiers].sort(),
-  ]);
-  let rankedPromise = options.planningContext.rankedCandidatesByFrontier.get(frontierKey);
-  if (rankedPromise === undefined) {
-    rankedPromise = collectRankedInspectorUsageCandidates(options);
-    options.planningContext.rankedCandidatesByFrontier.set(frontierKey, rankedPromise);
-  }
-  const rankedCandidates = (await rankedPromise).map((ranked) => ({
-    candidate: ranked.candidate,
-    score:
-      ranked.score +
-      (options.preferredSourcePaths.has(path.normalize(ranked.candidate.slice.consumerPath))
-        ? 2_000
-        : 0),
-  }));
-  rankedCandidates.sort(compareRankedInspectorUsageCandidates);
-  return rankedCandidates[0]?.candidate;
-}
-
-/** Reads the bounded inventory once, then reuses it for every candidate path and owner frontier. */
-async function readInspectorCandidateSources(options: {
-  readonly planningContext: InspectorUsagePlanningContext;
-  readonly readSource: ReadPreviewInspectorSource;
-  readonly resolveModule?: ResolvePreviewRenderGraphModule;
-  readonly signal?: AbortSignal;
-  readonly sourcePaths: readonly string[];
-}): Promise<readonly InspectorCandidateSource[]> {
-  if (options.planningContext.sources !== undefined) {
-    return options.planningContext.sources;
-  }
-  const sourcePromise = (async (): Promise<readonly InspectorCandidateSource[]> => {
-    const sources: InspectorCandidateSource[] = [];
-    for (
-      let batchStart = 0;
-      batchStart < options.sourcePaths.length;
-      batchStart += MAX_CONCURRENT_SOURCE_READS
-    ) {
-      throwIfPreviewBuildCancelled(options.signal);
-      const batchPaths = options.sourcePaths.slice(
-        batchStart,
-        batchStart + MAX_CONCURRENT_SOURCE_READS,
-      );
-      const batch = await Promise.all(
-        batchPaths.map(async (sourcePath) => ({
-          sourcePath,
-          sourceText: await options.readSource(sourcePath),
-        })),
-      );
-      throwIfPreviewBuildCancelled(options.signal);
-      for (const source of batch) {
-        if (
-          source.sourceText === undefined ||
-          (!source.sourceText.includes('import') && !source.sourceText.includes('export'))
-        ) {
-          continue;
-        }
-        sources.push({ sourcePath: source.sourcePath, sourceText: source.sourceText });
-      }
-    }
-    return Object.freeze(sources);
-  })();
-  options.planningContext.sources = sourcePromise;
-  return sourcePromise;
-}
-
-/** Computes path-independent usage scores once for a changing imported component frontier. */
-async function collectRankedInspectorUsageCandidates(options: {
-  readonly acceptedImportSpecifiers: readonly string[];
-  readonly matchesTargetImport?: MatchesPreviewParentSliceTargetImport;
-  readonly planningContext: InspectorUsagePlanningContext;
-  readonly readSource: ReadPreviewInspectorSource;
-  readonly resolveModule?: ResolvePreviewRenderGraphModule;
-  readonly signal?: AbortSignal;
-  readonly sourcePaths: readonly string[];
-  readonly targetExportNames: readonly string[];
-  readonly targetPath: string;
-}): Promise<readonly RankedInspectorUsageCandidate[]> {
-  const sources = await readInspectorCandidateSources(options);
-  const candidates: InspectorUsageCandidate[] = [];
-  const frontiers = collectPreviewInspectorModuleFrontiers(
-    {
-      acceptedImportSpecifiers: options.acceptedImportSpecifiers,
-      ...(options.matchesTargetImport === undefined
-        ? {}
-        : { matchesTargetImport: options.matchesTargetImport }),
-      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
-      targetExportNames: options.targetExportNames,
-      targetPath: options.targetPath,
-    },
-    sources,
-    options.planningContext.sourceFileByPath,
-  );
-  const moduleSpecifiersBySource = new Map<string, readonly string[]>();
-  for (const source of sources) {
-    if (!source.sourceText.includes('<')) {
-      continue;
-    }
-    for (const frontier of frontiers) {
-      if (path.normalize(source.sourcePath) === path.normalize(frontier.sourcePath)) {
-        /*
-         * An exported file component can be consumed only by a sibling export in the same module:
-         * `Modal <- ModalButton <- importing page`. Import-only reverse search cannot see the first
-         * edge, so promote exact named JSX uses before continuing through ordinary external imports.
-         * Local analysis accepts no module specifier and therefore cannot recurse through a barrel
-         * or mistake a similarly named component from another source for this frontier.
-         */
-        for (const exportName of frontier.exportNames) {
-          if (exportName === 'default' || !/^[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*$/u.test(exportName)) {
-            continue;
-          }
-          const localAnalysis = analyzePreviewLocalParentSlices({
-            consumerPath: source.sourcePath,
-            localComponentName: exportName,
-            sourceText: source.sourceText,
-          });
-          for (const slice of localAnalysis.slices) {
-            candidates.push({
-              frontier,
-              reexportPaths: frontier.dependencyPaths,
-              slice,
-              sourceText: source.sourceText,
-            });
-          }
-        }
-        continue;
-      }
-      let moduleSpecifiers = moduleSpecifiersBySource.get(source.sourcePath);
-      if (moduleSpecifiers === undefined) {
-        moduleSpecifiers = collectPreviewRenderModuleSpecifiers(
-          source.sourcePath,
-          source.sourceText,
-        );
-        moduleSpecifiersBySource.set(source.sourcePath, moduleSpecifiers);
-      }
-      if (!mayContainInspectorUsage(options, source, frontier, moduleSpecifiers)) {
-        continue;
-      }
-      const initialFrontier =
-        path.normalize(frontier.sourcePath) === path.normalize(options.targetPath);
-      const analysis = analyzePreviewParentSlices({
-        ...(initialFrontier
-          ? { acceptedTargetImportSpecifiers: options.acceptedImportSpecifiers }
-          : {}),
-        consumerPath: source.sourcePath,
-        ...(options.matchesTargetImport === undefined
-          ? {}
-          : { matchesTargetImport: options.matchesTargetImport }),
-        sourceText: source.sourceText,
-        targetExportNames: frontier.exportNames,
-        targetPath: frontier.sourcePath,
-      });
-      for (const slice of analysis.slices) {
-        candidates.push({
-          frontier,
-          reexportPaths: frontier.dependencyPaths,
-          slice,
-          sourceText: source.sourceText,
-        });
-      }
-    }
-  }
-  const rankedCandidates = candidates.map((candidate) => ({
-    candidate,
-    score: scoreInspectorUsageCandidate(candidate),
-  }));
-  rankedCandidates.sort(compareRankedInspectorUsageCandidates);
-  return Object.freeze(rankedCandidates);
-}
-/** Proves a plausible import before allocating a TypeScript AST. */
-function mayContainInspectorUsage(
-  options: Parameters<typeof collectRankedInspectorUsageCandidates>[0],
-  source: InspectorCandidateSource,
-  frontier: PreviewInspectorModuleFrontier,
-  moduleSpecifiers: readonly string[],
-): boolean {
-  const basename = path.basename(frontier.sourcePath).replace(/(?:\.d)?\.[cm]?[jt]sx?$/iu, '');
-  const directoryName = path.basename(path.dirname(frontier.sourcePath));
-  if (
-    (basename.length > 1 && source.sourceText.includes(basename)) ||
-    (basename === 'index' &&
-      directoryName.length > 1 &&
-      source.sourceText.includes(directoryName)) ||
-    frontier.exportNames.some(
-      (exportName) => exportName !== 'default' && source.sourceText.includes(exportName),
-    ) ||
-    options.acceptedImportSpecifiers.some((specifier) => source.sourceText.includes(specifier))
-  ) {
-    return true;
-  }
-  return moduleSpecifiers.some((specifier) => {
-    const resolvedPath = options.resolveModule?.(specifier, source.sourcePath);
-    return (
-      (resolvedPath !== undefined &&
-        path.normalize(resolvedPath) === path.normalize(frontier.sourcePath)) ||
-      (options.resolveModule === undefined &&
-        options.matchesTargetImport?.(specifier, source.sourcePath, frontier.sourcePath) === true)
-    );
-  });
-}
-/** Climbs private same-module component usages to an importable owner export. */
-function promoteInspectorOwner(candidate: InspectorUsageCandidate): OwnerPromotionResult {
-  const visitedLocalOwners = new Set<string>();
-  const localOwnerNames: string[] = [];
-  let currentSlice = candidate.slice;
-  for (;;) {
-    const owner = currentSlice.owner;
-    if (owner === null) {
-      return { kind: 'stopped', stopReason: 'private-owner' };
-    }
-    if (owner.exportNames.length > 0) {
-      if (
-        !isPreviewInspectorComponentShapedOwner({
-          occurrenceStart: currentSlice.occurrenceStart,
-          owner,
-          sourcePath: currentSlice.consumerPath,
-          sourceText: candidate.sourceText,
-        })
-      ) {
-        return { kind: 'stopped', stopReason: 'non-component-owner' };
-      }
-      const exportName = selectPreferredExportName(owner.exportNames);
-      return {
-        exportNames: Object.freeze([...owner.exportNames]),
-        kind: 'promoted',
-        localOwnerNames: Object.freeze(localOwnerNames),
-        root: freezeReference(currentSlice.consumerPath, exportName),
-      };
-    }
-    if (owner.localName === null || visitedLocalOwners.has(owner.localName)) {
-      return { kind: 'stopped', stopReason: 'private-owner' };
-    }
-
-    visitedLocalOwners.add(owner.localName);
-    localOwnerNames.push(owner.localName);
-    const localAnalysis = analyzePreviewLocalParentSlices({
-      consumerPath: currentSlice.consumerPath,
-      localComponentName: owner.localName,
-      sourceText: candidate.sourceText,
-    });
-    const nextSlice = localAnalysis.slices[0];
-    if (nextSlice === undefined) {
-      return { kind: 'stopped', stopReason: 'private-owner' };
-    }
-    currentSlice = nextSlice;
-  }
-}
-
-/** Orders candidates by mountability and application conventions before path order. */
-function compareRankedInspectorUsageCandidates(
-  left: { readonly candidate: InspectorUsageCandidate; readonly score: number },
-  right: { readonly candidate: InspectorUsageCandidate; readonly score: number },
-): number {
-  const scoreDifference = right.score - left.score;
-  if (scoreDifference !== 0) {
-    return scoreDifference;
-  }
-  const leftPath = left.candidate.slice.consumerPath;
-  const rightPath = right.candidate.slice.consumerPath;
-  const pathDifference = leftPath < rightPath ? -1 : leftPath > rightPath ? 1 : 0;
-  return pathDifference !== 0
-    ? pathDifference
-    : left.candidate.slice.occurrenceStart - right.candidate.slice.occurrenceStart;
-}
-
-/** Assigns one bounded deterministic score without importing or evaluating candidate modules. */
-function scoreInspectorUsageCandidate(candidate: InspectorUsageCandidate): number {
-  const promotion = candidate.slice.owner === null ? undefined : promoteInspectorOwner(candidate);
-  const mountabilityScore =
-    candidate.slice.owner === null
-      ? 800
-      : promotion?.kind === 'promoted'
-        ? 1_000 + Math.min(promotion.localOwnerNames.length, 12) * 3
-        : 0;
-  return (
-    mountabilityScore +
-    scoreInspectorSourcePath(candidate.slice.consumerPath) +
-    scoreInspectorOwnerName(promotion)
-  );
-}
-
-/** Applies framework-neutral filename conventions and strongly demotes non-application sources. */
-function scoreInspectorSourcePath(sourcePath: string): number {
-  const normalizedPath = sourcePath.replaceAll('\\', '/').toLowerCase();
-  const fileName = path.basename(normalizedPath).replace(/\.[^.]+$/u, '');
-  let score = 0;
-
-  if (
-    /(?:^|\/)(?:__tests__|tests?|specs?)(?:\/|$)/u.test(normalizedPath) ||
-    /(?:\.test|\.spec)$/u.test(fileName)
-  ) {
-    score -= 500;
-  }
-  if (
-    /(?:^|\/)(?:stories|storybook)(?:\/|$)/u.test(normalizedPath) ||
-    /\.stories?$/u.test(fileName)
-  ) {
-    score -= 420;
-  }
-  if (
-    /(?:^|\/)(?:__templates__|examples?|demos?|fixtures?|generators?|mocks?|playgrounds?|scaffolds?|templates?)(?:\/|$)/u.test(
-      normalizedPath,
-    )
-  ) {
-    score -= 260;
-  }
-
-  if (/(?:^|\/)(?:pages?|layouts?|routes?|screens?|views?)(?:\/|$)/u.test(normalizedPath)) {
-    score += 150;
-  }
-  if (/(?:page|layout|route|screen|view)$/u.test(fileName)) {
-    score += 90;
-  }
-  if (/^(?:app|bootstrap|entry|main|root)$/u.test(fileName)) {
-    score += 130;
-  }
-  return score;
-}
-
-/** Gives conventional page-root export names a small tie-break advantage over generic wrappers. */
-function scoreInspectorOwnerName(promotion: OwnerPromotionResult | undefined): number {
-  if (promotion?.kind !== 'promoted') {
-    return 0;
-  }
-  const exportName = promotion.root.exportName;
-  if (/^(?:App|Root)$/u.test(exportName)) {
-    return 80;
-  }
-  if (/(?:Page|Layout|Route|Screen|View)$/u.test(exportName)) {
-    return 60;
-  }
-  return exportName === 'default' ? 20 : 0;
-}
-
-/** Prefers a conventional default export while retaining deterministic named-export fallback. */
-function selectPreferredExportName(exportNames: readonly string[]): string {
-  return exportNames.includes('default') ? 'default' : (exportNames[0] ?? 'default');
-}
-
 /** Validates the public planner boundary before any package source is read. */
 function assertInspectorTarget(documentPath: string, exportName: string): void {
   if (!path.isAbsolute(documentPath)) {
@@ -1133,25 +366,16 @@ function assertInspectorTarget(documentPath: string, exportName: string): void {
   }
 }
 
-/** Creates a normalized, immutable component reference. */
-function freezeReference(
-  sourcePath: string,
-  exportName: string,
-): PreviewInspectorComponentReference {
-  return Object.freeze({ exportName, sourcePath: path.normalize(sourcePath) });
-}
-
-/** Produces a cycle identity stable across path separator and alias spelling differences. */
-function createReferenceKey(reference: PreviewInspectorComponentReference): string {
-  return `${path.normalize(reference.sourcePath)}\0${reference.exportName}`;
-}
-
 /** Deduplicates render-graph alternatives that ultimately mount the same authored owner chain. */
 function createInspectorPageCandidateKey(candidate: PreviewInspectorPageCandidate): string {
-  return [
+  return JSON.stringify([
     createReferenceKey(candidate.root),
-    ...candidate.edges.map(
-      (edge) => `${createReferenceKey(edge.child)}>${createReferenceKey(edge.owner)}`,
-    ),
-  ].join('\0');
+    candidate.renderPath?.id,
+    candidate.edges.map((edge) => [
+      createReferenceKey(edge.child),
+      createReferenceKey(edge.owner),
+      edge.occurrenceStart,
+      edge.localOwnerNames,
+    ]),
+  ]);
 }

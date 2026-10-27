@@ -26,7 +26,7 @@ const NEXT_PAGES_ROUTER_CONTEXT_PATTERN =
 
 /** Immutable project and capability boundary used for one preview compilation. */
 export interface PreviewRouterBridgePluginOptions {
-  /** Whether graph evidence permits an automatic outer router when setup is silent. */
+  /** Default outer router in component mode; Inspector delegates wrapping to its candidates. */
   readonly automaticallyWrap?: boolean;
   /** Whether static analysis found a reason to provide a router context for this preview. */
   readonly enabled: boolean;

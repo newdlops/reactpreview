@@ -6,14 +6,8 @@ import type {
   PreviewInspectorComponentReference,
   PreviewInspectorPageCandidate,
 } from './previewInspectorAncestorTypes';
-import type { PreviewInspectorRouteMountEvidence } from './previewInspectorRouteLocationTypes';
 import type { PreviewInspectorTargetMode } from '../../../domain/preview';
 import { createPreviewInspectorPagePathSegments } from './previewInspectorPagePathSegments';
-import { collectPreviewInspectorRouteFactoryChoices } from './previewInspectorRouteFactoryChoices';
-import {
-  localizePreviewInspectorRoutePathname,
-  relativizePreviewInspectorRoutePattern,
-} from './previewInspectorRoutePatternMatch';
 import {
   createPreviewInspectorVirtualPageCandidates,
   type PreviewInspectorVirtualPageCandidate,
@@ -24,13 +18,13 @@ import type {
   PreviewInspectorPageExecutionCandidate,
 } from './previewInspectorPageExecutionTypes';
 import { selectPreviewInspectorRouteShellSurfaces } from './previewInspectorRouteShellSelection';
+import { selectPreviewInspectorExecutableTarget } from './previewInspectorExecutableCandidateSelection';
 
 import {
   createAuthenticSurface,
   createSelectedExportSurface,
   createLocalComponentSurface,
   createTransientContextSurface,
-  readSource,
   collectPreviewInspectorTargetPageTabKeys,
   createModuleFallbackSurface,
   deduplicateSurfaces,
@@ -45,15 +39,15 @@ import {
   createRouteErrorElementRecipe,
 } from './previewInspectorPageRouteRecipe';
 
+import {
+  attachVirtualPageOwnerRouteMount,
+  collectVirtualPageOwnerRouteMount,
+} from './previewInspectorVirtualPageOwnerRouteMount';
+
 export interface CreatePreviewInspectorPageExecutionCandidatesOptions {
   readonly plan: PreviewInspectorAncestorPlan;
   readonly selectedPageCandidateId?: string;
   readonly targetMode?: PreviewInspectorTargetMode;
-}
-
-interface PreviewInspectorDerivedOwnerRouteMount {
-  readonly evidence: PreviewInspectorRouteMountEvidence;
-  readonly surface: PreviewInspectorMountSurface;
 }
 
 /**
@@ -64,26 +58,39 @@ interface PreviewInspectorDerivedOwnerRouteMount {
 export function createPreviewInspectorPageExecutionCandidates(
   options: CreatePreviewInspectorPageExecutionCandidatesOptions,
 ): readonly PreviewInspectorPageExecutionCandidate[] {
-  const virtualPage = selectVirtualPageCandidate(options.plan, options.selectedPageCandidateId);
+  const virtualPage = selectVirtualPageCandidate(
+    options.plan,
+    options.selectedPageCandidateId,
+    options.targetMode,
+  );
   if (virtualPage === undefined) return Object.freeze([]);
+  const analysisTarget = selectPreviewInspectorExecutableTarget(
+    options.plan,
+    virtualPage.authoredCandidate.target,
+  );
+  const plan = Object.freeze({
+    ...options.plan,
+    renderChain:
+      options.plan.renderChainsByExport[analysisTarget.exportName] ?? options.plan.renderChain,
+    target: analysisTarget,
+  });
   const unmountedBrowserCandidate = attachCompilerOwnedRuntimeTarget(
     virtualPage,
-    options.plan.target,
+    plan.target,
     options.targetMode,
   );
   const segments = createPreviewInspectorPagePathSegments({
     candidate: unmountedBrowserCandidate,
-    plan: options.plan,
+    plan,
   });
   const renderPath =
     unmountedBrowserCandidate.renderPath ??
-    options.plan.renderChainsByExport[options.plan.target.exportName]?.paths[0] ??
-    options.plan.renderChain.paths[0];
+    plan.renderChainsByExport[plan.target.exportName]?.paths[0] ??
+    plan.renderChain.paths[0];
   const targetPageTabKeys = collectPreviewInspectorTargetPageTabKeys(renderPath);
   const targetSurface = createAuthenticSurface(unmountedBrowserCandidate.target, 'target');
   const standaloneTarget =
-    options.plan.renderChain.reachability === 'entry-unreachable' &&
-    !options.plan.renderChain.truncated;
+    plan.renderChain.reachability === 'entry-unreachable' && !plan.renderChain.truncated;
   const pageSurface = createAuthenticSurface(virtualPage.contentCandidate.root, 'page');
   const pageSlicedSurface = createSelectedExportSurface(virtualPage.contentCandidate.root, 'page');
   const pageLocalSurface = createLocalComponentSurface(virtualPage.contentCandidate.root, 'page');
@@ -94,10 +101,10 @@ export function createPreviewInspectorPageExecutionCandidates(
   );
   const isRouteLeafDetachedFromTarget =
     unmountedBrowserCandidate.detachedTargetPlacement === undefined &&
-    isDetachedRouteLeaf(unmountedBrowserCandidate, options.plan.target);
+    isDetachedRouteLeaf(unmountedBrowserCandidate, plan.target);
   const retainsRenderedTargetWithinRouteLeaf =
     isRouteLeafDetachedFromTarget &&
-    hasProvenNestedRouteTarget(unmountedBrowserCandidate, options.plan.target);
+    hasProvenNestedRouteTarget(unmountedBrowserCandidate, plan.target);
   const detachedRouteLeaf = isRouteLeafDetachedFromTarget && !retainsRenderedTargetWithinRouteLeaf;
   const detachedCatalogOwnerRetained = hasRetainedDetachedCatalogOwner(unmountedBrowserCandidate);
   const routeSurfaces =
@@ -106,7 +113,7 @@ export function createPreviewInspectorPageExecutionCandidates(
       : createRouteSurfaces(unmountedBrowserCandidate);
   const routeElementSurfaces = createRouteElementSurfaces(unmountedBrowserCandidate);
   const frameworkSurfaces = createFrameworkSurfaces(unmountedBrowserCandidate);
-  const discoveredShellSurfaces = createShellSurfaces(virtualPage);
+  const discoveredShellSurfaces = createShellSurfaces(virtualPage, routeSurfaces);
   const derivedOwnerRouteMount = collectVirtualPageOwnerRouteMount(
     unmountedBrowserCandidate,
     virtualPage,
@@ -158,13 +165,20 @@ export function createPreviewInspectorPageExecutionCandidates(
     derivedOwnerRouteMount?.surface,
     browserCandidate.detachedTargetPlacement === 'overlay-sibling' ? outerPageSurface : undefined,
   );
-  const routeErrorElementRecipe = createRouteErrorElementRecipe(virtualPage, options.plan.target);
+  const routeErrorElementRecipe = createRouteErrorElementRecipe(virtualPage, plan.target);
   const routeElementEdges = createRouteElementCompositionEdges(
     routeElementSurfaces,
     outerPageSurface,
   );
   const routeElementRoot = routeElementSurfaces[0] ?? outerPageSurface;
-  const routeEdges = createRouteCompositionEdges(routeSurfaces, routeElementRoot);
+  // The outer factory renders its own selected nested slots. A second inner-owner composition
+  // around that frame would reverse the authored hierarchy and discard the outer page shell.
+  const ownsNestedRouteSlots =
+    (routeRecipe?.mounts.length ?? 0) > 1 &&
+    routeRecipe?.mounts.some((mount) => mount.contextOrigin === 'virtual-page-owner') === true;
+  const routeEdges = ownsNestedRouteSlots
+    ? []
+    : createRouteCompositionEdges(routeSurfaces, routeElementRoot);
   const pageTargetEdge =
     detachedRouteLeaf && !detachedCatalogOwnerRetained
       ? undefined
@@ -188,7 +202,9 @@ export function createPreviewInspectorPageExecutionCandidates(
     slicedOuterPageSurface,
   );
   const slicedRouteElementRoot = routeElementSurfaces[0] ?? slicedOuterPageSurface;
-  const slicedRouteEdges = createRouteCompositionEdges(routeSurfaces, slicedRouteElementRoot);
+  const slicedRouteEdges = ownsNestedRouteSlots
+    ? []
+    : createRouteCompositionEdges(routeSurfaces, slicedRouteElementRoot);
   const slicedPageTargetEdge =
     detachedRouteLeaf && !detachedCatalogOwnerRetained
       ? undefined
@@ -434,16 +450,29 @@ export function createPreviewInspectorPageExecutionCandidates(
   }
   const topologyCandidates =
     options.targetMode === 'selected-route-leaf'
-      ? candidates.filter(
-          (candidate) =>
-            candidate.executionRootSurfaceId === candidate.runtimeTargetSurfaceId ||
-            (candidate.routeRecipe?.mounts.length ?? 0) > 0,
+      ? candidates.filter((candidate) =>
+          (candidate.routeRecipe?.mounts.length ?? 0) > 0
+            ? hasCompleteRouteMountSurfaces(candidate)
+            : candidate.executionRootSurfaceId === candidate.runtimeTargetSurfaceId,
         )
       : candidates;
   return Object.freeze(
     deduplicateCandidates(topologyCandidates.filter(hasAuthenticRuntimeTarget)).map((candidate) =>
       attachOptionalSurfaces(candidate, options.plan),
     ),
+  );
+}
+
+/** Omits lower-fidelity executions that dropped a surface required by their retained route proof. */
+function hasCompleteRouteMountSurfaces(candidate: PreviewInspectorPageExecutionCandidate): boolean {
+  const mounts = candidate.routeRecipe?.mounts;
+  if (mounts === undefined || mounts.length === 0) return false;
+  const surfaceIds = new Set(candidate.criticalSurfaces.map((surface) => surface.id));
+  return mounts.every(
+    (mount) =>
+      mount.parentSurfaceId !== undefined &&
+      surfaceIds.has(mount.parentSurfaceId) &&
+      surfaceIds.has(mount.childSurfaceId),
   );
 }
 
@@ -533,11 +562,13 @@ function compareOptionalVisualPaths(
 function selectVirtualPageCandidate(
   plan: PreviewInspectorAncestorPlan,
   selectedPageCandidateId: string | undefined,
+  targetMode: PreviewInspectorTargetMode | undefined,
 ): PreviewInspectorVirtualPageCandidate | undefined {
   const virtualPages = createPreviewInspectorVirtualPageCandidates(
     plan.pageCandidates,
     plan.pageCandidates.length,
     plan.shallowVisualPaths ?? [],
+    targetMode,
   );
   return (
     (selectedPageCandidateId === undefined
@@ -672,110 +703,20 @@ function createFrameworkCompositionEdges(
   );
 }
 
-/** Preserves the legacy VirtualPage shell inventory as exact Page Execution surfaces. */
+/**
+ * Preserves exact VirtualPage frames, reusing a route surface when it proves the same owner.
+ * Composition edges and route mounts must share that owner's admitted surface ID after deduplication.
+ */
 function createShellSurfaces(
   virtualPage: PreviewInspectorVirtualPageCandidate,
+  routeSurfaces: readonly PreviewInspectorMountSurface[],
 ): readonly PreviewInspectorMountSurface[] {
   return Object.freeze(
-    virtualPage.recipe.shells.map((shell) => createModuleFallbackSurface(shell.root, 'shell')),
-  );
-}
-
-/**
- * Recovers the outer Route context from the exact authentic factory owner already selected as a
- * VirtualPage shell. A leaf catalog can name an inner owner while the rendered composition begins
- * at an outer factory shell; mounting that shell at the inner base makes its relative Routes miss.
- */
-function collectVirtualPageOwnerRouteMount(
-  candidate: PreviewInspectorPageCandidate,
-  virtualPage: PreviewInspectorVirtualPageCandidate,
-  shellSurfaces: readonly PreviewInspectorMountSurface[],
-): PreviewInspectorDerivedOwnerRouteMount | undefined {
-  const location = candidate.routeLocation;
-  if (
-    location === undefined ||
-    (location.evidenceKind !== 'route-catalog' && location.evidenceKind !== 'route-jsx')
-  ) {
-    return undefined;
-  }
-  for (let index = virtualPage.recipe.shells.length - 1; index >= 0; index -= 1) {
-    const shell = virtualPage.recipe.shells[index];
-    const surface = shellSurfaces[index];
-    if (shell?.relation !== 'owner' || surface === undefined) continue;
-    const sourceText = readSource(surface.sourcePath);
-    if (sourceText === undefined) continue;
-    const owner = collectPreviewInspectorRouteFactoryChoices({
-      sourcePath: surface.sourcePath,
-      sourceText,
-      targetIdentities: new Set([surface.exportName]),
-    }).owner;
-    if (
-      owner === undefined ||
-      owner.routeSlotCount === 0 ||
-      path.normalize(owner.sourcePath) !== path.normalize(surface.sourcePath) ||
-      owner.exportName !== surface.exportName ||
-      relativizePreviewInspectorRoutePattern(owner.basePath, location.pattern) === undefined ||
-      localizePreviewInspectorRoutePathname(owner.basePath, location.pathname) === undefined
-    ) {
-      continue;
-    }
-    return Object.freeze({
-      evidence: Object.freeze({
-        basePath: owner.basePath,
-        contextOrigin: 'virtual-page-owner' as const,
-        contextPattern: createVirtualPageOwnerContextPattern(owner.basePath),
-        exportName: owner.exportName,
-        hasWildcardFallback: owner.hasWildcardFallback,
-        routeSlotCount: owner.routeSlotCount,
-        sourcePath: path.normalize(owner.sourcePath),
-      }),
-      surface,
-    });
-  }
-  return undefined;
-}
-
-/** Adds a trailing splat so the owner's own relative Routes receive the unmatched child path. */
-function createVirtualPageOwnerContextPattern(basePath: string): string {
-  if (/(?:^|\/)\*$/u.test(basePath)) return basePath;
-  const normalized = basePath === '/' ? '' : basePath.replace(/\/+$/u, '');
-  return `${normalized}/*`;
-}
-
-/**
- * Publishes derived owner evidence on the compiler-owned browser candidate as well as the recipe.
- * Runtime ownership validation can therefore compare the generated mount against immutable input
- * evidence instead of trusting a PageExecution-only edge.
- */
-function attachVirtualPageOwnerRouteMount(
-  candidate: PreviewInspectorPageCandidate & {
-    readonly target: PreviewInspectorComponentReference;
-  },
-  mount: PreviewInspectorDerivedOwnerRouteMount | undefined,
-): PreviewInspectorPageCandidate & { readonly target: PreviewInspectorComponentReference } {
-  if (mount === undefined) return candidate;
-  const location = candidate.routeLocation;
-  if (
-    location === undefined ||
-    (location.evidenceKind !== 'route-catalog' && location.evidenceKind !== 'route-jsx')
-  ) {
-    return candidate;
-  }
-  const sourcePath = path.normalize(mount.evidence.sourcePath);
-  const dependencyPaths = Object.freeze(
-    [...new Set([...candidate.dependencyPaths, sourcePath])].sort(),
-  );
-  return Object.freeze({
-    ...candidate,
-    dependencyPaths,
-    routeLocation: Object.freeze({
-      ...location,
-      dependencyPaths: Object.freeze(
-        [...new Set([...location.dependencyPaths, sourcePath])].sort(),
-      ),
-      routeMounts: Object.freeze([mount.evidence]),
+    virtualPage.recipe.shells.map((shell) => {
+      const surface = createModuleFallbackSurface(shell.root, 'shell');
+      return routeSurfaces.find((route) => isSameSurface(route, surface)) ?? surface;
     }),
-  });
+  );
 }
 
 /**

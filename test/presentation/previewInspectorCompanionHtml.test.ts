@@ -4,6 +4,61 @@ import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorCompanionHtml } from '../../src/presentation/webview/previewInspectorCompanionHtml';
 
 describe('Preview Inspector companion HTML', () => {
+  it.each([
+    ['Enter', true],
+    [' ', true],
+    ['Enter', false],
+    [' ', false],
+  ] as const)('activates %j locally only for an accordion control (%s)', (key, local) => {
+    const html = createPreviewInspectorCompanionHtml({
+      cspSource: 'vscode-webview://inspector-test',
+      documentName: 'Accordion.tsx',
+      nonce: 'accordion-nonce',
+    });
+    const toggleStart = html.indexOf('function installPreviewInspectorCompanionAccordionToggle(');
+    const toggleEnd = html.indexOf('/** Installs drag, keyboard, and reset behavior', toggleStart);
+    const keyStart = html.indexOf("mirror.addEventListener('keydown'");
+    const keyEnd = html.indexOf("window.addEventListener('message'", keyStart);
+    const calls: string[] = [];
+    let click:
+      ((event: { preventDefault: () => void; stopPropagation: () => void }) => void) | undefined;
+    let keydown: ((event: { key: string; preventDefault: () => void }) => void) | undefined;
+    const control = {
+      matches: (selector: string) =>
+        selector === 'button,summary' || (local && selector === '[data-rpi-accordion-toggle]'),
+      addEventListener: (_type: string, listener: typeof click) => {
+        click = listener;
+      },
+      click: () => click?.({ preventDefault: () => undefined, stopPropagation: () => undefined }),
+    };
+    runInNewContext(
+      `${html.slice(toggleStart, toggleEnd)}
+       if (local) installPreviewInspectorCompanionAccordionToggle(
+         control, () => false, () => calls.push('local-collapse'));
+       ${html.slice(keyStart, keyEnd)}`,
+      {
+        calls,
+        control,
+        local,
+        navigationKeys: new Set(['Enter', ' ']),
+        mirror: {
+          addEventListener: (_type: string, listener: typeof keydown) => {
+            keydown = listener;
+          },
+        },
+        findRemoteControl: () => control,
+        activateCompanionInferenceReview: () => false,
+        activateCompanionChoiceReview: () => false,
+        persistPreviewInspectorCompanionInnerState: () => calls.push('persist'),
+        postControlEvent: () => calls.push('remote-click'),
+        focusCompanionAdjacentTab: () => undefined,
+      },
+    );
+    if (keydown === undefined) throw new Error('Companion keyboard handler was not installed.');
+    keydown({ key, preventDefault: () => undefined });
+    expect(calls).toEqual(local ? ['local-collapse', 'persist'] : ['remote-click']);
+  });
+
   /** Keeps consecutive arrow-key selections aligned with the visible tab's actual focus. */
   it.each([
     ['ArrowRight', 1, 2],

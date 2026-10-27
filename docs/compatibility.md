@@ -19,6 +19,17 @@
 VS Code for Web과 가상 워크스페이스는 지원하지 않습니다. Remote SSH, Dev Container와 Codespaces에서는
 확장이 원격 호스트에 설치되므로 해당 운영체제와 CPU용 Marketplace 패키지가 필요합니다.
 
+## headless 검증의 전용 루프백
+
+headless HTTP 서버와 캠페인의 포트 사전 검사는 기존 환경의 `PORT_MANAGER_ACTUAL_LOOPBACK_HOST`,
+그다음 `PORT_MANAGER_NETWORK_LOOPBACK_HOST`를 사용합니다. 관리 환경 값이 없을 때의 기본값은
+`127.0.0.1`입니다. 설정된 주소는 IPv4 루프백 리터럴이어야 하며 외부 주소·전체 인터페이스·hostname은
+거부합니다.
+
+브라우저 URL과 서버 정리 확인은 바인딩 후 기록한 실제 주소·포트를 함께 사용합니다. 주소가 없는
+소유 기록으로 다른 인터페이스의 포트를 확인해 정리가 끝났다고 판단하지 않습니다. 네트워크 alias나
+시스템·PortManager 정책을 만들거나 변경하지 않습니다.
+
 ## 소스와 export
 
 지원하는 파일 형식:
@@ -55,17 +66,25 @@ JSX compiler 또는 template runtime이 필요한 파일도 React 컴포넌트�
 지원하는 스타일:
 
 - 일반 CSS와 CSS Modules
-- 가장 가까운 Dart Sass를 사용하는 `.scss`, `.sass`와 Sass Modules
+- 가장 가까운 Dart Sass를 사용하는 `.scss`, `.sass`와 Sass Modules. 실제 Sass 입력에 도달할 때만
+  Sass 런타임을 초기화
 - Tailwind CSS v2/v3의 PostCSS 처리. `tailwind.config.*`는 실행하지 않고 데이터로만 읽어 `theme`,
   `darkMode`, `prefix`, `important`, `separator`, `corePlugins`, `safelist`와 지역 데이터 preset을 반영
 - Tailwind CSS v4의 `@tailwindcss/postcss`
-- Vite/CRA 진입 파일(`index.html`의 module script 또는 `src/main.*`, `src/index.*`)이 page root를 직접
-  import할 때 그 진입 파일의 side-effect CSS
+- Vite/CRA 진입 파일(`index.html`의 module script 또는 `src/main.*`, `src/index.*`)에서 page root로
+  이어지는 런타임 import 경로가 확인될 때, 그 경로의 앱 소유자가 제공하는 CSS·전역 스타일·테마
 - styled-components v5/v6, `createGlobalStyle`, ThemeProvider와 StyleSheetManager
+- 선언 파일 옆의 JS 이름이 다른 설치 패키지도 실행 없이 런타임 근거를 확인해, 새로고침 사이 기존
+  공유 런타임을 재사용. 설정이 없는 경우에는 컴파일러 모듈의 namespace getter를 프로젝트 설정으로
+  오인하지 않으며, 실제 설정의 접근자 검증은 유지
 - 직접 도달한 theme import가 하나로 확인될 때의 실제 디자인 토큰
 - `index.html`의 HTTPS stylesheet link, 렌더 경로의 앱 셸 wrapper(예: react-helmet으로 폰트를 넣는
   ThemeProvider)에 정적으로 쓰인 HTTPS `<link rel="stylesheet">`, 실행 중 추가되는 HTTPS stylesheet와 CSS의
   `@import url(https://…)`로 불러오는 웹 폰트(`reactPreview.remoteStylesheets`로 끌 수 있음)
+
+진입점 소유 확인은 import 4단계·32개 모듈·총 1MiB 소스 안에서 수행합니다. 타입 전용 import와 선언
+파일, 설치 패키지·프로젝트 경계 밖 경로는 소유 근거로 사용하지 않습니다. 경로가 확인돼도 앱 진입점이나
+서버 설정은 실행하지 않으며, 소유 파일의 변경은 프리뷰 재준비 대상으로 감시합니다.
 
 지원하는 자산:
 
@@ -104,7 +123,10 @@ config 안의 함수 값, package plugin/preset처럼 데이터가 아닌 값은
 - setup이 없을 때 가까운 `.storybook/preview.*` decorator
 
 실제 Provider가 이미 페이지에 있으면 중복 Router나 Provider를 만들지 않습니다. 자동값은 실제 hook 결과의
-존재하는 field와 identity를 우선하고, 렌더링에 필요하다고 확인된 누락 path만 보완합니다.
+존재하는 field와 identity를 우선하고, 렌더링에 필요하다고 확인된 누락 path만 보완합니다. package hook의 결과를 같은
+package의 component나 함수에 다시 넘기면(`useEditor` 결과를 `<EditorContent editor={editor} />`에 넘기는 tiptap 등)
+hook이 실제로 준 `null`·`undefined`는 채우지 않습니다. 만든 값은 그 package의 실제 instance를 대신할 수 없기 때문이며,
+hook이 throw할 때의 대체 값은 그대로입니다.
 
 ## Backend와 데이터
 
@@ -143,6 +165,9 @@ Page Inspector는 외부 backend를 실행하지 않습니다. 도달한 요청�
   이유만으로 페이지 옆 대체 표시로 넘기지 않음. 거절된 조건의 분기가 대상을 그린다고 증명된 경우에만 그렇게 하고,
   그 밖에는 목록 요청을 채우는 필요값 탐색을 이어 감
 - 요청별 성공, 빈 데이터, HTTP 오류와 지연 scenario
+- 생성된 GraphQL 선택 객체와 이름이 일치하는 루트 목록의 첫 행은 요청 ID와 일치시켜, 초기 훅 값과
+  후속 가상 응답이 같은 페이지에 머물도록 지원. 목록은 16행 이하에서만 보완하고 다른 행의 ID·모호한
+  관계·사용자 JSON·실제 응답은 유지. 성공한 생성 응답의 `error`·`fallback`은 타입 보완 뒤에도 `null`
 - 같은 REST resource에 대한 탭 내부 CRUD 상태
 
 임의의 custom socket/client protocol, 실제 로그인과 업무 세션, backend side effect는 재현하지 않습니다.
@@ -159,12 +184,22 @@ Pages Router의 `next.config.*`에 리터럴 `i18n`(`defaultLocale`·`locales`)�
 `useRouter()`의 `locale`·`defaultLocale`·`locales`로 제공합니다. 설치된 Next를 해석할 수 없으면
 `next/navigation`·`next/link`·`next/dynamic`·`next/server`는 브라우저 facade를 쓰고, 서버 전용 API인
 `next/headers`(빈 cookies·headers, `draftMode` 꺼짐)와 `next/cache`(revalidate 무시, `unstable_cache` 통과)는
-항상 inert facade를 씁니다.
+항상 inert facade를 씁니다. 설치된 `next/server`도 요청 범위 함수인 `after()`(콜백을 실행하지 않음)와
+`connection()`(바로 끝나는 Promise)만은 facade와 같이 동작하고, 나머지 export는 설치본을 씁니다.
 
 Next.js SSR, React Server Components, server-only module, loader/action과 framework config 실행은 지원하지
 않습니다. `server-only` import나 `'use server'`가 있는 모듈이 `fs`·`child_process` 같은 host I/O 내장 모듈을
 import하면 첫 빌드부터 render-only 실행 계약(export가 inert 값)으로 바꿔, 그 모듈이 쓰는 Node 전용 package를
-브라우저에서 평가하지 않습니다.
+브라우저에서 평가하지 않습니다. Page Inspector 빌드에서는 이 계약의 함수 export가 선언된 반환 타입의 예시 값을
+돌려줍니다(타입을 알 수 없는 필드는 inert 값). 테스트 mock에서 배운 값은 그대로 쓰지만, 결과를
+`as never`·`as any`·`as unknown`으로 타입 검사를 우회한 빈 객체는 예시로 배우지 않고 선언 타입을
+사용합니다. 값이 있는 fixture와 명시적인 `null`·빈 배열은 형변환이 있어도 유지합니다. 타입으로 만든 서버 실행 계약과 hook 대체 값의 `bigint`는 정확한 정수 문자열로 전달한 뒤 실제 `bigint`로
+복원하므로 금액 계산에서 필드가 빠지거나 큰 정수의 정밀도를 잃지 않습니다. 값 없이 만든 mock
+(`vi.fn()`)은 반환 타입이 `null`·`undefined`를 허용할 때만 그대로 둡니다. inert 값에서 읽은 시각 이름 속성은
+삭제·보관·정지·취소·만료·파기 같은 끝 상태(`deletedAt`, `purgedAt`)면 비어 있고(`null`), 그 밖의 시각
+(`createdAt`, `startDate`)은 오늘 날짜의 `Date`이고, Prisma 조회 메서드(`findUnique`, `groupBy`, `$transaction` 등) 호출은 inert 값으로 끝나는 Promise라 `.then`·`await`가 동작합니다. Page Inspector 빌드에서 이 계약을 import하는 프로젝트 모듈의 조회 호출은 그 호출의 선언 타입(예: `select`한 필드와 관계)으로 끝나는 값으로 바꿉니다(모듈당 64개까지, 자유 형식 JSON은 inert 값이고 `Json?`처럼 `null`을 허용한 자유 형식 칸은 비어 있는 `null`). 이런 선언 타입 예시 값의 속성은 `Pick`·`Omit` 같은 mapped type을 거쳐도 선언 순서를 따르고, 선언이 없는 속성(`select` 결과)은 이름 순서라 컴파일마다 같습니다. 조회한 model의 `String` 열이 Prisma schema에 `@default("draft")`처럼 문자열 기본값을 선언하면 그 기본값을 쓰고(관계로 이어진 model의 열 포함), 그 밖의 문자열은 이름에서 만든 예시 값입니다. `prisma-client-js`를 쓰지만 client를 생성하지 않은(`node_modules/.prisma/client`가
+없는) 프로젝트는 Page Inspector 타입 분석에서만 `schema.prisma`로 만든 `@prisma/client` 타입을 씁니다(enum은 선언 순서의 첫
+값, 관계는 한 단계까지, 프로젝트에 파일을 만들지 않음).
 
 ### Storybook
 
@@ -189,6 +224,14 @@ private/custom registry, git dependency, pnpm lock, `workspace:`, `file:`, `link
 native build가 필요한 package는 자동 다운로드 대상이 아닙니다. 확장은 package manager나 lifecycle script를
 실행하지 않으며 프로젝트 manifest, lockfile과 `node_modules`를 수정하지 않습니다.
 
+설치된 package가 자신의 선택적 peer(`peerDependenciesMeta`의 `optional`)를 `import()`로만 불러오고 그 peer가
+설치되어 있지 않으면(예: `resend`의 `@react-email/render`), 빌드를 실패시키지 않고 그 `import()`가 Node처럼
+실행할 때 거부되도록 둡니다. 프로젝트 코드가 직접 불러오는 package는 이전처럼 위 준비 대상입니다.
+
+프로젝트 코드가 직접 불러오는 설치 package는 보통 따로 캐시되는 vendor module로 나뉘지만, 프로젝트의 다른
+dependency가 그 package를 peer로 선언하면(`@tiptap/react`의 `@tiptap/pm` 등) 페이지 bundle 안에 함께 둡니다.
+peer는 그 dependency와 같은 instance를 써야 하므로, 따로 나누면 같은 module이 두 벌 실행됩니다.
+
 ## 의도적인 제한
 
 React File Preview는 다음 항목을 자동 복제하지 않습니다.
@@ -208,6 +251,8 @@ React File Preview는 다음 항목을 자동 복제하지 않습니다.
 
 ## 크기와 탐색 한도
 
+- Next redirect·React 자식 props·로컬 메뉴·Tailwind 후보 복구의 검증과 제한은
+  [0.1.1677 복구 기록](preview-render-style-recovery-1677.md)을 참고하세요.
 - inline asset은 파일당 5 MiB, 한 빌드 합계 20 MiB
 - 기본 JS/CSS/encoded asset 출력 상한은 128 MiB
 - `reactPreview.maxOutputSizeMiB`로 프로젝트별 32–512 MiB 조정 가능

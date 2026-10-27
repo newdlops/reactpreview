@@ -78,10 +78,19 @@ describe('preview dependency pass-through policy', () => {
 
   /** Every runtime-instrumentation lexical family remains on the conservative path. */
   it.each([
-    ['deferred event', 'export const Panel = () => <button onClick={() => modal.show()}>Open</button>;'],
+    [
+      'deferred event',
+      'export const Panel = () => <button onClick={() => modal.show()}>Open</button>;',
+    ],
     ['conditional JSX', 'export const Panel = () => enabled && <section />;'],
-    ['async component', 'async function Panel() { return <section />; } export const App = () => <Panel />;'],
-    ['React effect', "import { useEffect } from 'react'; export const Panel = () => { useEffect(() => {}); return <section />; };"],
+    [
+      'async component',
+      'async function Panel() { return <section />; } export const App = () => <Panel />;',
+    ],
+    [
+      'React effect',
+      "import { useEffect } from 'react'; export const Panel = () => { useEffect(() => {}); return <section />; };",
+    ],
     ['ambiguous syntax', 'export const Panel = () => enabled ? <section /> :'],
   ])('rejects %s source', (_family, sourceText) => {
     expect(

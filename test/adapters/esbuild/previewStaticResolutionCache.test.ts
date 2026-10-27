@@ -47,17 +47,24 @@ describe('request-owned positive static resolution cache', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'preview-resolution-bound-'));
     try {
       const target = path.join(root, 'Target.ts');
+      const other = path.join(root, 'Other.ts');
       const consumer = path.join(root, 'Consumer.ts');
       await writeFile(target, 'export const value = 1;');
+      await writeFile(other, 'export const value = 2;');
       const expected = await realpath(target);
+      const otherExpected = await realpath(other);
       const resolver = createPreviewStaticModuleResolver({ workspaceRoot: root });
       for (let index = 0; index <= 4096; index += 1) {
-        expect(resolver.resolve(`./Target?request=${index.toString()}`, consumer)).toBe(expected);
+        const source = index === 0 ? 'Target' : 'Other';
+        expect(resolver.resolve(`./${source}?request=${index.toString()}`, consumer)).toBe(
+          index === 0 ? expected : otherExpected,
+        );
       }
       const canonicalize = vi.spyOn(realpathSync, 'native');
       try {
-        expect(resolver.resolve('./Target?request=4096', consumer)).toBe(expected);
+        expect(resolver.resolve('./Other?request=4096', consumer)).toBe(otherExpected);
         expect(canonicalize).not.toHaveBeenCalled();
+        // No surviving issuer retains Target; query keys must still consume separate cache slots.
         expect(resolver.resolve('./Target?request=0', consumer)).toBe(expected);
         expect(canonicalize).toHaveBeenCalled();
       } finally {

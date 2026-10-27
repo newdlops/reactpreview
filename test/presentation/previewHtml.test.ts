@@ -7,6 +7,20 @@ import { createPreviewHtml } from '../../src/presentation/webview/previewHtml';
 const CSP_SOURCE = 'vscode-webview://unit-test';
 
 describe('createPreviewHtml', () => {
+  it('escapes the private input frontier on the mount without broadening CSP', () => {
+    const html = createPreviewHtml(CSP_SOURCE, {
+      kind: 'ready',
+      documentName: 'Card.tsx',
+      scriptUri: 'vscode-webview://unit-test/entry.js',
+      pageContextFrontierId: 'scope" onload="bad<&',
+    });
+    expect(html).toContain(
+      'data-react-preview-page-context-frontier-id="scope&quot; onload=&quot;bad&lt;&amp;"',
+    );
+    expect(html).not.toContain(' onload="bad');
+    expect(html).toContain('connect-src &#39;none&#39;');
+  });
+
   /** Loads generated artifacts externally while keeping scripts and connections tightly restricted. */
   it('renders a ready document with a restrictive CSP', () => {
     const html = createPreviewHtml(CSP_SOURCE, {
@@ -31,6 +45,7 @@ describe('createPreviewHtml', () => {
     expect(html).toContain('id="react-preview-progress-host"');
     expect(html).toContain('shadowrootmode="open"');
     expect(html).toContain('<body data-react-preview-state="ready">');
+    expect(html).toContain('@layer react-preview-defaults {');
     expect(html).toContain(
       ":where(body[data-react-preview-state='ready']) { color: #111; background: #fff; }",
     );
@@ -155,6 +170,35 @@ describe('createPreviewHtml', () => {
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain('aria-current="step"');
     expect(html).not.toContain('aria-valuenow');
+  });
+
+  it('seeds measured stage times and authorizes only the owned loading clock script', () => {
+    const html = createPreviewHtml(CSP_SOURCE, {
+      kind: 'loading',
+      documentName: '</script><img src=x onerror=alert(1)>',
+      revision: 7,
+      stage: 'preparing-runtime',
+      progressTiming: {
+        elapsedMs: 4200,
+        stages: [
+          { stage: 'resolving-target', elapsedMs: 1200 },
+          { stage: 'preparing-runtime', elapsedMs: 3000 },
+        ],
+      },
+    });
+    expect(html).toContain('data-react-preview-total-time>4.2s');
+    expect(html).toContain('data-react-preview-duration>3.0s');
+    expect(html).toContain('role="timer" aria-live="off"');
+    expect(html).toContain('Skipped');
+    expect(html).toContain('Waiting');
+    const nonce = /<script nonce="([a-f0-9]{32})">/u.exec(html)?.[1];
+    expect(nonce).toBeDefined();
+    if (nonce === undefined) throw new Error('Missing loading clock nonce');
+    expect(html).toContain(`nonce-${nonce}`);
+    expect(html).toContain('connect-src &#39;none&#39;');
+    expect(html).not.toContain('<img src=x');
+    expect(html).not.toContain("script-src 'unsafe-inline'");
+    expect(html).toContain('"revision":7');
   });
 
   /** Keeps gallery chrome identifiable without imposing presentation rules on target descendants. */

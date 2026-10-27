@@ -23,6 +23,8 @@ function formatPreviewInspectorPageCorridorStatus(reachability, diagnosis) {
   if (readPreviewInspectorRenderScenario() === 'file-components') return 'FILE COMPONENTS';
   if (diagnosis?.kind === 'page-context') return 'PAGE CONTEXT UNVERIFIED';
   if (diagnosis?.kind === 'render-error') return 'RENDER ERROR';
+  if (diagnosis?.kind === 'unmounted-target') return 'TARGET UNMOUNTED';
+  if (diagnosis?.kind === 'pending' && reachability?.pageRootCommitted === true) return 'CHECKING FILE';
   const descriptor = findSelectedPreviewInspectorDescriptor();
   const moduleContext = typeof readSelectedPreviewInspectorModuleContext === 'function'
     ? readSelectedPreviewInspectorModuleContext(descriptor)
@@ -194,7 +196,7 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
     : undefined;
   const unresolvedPathOnly = !(blockers.active ?? []).some((node) => node?.blockerKind !== 'target-reachability');
   if (diagnosis !== undefined && (
-      ['code-condition', 'page-context', 'render-error', 'pending'].includes(diagnosis.kind) ||
+      ['code-condition', 'page-context', 'render-error', 'pending', 'unmounted-target'].includes(diagnosis.kind) ||
       diagnosis.kind === 'unknown' && unresolvedPathOnly)) {
     const tracing = diagnosis.kind === 'pending' || diagnosis.kind === 'unknown' &&
       typeof isPreviewInspectorTargetReachabilityResolving === 'function' &&

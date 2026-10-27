@@ -2,27 +2,29 @@
 /** Generates an exact-edge Page Execution Slice React root. */
 import path from 'node:path';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
-import { createPreviewInspectorPageSurfaceSpecifier } from './previewInspectorPageExecutionPlugin';
-import { PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER } from './previewInspectorTargetPlugin';
-import {
-  PREVIEW_INSPECTOR_PAGE_ROUTE_STATE_SPECIFIER,
-  shouldInstallPreviewInspectorPageRouteStatePrelude,
-} from './previewInspectorPageRouteStatePrelude';
-import { createPreviewInspectorRouteExecutionRuntimeSource } from './previewInspectorRouteExecutionRuntimeSource';
-import { isReactOverlayComponentName } from '../staticResources/reactOverlayVisibilityInference';
-import { PREVIEW_INSPECTOR_PAGE_SURFACE_PROPS_KEY } from '../pageInspector/previewInspectorPageSurfacePropsRuntimeSource';
 import {
   PREVIEW_INSPECTOR_EXECUTION_ROOT_BRIDGE_KEY,
   PREVIEW_INSPECTOR_EXECUTION_SURFACES_KEY,
   PREVIEW_INSPECTOR_PAGE_EXECUTION_KEY,
 } from '../pageInspector/previewInspectorPageExecutionOwnerProofRuntimeSource';
+import { PREVIEW_INSPECTOR_PAGE_SURFACE_PROPS_KEY } from '../pageInspector/previewInspectorPageSurfacePropsRuntimeSource';
+import { PREVIEW_REDUX_OVERLAY_ELEMENT_KEY } from '../previewReduxRuntimeSource';
+import { createPreviewNextAppControlBoundarySource } from '../previewNextAppControlBoundarySource';
+import { isReactOverlayComponentName } from '../staticResources/reactOverlayVisibilityInference';
+import type { PreviewInspectorExecutionRootModuleContract } from './previewInspectorExecutionRootModuleContract';
+import { createPreviewInspectorPageSurfaceSpecifier } from './previewInspectorPageExecutionPlugin';
 import type {
   PreviewInspectorMountSurface,
   PreviewInspectorPageCompositionEdge,
   PreviewInspectorPageExecutionCandidate,
 } from './previewInspectorPageExecutionTypes';
-import type { PreviewInspectorExecutionRootModuleContract } from './previewInspectorExecutionRootModuleContract';
+import {
+  PREVIEW_INSPECTOR_PAGE_ROUTE_STATE_SPECIFIER,
+  shouldInstallPreviewInspectorPageRouteStatePrelude,
+} from './previewInspectorPageRouteStatePrelude';
+import { createPreviewInspectorRouteExecutionRuntimeSource } from './previewInspectorRouteExecutionRuntimeSource';
 import type { PreviewInspectorTargetModuleContract } from './previewInspectorTargetModuleContract';
+import { PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER } from './previewInspectorTargetPlugin';
 
 export interface CreatePreviewInspectorPageExecutionSourceOptions {
   readonly candidate: PreviewInspectorPageExecutionCandidate;
@@ -41,6 +43,18 @@ export function createPreviewInspectorPageExecutionSource(
 ): string {
   const surfaces = options.candidate.criticalSurfaces;
   const routeRecipe = options.candidate.routeRecipe;
+  const virtualPageOwnerSurfaceId = routeRecipe?.mounts.find(
+    (mount) => mount.contextOrigin === 'virtual-page-owner',
+  )?.parentSurfaceId;
+  const nestedRouteOwnerIds = new Set(
+    virtualPageOwnerSurfaceId === undefined
+      ? []
+      : routeRecipe?.mounts.flatMap((mount) =>
+          mount.parentSurfaceId === undefined || mount.parentSurfaceId === virtualPageOwnerSurfaceId
+            ? []
+            : [mount.parentSurfaceId],
+        ),
+  );
   const imports = surfaces.map((surface, index) =>
     createSurfaceImport(
       surface,
@@ -173,7 +187,10 @@ export function createPreviewInspectorPageExecutionSource(
   if (contextualTargetParentLocal !== undefined && contextualTargetParentSurfaceId !== undefined) {
     localById.set(contextualTargetParentSurfaceId, contextualTargetParentFrame);
   }
-  const compositionRoot = surfaces.find((surface) => !childIds.has(surface.id)) ?? root;
+  // Retained inner owners are already rendered by the outer factory's authored route slots.
+  const compositionRoot =
+    surfaces.find((surface) => !childIds.has(surface.id) && !nestedRouteOwnerIds.has(surface.id)) ??
+    root;
   const render = (surfaceId: string, active: Set<string>): string => {
     const local = localById.get(surfaceId);
     if (local === undefined || active.has(surfaceId)) return 'null';
@@ -212,6 +229,9 @@ export function createPreviewInspectorPageExecutionSource(
       const child = render(slot.childSurfaceId, new Set(active));
       current = composeEdge(local, slot, child, current, options.candidate.routeRecipe);
     }
+    if (surfaceId === nextAppPageSurfaceId) {
+      current = `React.createElement(PreviewInspectorNextAppControlBoundary, null, ${current})`;
+    }
     active.delete(surfaceId);
     return before.length === 0 && after.length === 0
       ? current
@@ -239,9 +259,6 @@ export function createPreviewInspectorPageExecutionSource(
   const routerRenderedPage =
     detachedOverlayPage ??
     (routerPageSurfaceId === undefined ? renderedRoot : render(routerPageSurfaceId, new Set()));
-  const virtualPageOwnerSurfaceId = routeRecipe?.mounts.find(
-    (mount) => mount.contextOrigin === 'virtual-page-owner',
-  )?.parentSurfaceId;
   const virtualPageOwnerFrameLocal = 'PreviewInspectorVirtualPageOwnerRouteFrame';
   const routerRuntime =
     routeRecipe === undefined
@@ -352,6 +369,9 @@ export function createPreviewInspectorPageExecutionSource(
   );
   return [
     "import React from 'react';",
+    // A child below an application shell reads absent-receiver fields over that shell's store; the
+    // Redux bridge installs the wrapper, and without it the element passes through unchanged.
+    `const __reactPreviewReduxOverlayElement = (element) => globalThis[Symbol.for(${JSON.stringify(PREVIEW_REDUX_OVERLAY_ELEMENT_KEY)})]?.(element) ?? element;`,
     ...(routeStatePrelude
       ? [`import ${JSON.stringify(PREVIEW_INSPECTOR_PAGE_ROUTE_STATE_SPECIFIER)};`]
       : []),
@@ -366,6 +386,7 @@ export function createPreviewInspectorPageExecutionSource(
     ...virtualPageSourceRegistrations,
     ...(routerRuntime?.declarations ?? []),
     ...nextAppPagePropsSource,
+    ...(nextAppPageSurfaceId === undefined ? [] : createPreviewNextAppControlBoundarySource()),
     `function ${selectedRouteSurfacePassthrough}({ children }) {`,
     '  return children ?? null;',
     '}',
@@ -571,6 +592,7 @@ function composeEdge(
   fallback: string,
   routeRecipe: PreviewInspectorPageExecutionCandidate['routeRecipe'],
 ): string {
+  const wrapped = `__reactPreviewReduxOverlayElement(${child})`;
   if (
     edge.mode === 'children-slot' ||
     edge.mode === 'route-outlet' ||
@@ -580,13 +602,13 @@ function composeEdge(
       edge.mode === 'next-layout-slot' && routeRecipe?.kind === 'next-app'
         ? `{ params: ${JSON.stringify(routeRecipe.params)}, searchParams: ${JSON.stringify(routeRecipe.searchParams)} }`
         : 'null';
-    return `React.createElement(${parent}, ${properties}, ${child})`;
+    return `React.createElement(${parent}, ${properties}, ${wrapped})`;
   }
   if (edge.mode === 'component-prop-slot' && edge.slotName === 'Component')
-    return `React.createElement(${parent}, { "Component": () => ${child}, "pageProps": {} })`;
+    return `React.createElement(${parent}, { "Component": () => ${wrapped}, "pageProps": {} })`;
   if (edge.mode === 'component-prop-slot' && edge.slotName !== undefined)
-    return `React.createElement(${parent}, { ${JSON.stringify(edge.slotName)}: ${child} })`;
+    return `React.createElement(${parent}, { ${JSON.stringify(edge.slotName)}: ${wrapped} })`;
   if (edge.mode === 'render-prop-slot' && edge.slotName !== undefined)
-    return `React.createElement(${parent}, { ${JSON.stringify(edge.slotName)}: () => ${child} })`;
+    return `React.createElement(${parent}, { ${JSON.stringify(edge.slotName)}: () => ${wrapped} })`;
   return fallback;
 }

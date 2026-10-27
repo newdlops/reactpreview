@@ -9,17 +9,17 @@
  */
 import ts from 'typescript';
 import { createPreviewComparisonFalseExpression } from './previewRuntimeHookComparison';
+import { collectPreviewRuntimeHookConditionComparisons } from './previewRuntimeHookConditionComparison';
+import {
+  createPreviewRuntimeSemanticString,
+  inferPreviewRuntimeSemanticFallback,
+} from './previewRuntimeHookSemantics';
 import {
   findNearestPreviewRuntimeFunction,
   isPreviewRuntimeFunction,
   type PreviewRuntimeFunction,
   unwrapPreviewRuntimeExpression,
 } from './previewRuntimeHookSyntax';
-import {
-  createPreviewRuntimeSemanticString,
-  inferPreviewRuntimeSemanticFallback,
-} from './previewRuntimeHookSemantics';
-import { collectPreviewRuntimeHookConditionComparisons } from './previewRuntimeHookConditionComparison';
 import { isPreviewSelectedTargetExit } from './previewSelectedTargetExit';
 
 /** Maximum helper-call distance inspected from the component that owns a hook binding. */
@@ -183,9 +183,7 @@ function collectClosedFallthroughCandidates(
   if (body === undefined || !ts.isBlock(body) || body.statements.length < 2) return;
   const terminal = body.statements.at(-1);
   if (terminal === undefined || !statementAlwaysThrows(terminal)) return;
-  let selected:
-    | { readonly expression: string; readonly key: string }
-    | undefined;
+  let selected: { readonly expression: string; readonly key: string } | undefined;
   for (const statement of body.statements.slice(0, -1)) {
     if (
       !ts.isIfStatement(statement) ||
@@ -223,10 +221,7 @@ function readTruthyTrackedEqualityLiterals(
   sourceFile: ts.SourceFile,
 ): readonly { readonly expression: string; readonly value: KnownScalar }[] {
   const value = unwrapPreviewRuntimeExpression(expression);
-  if (
-    ts.isBinaryExpression(value) &&
-    value.operatorToken.kind === ts.SyntaxKind.BarBarToken
-  ) {
+  if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
     return [
       ...readTruthyTrackedEqualityLiterals(value.left, trackedName, aliases, sourceFile),
       ...readTruthyTrackedEqualityLiterals(value.right, trackedName, aliases, sourceFile),

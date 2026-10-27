@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import campaignHost from '../../scripts/preview-blocker-campaign-host.cjs';
 import {
   existsSync,
   mkdirSync,
@@ -6,6 +8,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -15,18 +18,42 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const directories: string[] = [];
 const script = path.resolve('scripts/run-preview-blocker-campaign.mjs');
-const temporary = () => {
+const temporary = (): string => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'preview-campaign-'));
   directories.push(directory);
   return directory;
 };
-const run = (arguments_: readonly string[]) =>
+const run = (arguments_: readonly string[]): string =>
   execFileSync(process.execPath, [script, ...arguments_], { encoding: 'utf8' });
-afterEach(() =>
-  directories.splice(0).forEach((directory) => rmSync(directory, { force: true, recursive: true })),
-);
+afterEach(() => {
+  for (const directory of directories.splice(0))
+    rmSync(directory, { force: true, recursive: true });
+});
 
 describe('run-preview-blocker-campaign manifest', () => {
+  it('uses the existing dedicated loopback for campaign port checks', async () => {
+    const { resolvePreviewBlockerLoopbackHost } =
+      await import('../../scripts/run-preview-blocker-campaign.mjs');
+    expect(
+      resolvePreviewBlockerLoopbackHost({
+        PORT_MANAGER_ACTUAL_LOOPBACK_HOST: '127.1.0.1',
+        PORT_MANAGER_NETWORK_LOOPBACK_HOST: '127.93.164.7',
+      }),
+    ).toBe('127.1.0.1');
+    expect(
+      resolvePreviewBlockerLoopbackHost({
+        PORT_MANAGER_NETWORK_LOOPBACK_HOST: '127.93.164.7',
+      }),
+    ).toBe('127.93.164.7');
+    expect(resolvePreviewBlockerLoopbackHost({})).toBe('127.0.0.1');
+    for (const host of ['', '0.0.0.0', '192.168.1.2', 'localhost', '127.1.0.1.evil'])
+      expect(() =>
+        resolvePreviewBlockerLoopbackHost({
+          PORT_MANAGER_ACTUAL_LOOPBACK_HOST: host,
+        }),
+      ).toThrow('loopback');
+  });
+
   /** Keeps prior blocker targets while spreading a bounded census over root-relative surfaces. */
   it('prioritizes historical evidence and round-robins deterministic breadth strata', async () => {
     const campaign = await import('../../scripts/run-preview-blocker-campaign.mjs');
@@ -92,7 +119,7 @@ describe('run-preview-blocker-campaign manifest', () => {
     };
     expect(manifest.targets).toHaveLength(1);
     expect(manifest.targets[0]?.sourcePath).toBe(realpathSync(source));
-    expect(require('node:fs').statSync(out).mode & 0o777).toBe(0o600);
+    expect(statSync(out).mode & 0o777).toBe(0o600);
   });
   it('rejects symlinks and paths outside approved roots', () => {
     const directory = temporary(),
@@ -195,7 +222,7 @@ describe('run-preview-blocker-campaign launch contract', () => {
     ).toThrow();
   });
   it('keeps host bootstrap ordering testable without loading VS Code', () => {
-    const host = require('../../scripts/preview-blocker-campaign-host.cjs') as {
+    const host = campaignHost as {
       hasValidBootstrapLifecycle: (events: string[]) => boolean;
       validateAuthority: (value: unknown, sha: string, now?: number) => unknown;
     };
@@ -226,7 +253,7 @@ describe('run-preview-blocker-campaign launch contract', () => {
   });
   it('accepts only semantic IP-literal loopback inspector endpoints', async () => {
     const campaign = await import('../../scripts/run-preview-blocker-campaign.mjs');
-    const host = require('../../scripts/preview-blocker-campaign-host.cjs') as {
+    const host = campaignHost as {
       validateInspectorUrl: (value: unknown) => {
         ok: boolean;
         code?: string;
@@ -286,10 +313,7 @@ describe('run-preview-blocker-campaign launch contract', () => {
       campaign.validateProofAcknowledgement(
         proof,
         {
-          proofSha256: require('node:crypto')
-            .createHash('sha256')
-            .update(JSON.stringify(proof))
-            .digest('hex'),
+          proofSha256: createHash('sha256').update(JSON.stringify(proof)).digest('hex'),
         },
         'a',
       ),

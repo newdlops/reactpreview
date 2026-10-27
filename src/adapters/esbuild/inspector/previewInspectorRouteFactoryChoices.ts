@@ -13,6 +13,10 @@ import {
   type PreviewInspectorRouteFactoryChoiceEvidence,
   type PreviewInspectorRouteFactoryEvidence,
 } from './previewInspectorRouteFactory';
+import {
+  collectPreviewInspectorRouteFactoryLocalExports,
+  type PreviewInspectorRouteFactoryLocalExport,
+} from './previewInspectorRouteFactoryLocalExports';
 
 /** Resolved runtime module for one route-catalog component identity. */
 export interface PreviewInspectorRouteChoiceReference {
@@ -51,7 +55,7 @@ export interface PreviewInspectorRouteFactoryChoiceInventory {
   readonly choices: readonly PreviewInspectorRouteFactoryChoiceEvidence[];
   /** Selected factory's inert mount contract, when one was statically proven. */
   readonly owner?: PreviewInspectorRouteFactoryOwnerEvidence;
-  /** Imported module reference keyed by an exact factory choice occurrence. */
+  /** Exact imported or public same-file runtime reference keyed by a factory choice occurrence. */
   readonly references: ReadonlyMap<string, PreviewInspectorRouteChoiceReference>;
 }
 
@@ -64,7 +68,7 @@ export function createPreviewInspectorRouteFactoryChoiceKey(
 
 /** Inputs remain parser-only and accept the caller's package-aware resolver as a capability. */
 export interface CollectPreviewInspectorRouteFactoryChoicesOptions {
-  /** Optional project resolver; absent resolution simply omits component module metadata. */
+  /** Optional import resolver; public same-file exports do not require an external resolution. */
   readonly resolveModule?: ResolvePreviewRenderGraphModule;
   /** Selected route-factory source identity. */
   readonly sourcePath: string;
@@ -77,8 +81,8 @@ export interface CollectPreviewInspectorRouteFactoryChoicesOptions {
 /**
  * Reads page/submodule names only from the factory that directly owns the selected export.
  *
- * Import references are resolved in the same syntax pass, but computed/lazy values intentionally
- * remain name-only choices. This is sufficient for path selection while preserving safe pruning.
+ * Public local exports and import references are resolved in the same syntax pass; computed/lazy
+ * values remain name-only choices. Exact identities preserve path selection and safe pruning.
  */
 export function collectPreviewInspectorRouteFactoryChoices(
   options: CollectPreviewInspectorRouteFactoryChoicesOptions,
@@ -93,9 +97,14 @@ export function collectPreviewInspectorRouteFactoryChoices(
     true,
     options.sourcePath.toLowerCase().endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
+  const localExports = collectPreviewInspectorRouteFactoryLocalExports(sourceFile);
+  const targetIdentities = new Set(options.targetIdentities);
+  for (const identity of options.targetIdentities) {
+    const local = localExports.get(identity);
+    if (local !== undefined) targetIdentities.add(local.localName);
+  }
   const factories = collectPreviewInspectorRouteFactoryEvidence(sourceFile).filter(
-    (factory) =>
-      factory.componentName !== undefined && options.targetIdentities.has(factory.componentName),
+    (factory) => factory.componentName !== undefined && targetIdentities.has(factory.componentName),
   );
   const choices = Object.freeze(factories.flatMap((factory) => factory.choices));
   const ownerFactory = factories.find(
@@ -111,28 +120,34 @@ export function collectPreviewInspectorRouteFactoryChoices(
       : {
           owner: Object.freeze({
             basePath: ownerFactory.basePath,
-            exportName: ownerFactory.componentName,
+            exportName:
+              [...options.targetIdentities].find(
+                (identity) =>
+                  identity === ownerFactory.componentName ||
+                  localExports.get(identity)?.localName === ownerFactory.componentName,
+              ) ?? ownerFactory.componentName,
             hasWildcardFallback: ownerFactory.hasWildcardFallback,
             routeSlotCount: ownerFactory.routeSlots.length,
             sourcePath: path.normalize(options.sourcePath),
           }),
         }),
-    references: collectRouteFactoryChoiceReferences(options, sourceFile, choices),
+    references: collectRouteFactoryChoiceReferences(options, sourceFile, choices, localExports),
   });
 }
 
 /**
  * Resolves importer-local page bindings so broad route pruning retains every selectable view.
  *
- * The mapping follows import declarations only. It does not inspect factory implementations or
- * evaluate lazy expressions, and therefore fails open when a page value is computed dynamically.
+ * Import declarations and explicit same-file runtime exports provide exact module identities.
+ * Initializers and factory implementations are never evaluated. Private, type-only, ambiguous or
+ * not-yet-initialized local values remain unresolved instead of inventing an importable export.
  */
 function collectRouteFactoryChoiceReferences(
   options: CollectPreviewInspectorRouteFactoryChoicesOptions,
   sourceFile: ts.SourceFile,
   choices: readonly PreviewInspectorRouteFactoryChoiceEvidence[],
+  localExports: ReadonlyMap<string, PreviewInspectorRouteFactoryLocalExport>,
 ): ReadonlyMap<string, PreviewInspectorRouteChoiceReference> {
-  if (options.resolveModule === undefined) return new Map();
   const importByLocalName = new Map<
     string,
     { readonly exportName: string; readonly moduleSpecifier: string }
@@ -160,13 +175,25 @@ function collectRouteFactoryChoiceReferences(
       });
     }
   }
+  const publicByLocalName = new Map<
+    string,
+    { readonly exportName: string; readonly availableAfter: number }
+  >();
+  for (const [exportName, binding] of localExports) {
+    if (!publicByLocalName.has(binding.localName) || exportName === binding.localName) {
+      publicByLocalName.set(binding.localName, {
+        exportName,
+        availableAfter: binding.availableAfter,
+      });
+    }
+  }
   const references = new Map<string, PreviewInspectorRouteChoiceReference>();
   for (const choice of choices) {
     if (choice.localName === undefined) continue;
-    const resolvedChoice = resolveImportedBinding(choice.localName);
+    const resolvedChoice = resolveRuntimeBinding(choice.localName, choice.occurrenceStart);
     if (resolvedChoice === undefined) continue;
     const elementWrappers = (choice.wrapperLocalNames ?? []).flatMap((localName) => {
-      const resolvedWrapper = resolveImportedBinding(localName);
+      const resolvedWrapper = resolveRuntimeBinding(localName, choice.occurrenceStart);
       return resolvedWrapper === undefined
         ? []
         : [
@@ -186,12 +213,21 @@ function collectRouteFactoryChoiceReferences(
   }
   return references;
 
-  /** Resolves one direct importer-local component binding without loading its module. */
-  function resolveImportedBinding(
+  /** Resolves one exact import or public local binding available at this factory use site. */
+  function resolveRuntimeBinding(
     localName: string,
+    before: number,
   ): { readonly exportName: string; readonly sourcePath: string } | undefined {
     const imported = importByLocalName.get(localName);
-    if (imported === undefined) return undefined;
+    if (imported === undefined) {
+      const local = publicByLocalName.get(localName);
+      return local === undefined || local.availableAfter >= before
+        ? undefined
+        : Object.freeze({
+            exportName: local.exportName,
+            sourcePath: path.normalize(options.sourcePath),
+          });
+    }
     const resolved = options.resolveModule?.(imported.moduleSpecifier, options.sourcePath);
     return resolved === undefined
       ? undefined

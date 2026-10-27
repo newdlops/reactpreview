@@ -32,6 +32,25 @@ export interface VerifyPreviewInspectorBundleFrontierMetafileOptions {
 export function verifyPreviewInspectorBundleFrontierMetafile(
   options: VerifyPreviewInspectorBundleFrontierMetafileOptions,
 ): void {
+  // Keep this synchronous verification's identities consistent, bounded, and separate from every
+  // later build. A cache miss or full cache still performs the existing physical-path checks.
+  const normalizedByRoot = new Map<string, Map<string, NormalizedAuthoredMetafileInput>>();
+  let normalizedCount = 0;
+  const normalizeInput: typeof normalizeAuthoredMetafileInput = (rootPath, sourcePath) => {
+    const retained = normalizedByRoot.get(rootPath)?.get(sourcePath);
+    if (retained !== undefined) return retained;
+    const normalized = normalizeAuthoredMetafileInput(rootPath, sourcePath);
+    if (normalizedCount < 4096) {
+      let byPath = normalizedByRoot.get(rootPath);
+      if (byPath === undefined) {
+        byPath = new Map();
+        normalizedByRoot.set(rootPath, byPath);
+      }
+      byPath.set(sourcePath, normalized);
+      normalizedCount += 1;
+    }
+    return normalized;
+  };
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
   const authenticSourcePaths = new Set(
     options.authenticSourcePaths.map((sourcePath) => canonicalizeExistingPath(sourcePath)),
@@ -43,12 +62,13 @@ export function verifyPreviewInspectorBundleFrontierMetafile(
   );
   const metafileInputs = Object.keys(options.metafile.inputs)
     .filter(isAuthoredMetafileInputPath)
-    .map((sourcePath) => normalizeAuthoredMetafileInput(workspaceRoot, sourcePath));
+    .map((sourcePath) => normalizeInput(workspaceRoot, sourcePath));
   const admittedYarnVirtualPackageRoots = collectAdmittedYarnVirtualPackageRoots(
     options,
     workspaceRoot,
     authenticSourcePaths,
     packageDemandSourcePaths,
+    normalizeInput,
   );
   const unexpectedInputs = [
     ...new Set(
@@ -92,7 +112,7 @@ export function verifyPreviewInspectorBundleFrontierMetafile(
     );
   }
   const missingExecutionSurface = options.executionSurfaces?.find(
-    (surface) => !hasExecutionSurface(options, surface),
+    (surface) => !hasExecutionSurface(options, surface, normalizeInput),
   );
   if (missingExecutionSurface !== undefined)
     throwFrontierMismatch(
@@ -138,6 +158,7 @@ function hasExecutionSurface(
   surface: NonNullable<
     VerifyPreviewInspectorBundleFrontierMetafileOptions['executionSurfaces']
   >[number],
+  normalizeInput: typeof normalizeAuthoredMetafileInput,
 ): boolean {
   if (
     surface.strategy === 'selected-export-slice' ||
@@ -149,9 +170,7 @@ function hasExecutionSurface(
   const sourcePath = canonicalizeExistingPath(surface.sourcePath);
   return Object.keys(options.metafile.inputs).some((inputPath) => {
     if (!isAuthoredMetafileInputPath(inputPath)) return false;
-    return (
-      normalizeAuthoredMetafileInput(options.workspaceRoot, inputPath).sourcePath === sourcePath
-    );
+    return normalizeInput(options.workspaceRoot, inputPath).sourcePath === sourcePath;
   });
 }
 
@@ -187,6 +206,7 @@ function collectAdmittedYarnVirtualPackageRoots(
   workspaceRoot: string,
   authenticSourcePaths: ReadonlySet<string>,
   packageDemandSourcePaths: ReadonlySet<string>,
+  normalizeInput: typeof normalizeAuthoredMetafileInput,
 ): ReadonlySet<string> {
   const packageRoots = new Set<string>();
   let changed = true;
@@ -194,7 +214,7 @@ function collectAdmittedYarnVirtualPackageRoots(
     changed = false;
     for (const [inputPath, input] of Object.entries(options.metafile.inputs)) {
       if (!isAuthoredMetafileInputPath(inputPath)) continue;
-      const importer = normalizeAuthoredMetafileInput(workspaceRoot, inputPath);
+      const importer = normalizeInput(workspaceRoot, inputPath);
       const authenticPackageDemand =
         authenticSourcePaths.has(importer.sourcePath) &&
         packageDemandSourcePaths.has(importer.sourcePath);
@@ -211,7 +231,7 @@ function collectAdmittedYarnVirtualPackageRoots(
         ) {
           continue;
         }
-        const target = normalizeAuthoredMetafileInput(workspaceRoot, imported.path);
+        const target = normalizeInput(workspaceRoot, imported.path);
         if (!target.yarnVirtual) continue;
         const packageRoot = findMatchingWorkspacePackageRoot(
           workspaceRoot,

@@ -6,6 +6,7 @@
  * names referenced here are deliberately provided by the surrounding generated preview entry.
  */
 import { createPreviewInspectorFailureEvidenceRuntimeSource } from './previewInspectorFailureEvidenceRuntimeSource';
+import { createPreviewNextAppControlSignalReaderSource } from '../previewNextAppControlBoundarySource';
 
 /**
  * Creates browser source that contains failures at the selected component invocation.
@@ -22,6 +23,7 @@ export function createPreviewInspectorTargetBoundaryRuntimeSource(): string {
 ${failureEvidenceRuntimeSource}
 
 function createPreviewInspectorTargetBoundaryFactory({ React }) {
+${createPreviewNextAppControlSignalReaderSource('readPreviewInspectorTargetNextAppControlSignal').join('\n')}
 
 /** Returns one bounded message suitable for the selected target's inline failure placeholder. */
 function describePreviewInspectorTargetError(error) {
@@ -60,7 +62,8 @@ class PreviewInspectorTargetBoundary extends React.Component {
 
   /** Asks React to commit the compact fallback after a descendant render or lifecycle failure. */
   static getDerivedStateFromError(error) {
-    if (isPreviewInspectorCandidateRouterRetry(error)) throw error;
+    if (isPreviewInspectorCandidateRouterRetry(error) ||
+      readPreviewInspectorTargetNextAppControlSignal(error) !== undefined) throw error;
     return { error };
   }
 

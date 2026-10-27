@@ -9,15 +9,15 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
-import {
-  inferReactFunctionParameterUsageShape,
-  type PreviewInferredPropShape,
-} from './reactExportPropInference';
 import { collectPreviewReduxToolkitInitialStateShapes } from './previewReduxToolkitInitialState';
 import {
   collectPreviewReselectOptionalChainPaths,
   type PreviewReselectOptionalChainPath,
 } from './previewReselectOptionalChainPaths';
+import {
+  inferReactFunctionParameterUsageShape,
+  type PreviewInferredPropShape,
+} from './reactExportPropInference';
 
 const MAX_RESELECT_CALLS = 128;
 const MAX_SELECTOR_BINDINGS = 256;
@@ -348,11 +348,12 @@ function mergeReselectValueShapes(
     return primary;
   }
   if (primary.kind === 'array') {
+    const secondaryItems = secondary.items ?? primary.items;
     return Object.freeze({
       kind: 'array',
-      ...(primary.items === undefined && secondary.items === undefined
+      ...(secondaryItems === undefined
         ? {}
-        : { items: mergeReselectValueShapes(primary.items, secondary.items ?? primary.items!) }),
+        : { items: mergeReselectValueShapes(primary.items, secondaryItems) }),
     });
   }
   if (primary.kind !== 'object') {

@@ -17,6 +17,7 @@ interface PreviewSnapshotInventoryArguments {
   readonly workspace: string;
 }
 
+/** Builds a deterministic source inventory from an explicitly selected immutable snapshot. */
 export async function runPreviewSnapshotInventoryCli(
   arguments_: readonly string[],
 ): Promise<number> {
@@ -51,6 +52,7 @@ export async function runPreviewSnapshotInventoryCli(
   return 0;
 }
 
+/** Validates inventory CLI arguments and resolves their required snapshot and output paths. */
 export function parsePreviewSnapshotInventoryArguments(
   arguments_: readonly string[],
 ): PreviewSnapshotInventoryArguments {
@@ -114,6 +116,7 @@ export function parsePreviewSnapshotInventoryArguments(
   });
 }
 
+/** Maps admitted source extensions to the preview language used in inventory rows. */
 function inferLanguage(filePath: string): PreviewSourceLanguage {
   switch (path.extname(filePath).toLowerCase()) {
     case '.jsx':

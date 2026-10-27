@@ -3,6 +3,379 @@
 [첫 보관 문서](changelog-archive.md)가 1,000줄 제한에 닿아, 그 뒤에 이어지는 오래된 변경 기록을 이 문서에
 보관합니다. 새로 옮기는 기록은 맨 위에 추가하고, 더 오래된 기록은 첫 보관 문서에 있습니다.
 
+## 0.1.1506 - 2026-09-07
+
+- Inspector의 페이지 선택·자동 복구·표시 설정을 구분하고 현재 페이지 상태를 경로 근거보다 먼저 표시. 보조 도구·경로 설정·트리 기호는 접어서 보존하며 짧은 탭 이름과 검사 영역의 최소 높이로 좁은 창의 탐색성을 개선
+- 별도 Inspector 탭에서 제거되던 표·선택 그룹 구조와 제한된 상태 표시 속성을 보존하고, 접기 키보드 조작·연속 탭 포커스·추론 근거 자동 펼치기를 수정. 스크립트·리소스 속성 차단과 기존 수동 제어·학습 갱신 분리는 유지
+
+## 0.1.1505 - 2026-09-07
+
+- 런타임 목표 경로의 조건을 소스·수동 값·현재 상태로 먼저 선별하고 모델 검증은 조회당 한 번, 추론은 허용 후보당 한 번만 수행. 전체 정렬 대신 다음 조건을 선형 선택하며 같은 평가의 소유자 근거를 공유
+- 조건별 소스·분기 방향과 실제 페이지 문맥에 실패 기억을 연결해 발견 순서가 달라져도 같은 실패를 우선 반복하지 않도록 개선. 무관한 후보로 탐색 범위를 넓히지 않으며 기존 예산·rollback·출력 검증은 유지
+- 중첩 JSX 라벨의 컴포넌트 경계를 보존하고 경로별 이름 점수를 색인 조회하며, 상태 근거를 읽을 때 getter 실행을 차단. 큰 도달성 런타임을 책임별로 분리하고 탐색 성능·품질 회귀 및 재현 벤치마크 추가
+
+## 0.1.1504 - 2026-09-07
+
+- 실제 페이지 경로·선택 컴포넌트·조건 분기·오류 필드를 신경망 선택 문맥에 연결하고, 관련 없는 값의 곱집합 대신 소스 근거가 있는 단일 변경 제안을 생성
+- 제안의 이유와 출력 검증 여부를 표시하고 앞의 3개를 우선 노출. 나머지 문맥 제안과 모든 수동 편집을 접힌 영역에 보존하며 근거 없는 초기 추천은 보류
+- 적용 직전 페이지 상태·후보 신원을 재확인하고 다른 prop 값은 유지. 선택과 학습의 문맥을 일치시키고 새 실패가 있으면 과거 검증 추천을 철회
+
+## 0.1.1503 - 2026-09-07
+
+- 명시적 iterable·Safari/Firefox 속성 오류와 최대 8단계 `cause`를 복구 근거로 읽고, 메시지 탐색량·경로 수를 제한하며 getter·문자열 변환·순환 참조로 인한 복구 중 재예외를 방지
+- 자동 prop 복구의 최종 타입 확인에서 `props.`/`this.props.` 경로를 정규화하고, 배열·문자열의 `length` 요구를 확인된 타입으로 복구. 사용자 값·소유 컴포넌트·소스 경계와 모호한 근거 거부는 유지
+- 변화 없는 복구의 표시용 600ms 대기를 제거하고 다음 시도 중 잘못된 중단 표시를 수정. 부분 변경 후 예외와 미종료 렌더는 계속 잠그며 기존 시도 예산·출력 검증·수동 중단을 보존
+
+## 0.1.1502 - 2026-09-06
+
+- 자동 페이지 복구의 가능 여부 조회에서 모델 추론과 중복 선택지 읽기를 제거하고, 같은 유한 상태의 조합을 진행 표시마다 재열거하지 않도록 변경
+- 실제 실행할 때 미시도·비기본값 경로만 최신 모델로 배치 평가해 저장 당시 점수에 머무르지 않도록 하고, 최근 실패 이력을 우선하면서 기존 hot-retained 결정도 재검증
+- 상태가 추가될 때 자동 복구 frontier가 96개 한도를 넘던 오류를 수정하고, 대기 중 관찰·수동 중단·전체 조합 보존 회귀와 가능 여부/선택 비용 벤치마크 추가
+
+## 0.1.1500 - 2026-09-06
+
+- 신경망의 렌더 성공 학습을 같은 대상의 실제 출력 3회 연속 검증으로 제한하고, 캐시된 도달 상태·잠깐 나타난 출력·데이터 통과만으로 성공 점수를 주던 경로를 보강
+- 지연된 학습을 페이지·대상·소스·수동 제어·시도 신원에 묶어 다른 렌더 결과가 이전 후보에 섞이지 않도록 하고, 같은 시도의 rollback·fatal error는 중복 없이 실패로 반영
+- hook 목록이 `filter`·`slice`·불변 별칭을 거쳐 helper에 전달될 때 callback의 중첩 필드 요구를 보존하고, 같은 목록의 여러 reader가 필요한 필드를 합쳐 불완전한 생성 데이터의 반복 렌더 오류를 방지
+- Context 전용 fallback에도 같은 imported helper 근거를 연결해, 전체 소스 변환에서 불완전한 Context 값이 우선 적용되던 경로를 수정
+
+## 0.1.1499 - 2026-09-06
+
+- 신경망의 페이지 선택지를 현재 조건과 소스·소유 컴포넌트·상태 변수가 연결된 실제 제어로 제한하고, 근거 없는 초기 추천과 앞부분만 잘라 만든 조합 추천을 보류
+- 자동 탐색 중 수동 선택을 유지하고 Pause automatic / Resume automatic을 추가해, 직접 선택 후 대기 중인 자동 재시도가 개입하지 않도록 변경
+
+## 0.1.1498 - 2026-09-05
+
+- 로컬 신경망의 페이지 실행 복구와 UI 상태 전환을 전용 학습 헤드로 분리해 10개 문제 유형을 독립적으로 학습
+- 같은 복구 후보의 성공·실패를 문제 문맥별로 기억하고, 제한된 저장 공간에서 유형별 최신 기록을 우선 보존
+- 긴 오류 메시지의 특징 추출량을 제한하고, VSIX에서 로컬 에이전트 및 MCP 설정 파일을 제외
+
+## 0.1.1192 - 2026-07-26
+
+- Inspector 내부 resize handle의 15~~85% 비율 제한과 4096px 카드 높이 상한을 제거해 트리·상세·카드·상단 영역을 0~~100% 및 필요한 콘텐츠 높이까지 자유롭게 조절할 수 있도록 변경
+- preview와 별도 Inspector 탭의 grid 최소 높이·workbench 예약을 동일하게 풀어 핸들이 실제 영역 경계까지 이동하도록 맞추고, 접기/복원·키보드 조절·scroll 보존 동작은 유지
+
+## 0.1.1191 - 2026-07-25
+
+- Route browser, Page context, toolbar, workbench tab처럼 각각 독립적으로 스크롤되는 Inspector 영역에 안정적인 scroll identity를 부여해 클릭과 inert snapshot 교체 뒤에도 가로·세로 좌표를 그대로 복원
+- route 선택은 일반 UI의 짧은 안정화 시간과 분리해, 선택한 branch의 새 번들이 실제 적용될 때까지 원래 스크롤 좌표를 유지하고 브라우저 scroll anchoring이 중간 DOM을 기준으로 위치를 바꾸지 않도록 개선
+- 느린 route compilation 중간 snapshot과 최종 선택 snapshot을 재현하는 scroll transaction 회귀 테스트 추가
+
+## 0.1.1190 - 2026-07-25
+
+- `App.tsx`처럼 수백 경로를 소유한 파일은 모든 경로를 컴포넌트 모듈 없이 메타데이터로 색인하고, 공통 경로 폴더·breadcrumb·검색 UI에서 선택한 한 가지 branch만 재분석·번들링하도록 변경
+- `RouterProvider`가 다른 파일의 router 또는 route descriptor 배열만 감싸는 중간 모듈을 재귀적으로 따라가, 실제 leaf 페이지가 나올 때까지 경로를 합성하고 선택되지 않은 형제 페이지는 읽거나 번들 corridor에 포함하지 않음
+- route 선택 메시지를 현재 runtime revision과 정적 component/path chain으로 검증하고 pinned 탭별 선택을 보존하며,
+  320개 경로·중첩 RouterProvider·import된 route 배열·형제 모듈 미로딩 회귀 테스트 추가
+
+## 0.1.1189 - 2026-07-25
+
+- `Provider > Suspense > Routes > {pageRoutes}`처럼 화면을 직접 만들지 않는 상위 route-factory export를
+  빈 컴포넌트로 처리하지 않고, page map·submodule 인자와 route catalog를 연결해 실제 자식 페이지 경로 선택지를 생성
+- 선택한 페이지마다 정확한 pathname으로 MemoryRouter를 다시 구성하고 해당 page module만 빠른 번들 corridor에
+  보존해, 대형 eager route registry를 모두 묶지 않으면서도 경로 선택 시 실제 화면이 나타나도록 개선
+- Page path 선택기에 자식 컴포넌트명을 표시하고, 선택한 route가 비어 있을 때 props 부족으로 오인하지 않도록
+  다른 경로 선택 또는 해당 자식의 첫 조건 확인을 안내하며 named/default factory export 회귀 테스트 추가
+
+## 0.1.1188 - 2026-07-25
+
+- 같은 파일의 상수로 선언한 base path를 route factory 인자까지 안전하게 추적하고, factory 결과를 소유한
+  module/HOC를 페이지 후보로 승격해 중첩 route의 실제 pathname과 application shell을 복구
+- hook 값이 로컬 helper의 switch·비교·문자열 union·Boolean 분기를 통과하는 호출 흐름을 제한된 깊이로 분석해,
+  빈 객체 대신 현재 JSX 경로에 도달하는 최소 scalar 조합을 자동 생성
+- error/loading fallback이나 인접 후보 DOM을 현재 파일의 출력으로 오인하지 않도록 정확한 React Fiber 소유권을
+  확인하고, 원래 runtime error와 blocker owner를 Inspector 및 진단 로그에 유지
+- 동일한 context enrichment가 memory/watchdog stall 뒤 반복 실행되지 않도록 resource identity별 지수 backoff를
+  추가하고, 대상 또는 의존성 변경 시에는 즉시 새 분석을 허용
+
+## 0.1.1187 - 2026-07-25
+
+- Inspector controls를 위로 줄인 뒤 다른 영역의 현재 높이가 controls의 새 상한으로 고정되어 다시 아래로
+  늘릴 수 없던 clamp를 수정하고, 인접 영역의 최소 가시 높이만 예약해 양방향 재조절을 보장
+- renderer와 별도 Inspector 탭에 축소 후 재확장 회귀 테스트 추가
+
+## 0.1.1186 - 2026-07-25
+
+- accordion 헤더에서 resize 동작을 분리해 `헤더 → 콘텐츠 → 하단 핸들` 순서로 배치하고, Inspector controls,
+  Page context 및 component tree 영역을 각 영역의 실제 아래 경계에서 넓히거나 줄일 수 있도록 수정
+- renderer와 별도 Inspector 탭 모두 9px 하단 separator, 접기 전용 헤더, 키보드 조절·초기화·scroll 보존을 공유
+
+## 0.1.1185 - 2026-07-25
+
+- Page context의 배지·경로·상태·보기·페이지 선택기를 각각 독립적인 intrinsic row로 고정해, 좁거나 높이를
+  줄인 Inspector에서도 항목이 같은 grid row에 겹치지 않고 영역 내부에서 스크롤되도록 수정
+
+## 0.1.1184 - 2026-07-25
+
+- `Inspector controls`와 `Page context` accordion 제목이 자신이 제어하는 내용 아래에 놓여 다음 구역의
+  제목처럼 보이고 좁은 Inspector에서 문맥 정보가 겹치던 grid 순서를 `제목 → 내용`으로 교정
+- renderer와 별도 Inspector 탭의 5행 grid를 같은 순서로 맞추고 접기·높이 복원·작은 화면 workbench 최소
+  높이 동작을 유지하는 DOM 순서 회귀 테스트 추가
+
+## 0.1.1183 - 2026-07-25
+
+- Inspector control, page context, component tree/선택 상세의 세 가로 경계를 disclosure button과 drag rail이
+  결합된 accordion으로 바꿔 각 구역을 독립적으로 접고 펼치면서 높이도 계속 조절할 수 있도록 개선
+- 접힌 rail을 drag하거나 키보드로 조절하면 자동으로 펼치고 마지막 확장 높이를 복원하며, 접힘·높이 상태와
+  scroll을 preview 및 별도 Inspector 탭에서 독립적으로 보존
+
+## 0.1.1182 - 2026-07-25
+
+- Inspector의 toolbar 아래와 page context 아래에도 전체 폭 높이 조절 핸들을 추가해, 화면에 보이는 세 가로
+  경계를 모두 직접 드래그할 수 있도록 확장
+- 작은 화면에서 다른 header와 component workbench의 최소 높이를 예약하고, 별도 Inspector 탭의 inert snapshot에도
+  같은 키보드·double-click reset·탭별 높이 저장 동작을 연결
+
+## 0.1.1181 - 2026-07-25
+
+- Components 트리와 선택 상세 사이에 세로 분할 핸들을 추가하고, Source·State·Payload·fallback 카드마다
+  독립적인 높이 조절 핸들을 제공해 필요한 영역을 직접 넓히거나 줄일 수 있도록 개선
+- 드래그 중 React 재렌더 없이 local CSS 높이만 갱신하고, 키보드·double-click reset·최소 높이 clamp를 지원하며
+  preview와 별도 Inspector 탭의 크기를 각각 저장해 snapshot 교체와 hot reload 뒤에도 유지
+
+## 0.1.1180 - 2026-07-25
+
+- page catalog와 JSX render callback을 서로 다른 인자로 받는 route factory를 정적으로 연결해, 선택 페이지의
+  route 주입·Provider·Layout을 소유한 가장 가까운 실제 App owner를 VirtualPage 셸로 실행
+- render-prop 반환 JSX를 일반 component prop으로 평탄화해 `children is not a function`이 발생하고 Header·Bottom
+  navigation이 사라지던 문제를 수정하며, 바깥 application bootstrap은 계속 실행하지 않는 회귀 테스트 추가
+
+## 0.1.1179 - 2026-07-25
+
+- route factory·page catalog의 서로 배타적인 페이지 export를 일반 JSX sibling으로 합성하지 않고 각각의
+  `PAGE PATH` 후보로 유지해 한 프리뷰 안에 여러 페이지가 `VirtualPage`로 이어지던 문제 수정
+- 선택 페이지의 Header·Navigation·PageAction 같은 실제 chrome은 유지하면서 다른 `*Page`/`*Screen`/`*View`
+  endpoint만 제외하는 일반화된 합성 규칙과 route-catalog 회귀 테스트 추가
+- 합성 루트 하나만 `PagePreview(페이지명)`으로 표시하고 하위 격리 facade는 authored component 이름을 보존해
+  컴포넌트 트리에서 페이지 경계와 실제 자식 컴포넌트를 명확하게 구분
+
+## 0.1.1178 - 2026-07-25
+
+- `mounted`, `host output`, `target corridor` 같은 React 내부 진단어를 화면에서 제거하고 현재 파일 상태를
+  `Page loaded → File ran → Nothing visible`의 3단계 visibility path와 `NOT VISIBLE` 상태로 설명
+- render callback 대기, wrapper/fallback 대체, 현재 branch의 빈 반환을 서로 다른 상태·행동으로 분류해
+  가장 가까운 원인을 찾는 버튼과 상세 패널이 동일한 사용자 용어를 사용하도록 개선
+- 자동 최소값 탐색, 재시도, 파일 단독 보기와 page-path 이탈 상태의 버튼·트리 badge·문서를 행동 중심 문구로 정리
+
+## 0.1.1177 - 2026-07-25
+
+- fallback shape가 있다는 이유만으로 `useXXX` custom hook 전체를 no-op projection하던 정책을 반환 값 흐름
+  분류로 교체해 filter/map/reduce, formatter, 기본값, 조건 분기, view model 조합과 transforming callback을 보존
+- 계산을 소유한 hook은 재귀 VirtualPage root로 유지하고 그 내부의 직접 query/store/context/effect pass-through
+  leaf만 다음 DFS edge에서 projection해 작성된 JavaScript 로직과 backend 없는 빠른 번들링을 함께 유지
+- named alias와 단일 wildcard hook barrel/re-export도 concrete 구현까지 계속 추적하며, derived hook은 남고
+  nested backend leaf는 번들에서 제외되는 compiler 회귀 테스트 추가
+
+## 0.1.1176 - 2026-07-25
+
+- VirtualPage가 `useModalActions` 같은 React 로컬 UI controller를 일반 project hook으로 오인해 `show()`/`hide()`를
+  no-op으로 만들던 문제를 수정하고, state 값과 action callback의 동일한 closure를 원본 그대로 보존
+- React 외 runtime import, effect, query, store, unknown helper가 없고 `useState` setter의 정적 UI action과 반환
+  visibility가 함께 증명된 hook만 보존해 API·세션·권한 격리 정책은 유지
+- 현재 파일의 modal 조건, 선택 file 설정, 실제 click handler가 하나의 상태 전이로 동작하는 corridor 회귀 테스트와
+  network-shaped sibling hook이 계속 projection되는 안전성 테스트 추가
+
+## 0.1.1175 - 2026-07-25
+
+- 조기 `return null`이나 상위 short-circuit 때문에 아직 실행되지 않은 현재 파일의 JSX 조건도 컴파일 시점의
+  안정적인 ID와 소스 근거로 등록해 시나리오 ON/OFF 버튼을 첫 렌더부터 조작할 수 있도록 개선
+- 중첩 시나리오를 선택하면 정적으로 증명된 상위 조건을 바깥쪽부터 함께 예약하고, 미도달 값은 authored 값과
+  혼동하지 않도록 `QUEUED ON/OFF`로 표시한 뒤 실제 실행 시 동일한 수동 override를 적용
+- `rows.map(...)`/`flatMap(...)` 콜백의 JSX 반환과 내부 ternary·`&&` 조건을 실행 없이 펼쳐, 빈 collection
+  조기 종료 뒤의 아코디언·행 상태·모달 시나리오도 원래 상위 스위치 계통으로 복원하는 회귀 테스트 추가
+
+## 0.1.1174 - 2026-07-25
+
+- generated `companyId` 때문에 JSX mount 조건이 authored true여도 `show: false`와 `file: null`로 숨은 overlay를
+  사용자의 명시적 조건 ON 의도와 구분하지 못하던 문제 수정
+- overlay mount 스위치의 manual true override를 시각 활성화 요청으로 처리해 outer React element의 기존
+  visibility prop과 nullish entity prop을 preview-only 최소값으로 함께 보강
+- authored true/manual ON, authored false/forced ON, reset 상태를 분리한 runtime 회귀 테스트 추가
+
+## 0.1.1173 - 2026-07-25
+
+- `onClick={() => onOpen(file)}`이 여러 로컬 컴포넌트의 callback prop을 거쳐 상위 modal action에 도달하는
+  경로를 같은 모듈의 lexical binding과 명시적 JSX attribute만으로 bounded 추적
+- `setInfoFile(file); modalActions.show()`처럼 선택 데이터 설정 뒤 overlay를 여는 다중 statement handler도
+  실제 mounted event closure를 사용자가 명시적으로 활성화할 수 있는 Deferred UI 트리 노드로 연결
+- 동일 prop 경로의 여러 사용처가 서로 다른 UI controller로 끝나거나 shadow/mutable/cycle인 경우는 추측하지
+  않고 제외하며, 대상 파일 구조와 모호한 다중 call-site를 재현하는 회귀 테스트 추가
+
+## 0.1.1172 - 2026-07-25
+
+- JSX 자식에서 호출되는 immutable zero-argument 로컬 함수를 실제 렌더 경로로 증명하고, 연속된
+  `if (...) return <...>` 분기를 ternary와 동등한 정적 결과로 펼쳐 페이지 구성에서 누락하지 않도록 개선
+- `paginationControls` 같은 JSX receiver와 `renderMainArea()` 같은 다중 반환 helper를 한 부모 Virtual DOM
+  결과로 조합하며, helper 내부 조건도 Components 트리의 ON/OFF 스위치와 정확한 소스 위치로 연결
+- async/generator/인자 필요 함수, mutable alias, 실행문·부작용 guard는 계속 fail-closed하는 회귀 테스트 추가
+
+## 0.1.1171 - 2026-07-25
+
+- `condition && <Modal {...modalProps} entity={selected} />`처럼 mount 조건과 실제 `show/open` 및 선택
+  데이터 상태가 분리된 overlay를 같은 조건 ID로 연결해, 사용자가 스위치를 ON하면 시각적 계약도 함께 활성화
+- 강제로 열린 overlay의 기존 visibility prop만 보이는 값으로 바꾸고 null인 file/item/data 계열 prop에는 짧은
+  키 기반 정적값을 지연 생성하며, 작성된 기본 상태·원본 props·다른 overlay는 그대로 보존
+- hook spread 뒤에 숨은 `show: false`와 별도 `useState(null)` 조합을 재현하는 source/runtime 회귀 테스트 추가
+
+## 0.1.1170 - 2026-07-25
+
+- Components 트리 행을 선택해도 `Selected blocker`/`Inspect selection` 탭으로 자동 이동하지 않고 현재 트리
+  탭과 동일한 스크롤 viewport를 유지하도록 선택과 상세 탐색 동작을 분리
+- Components 탭 아래에 선택 상세 영역을 고정해 component의 Props·State·Source·Payload와 condition/blocker
+  편집기를 트리 문맥 안에서 바로 확인하며, 명시적으로 연 상세 탭도 같은 편집기를 재사용
+- 행 클릭·키보드 선택·현재 파일 Reveal 전후의 트리 좌표를 보존하고, blocker 행도 일반 트리 선택과 동일하게
+  처리하는 generated runtime 및 companion scroll 회귀 테스트를 보강
+
+## 0.1.1169 - 2026-07-25
+
+- 사용자가 상위 JSX 스위치를 변경하면 종료된 DFS 상태, overlay 1회 probe와 no-progress rejection을 새 bounded
+  convergence epoch로 재개해 새로 도달한 하위 Modal/Drawer의 가시성 조건을 다시 분석
+- 동일 페이지에 선언됐다는 이유로 sibling overlay를 열지 않으면서, 정적 root→현재 파일 경로에 포함되고
+  여러 소스에서 중복되지 않은 overlay owner는 정확한 corridor 조건으로 인정해 visible branch를 자동 선택
+- dormant blocker 안내를 수동으로 OFF된 자식 스위치와 자동 재시도 중인 자식 overlay로 구분하고,
+  정확히 어떤 하위 스위치를 ON 또는 authored 상태로 복원해야 하는지 표시
+
+## 0.1.1168 - 2026-07-25
+
+- 현재 파일의 정적 return 경로 전체에서 모든 자식 분기를 공통으로 지배하고 동일한 ON/OFF 값을 요구하는
+  가장 가까운 조건만 부모로 인정해 JSX 스위치를 보수적인 계통형 표로 표시
+- 부모 스위치가 필요한 값과 다르거나 아직 실행되지 않았으면 기존 runtime registry에 남은 자식 값을
+  `BLOCKED`로 구분하고, 부모 관계·필요 값·하위 스위치 수를 들여쓰기와 연결선으로 안내
+- 각 스위치에 `Highlight code` 버튼을 추가해 별도 Inspector 탭에서도 소스 위치를 열고 선택 분기를
+  강조하며, 소스 전환 및 ON/OFF 조작 전후의 시나리오 표 스크롤 좌표를 계속 보존
+
+## 0.1.1167 - 2026-07-25
+
+- 현재 파일의 JSX 시나리오에서 수집한 `&&`, 삼항식, 조기 반환 등 ON/OFF 분기 위치를 committed graph로
+  재검증한 뒤 이미 열린 소스 에디터에 노란색 whole-line 데코레이터로 동시에 표시
+- 분기 데코레이터는 파일을 열거나 포커스·코드 스크롤을 움직이지 않으며 hot reload revision, 배치 순서,
+  최대 256개 위치와 panel 수명주기를 적용해 오래된 표시를 안전하게 제거
+- ON/OFF 조작 시 교체되는 시나리오 표에 독립 스크롤 ID를 부여해 가로·세로 위치를 그대로 복원
+
+## 0.1.1166 - 2026-07-25
+
+- 별도 Inspector 탭과 preview 내부 셸에 `toolbar → page context → workbench`의 명시적인 높이 체인을
+  적용해 좁은 화면에서 여러 줄로 접힌 상단 UI가 Components·상세·Console 영역을 0px로 밀어내지 않도록 수정
+- 짧은 display에서는 workbench 최소 높이를 보장하고 Inspector 셸 자체를 최종 세로 스크롤 경계로 사용해,
+  각 탭의 기존 내부 스크롤과 함께 화면 아래의 Props·Payload·Console 조작까지 항상 접근 가능하게 개선
+- hot reload나 companion snapshot 교체 뒤에도 바깥 Inspector 셸과 트리·상세의 독립 스크롤 좌표를 복원하며,
+  compact viewport·companion sanitizer·scroll ledger 회귀 테스트를 추가
+
+## 0.1.1165 - 2026-07-25
+
+- `if (!selectedUrl) return null` 같은 JavaScript truthiness 가드를 무조건 Boolean으로 오해하지 않고 URL·ID·
+  data 등 정적으로 증명된 값 종류를 유지해, 부모가 넘긴 nullable target prop을 최소 유효값으로 교정
+- `fetch(...).then(response => response.text())`와 await response binding의 `.text()`/`.json()` 소비 방식을
+  구분하고, HTML 문서 소비에는 iframe·rich-text editor가 표시할 수 있는 안전한 정적 문서를 반환
+- JSON API 응답과 명시적 text/csv 자원은 기존 semantics를 유지하며 styled target, null prop 병합,
+  Fetch metadata 및 text/HTML response 직렬화 회귀 테스트를 추가
+
+## 0.1.1164 - 2026-07-25
+
+- module-consumer 후보가 page path와 함께 발견돼도 선택 파일의 prop inference를 facade와 Inspector descriptor에
+  계속 전달해, nullable 대상 값이 실제 객체로 승격되지 않은 채 조건만 강제되던 불가능한 상태를 제거
+- `Pick<외부 OverlayProps, "show">`처럼 외부 타입 본문을 해석할 수 없어도 정확히 노출된 overlay visibility
+  키를 복구하고, 두 개 이상의 visibility 키가 있으면 임의 선택하지 않도록 제한
+- JSX에 직접 출력되는 중첩 prop의 `id`, `name` 등 의미가 분명한 leaf만 짧은 키 기반 정적값으로 생성해
+  `file == null` 가드를 통과한 모달이 빈 값이나 `file.documentId` 오류 없이 내용을 표시하도록 보강
+- overlay 타입 분석을 별도 모듈로 분리하고 nullable prop 병합·Smart props·target facade 회귀 테스트를 추가
+
+## 0.1.1163 - 2026-07-25
+
+- Inspector의 JSX 시나리오/컴포넌트 트리와 우측 상세를 동시에 압축하던 2열 workbench를 제거하고,
+  `JSX scenarios`, `Components`, `Inspect selection`, `Console` 네 개의 전체 폭 상위 탭으로 분리
+- 트리·시나리오 행이나 wireframe blocker를 선택하면 상세 탭으로, picker와 현재 파일 reveal은 Components
+  탭으로 자동 전환하며 선택한 source decoration과 highlight 상태는 그대로 유지
+- 각 탭의 세로·가로 스크롤을 독립적으로 보존하고 좁은 dock에서는 탭 제목을 축소하지 않고 탭 바만 가로
+  스크롤되게 하며, 방향키/Home/End로도 섹션을 전환할 수 있게 접근성 보강
+- 선택 상세 내부의 component-local Props/State/Source/Payload 탭은 유지해 전역 섹션 탐색과 컴포넌트
+  디버깅 관점을 분리하고, legacy Components/Blockers 탭 상태도 새 구조로 안전하게 이관
+
+## 0.1.1162 - 2026-07-24
+
+- Page Inspector의 기본 화면을 현재 선택 파일에서 정적으로 발견한 JSX Boolean 시나리오 표로 변경하고,
+  `&&`, 삼항식, 조기 반환, overlay 조건의 OFF/ON 결과·현재 값·제어 출처를 한눈에 비교하도록 구성
+- 아직 short-circuit 뒤에 있어 실행되지 않은 조건도 `WAIT` 상태로 보존하되 실제 runtime registry에 도달한
+  조건만 OFF/ON으로 조작하게 해 프로젝트 표현식을 Inspector가 임의 평가하지 않도록 경계를 유지
+- 기존 검색·blocker·source 선택·가로/세로 스크롤을 보존한 Page Component Tree를 두 번째 탭으로 이동하고,
+  두 탭의 선택 및 독립 스크롤 좌표를 hot reload와 webview 상태 복원에서도 유지
+- 좁은 dock에서는 표 열을 찌그러뜨리지 않고 Inspector 내부 가로 스크롤로 제공하며, 시나리오 행을 선택하면
+  동일 조건의 기존 트리 상세·소스 데코레이션을 재사용하도록 연결
+
+## 0.1.1161 - 2026-07-24
+
+- 배열 callback 항목이 같은 파일의 formatter·route·permission helper로 전달될 때 helper parameter의 중첩
+  사용 경로를 bounded하게 역전파해 `companies[].my.role` 같은 필수 payload가 누락되지 않도록 보강
+- hook 결과의 property가 `onClick`/`renderX` JSX callback prop에 전달되면 직접 호출 구문이 없어도 no-op
+  함수로 생성해 페이지가 뜬 뒤 첫 클릭에서 발생하던 `onClick is not a function` 오류를 제거
+- 선택 파일의 non-null prop 조건을 통과시킬 때만 parent의 dormant `null`을 로컬 inferred prop shape로
+  교정하고, 일반 페이지·setup·resolver·사용자 override의 명시적 null semantics는 그대로 유지
+- 512개 일반 Fiber tree 한도 뒤에 밀린 실제 mounted target을 live boundary/host 근거로 별도 예약해
+  현재 파일이 출력 중인데도 `not mounted`로 표시되던 blocker 경로를 정확히 복구
+
+## 0.1.1160 - 2026-07-24
+
+- 현재 파일의 `.map()` 등 정적 소비 형태가 배열 prop을 증명해도 상위 VirtualPage의 중립 placeholder `{}`가
+  우선해 `data.map is not a function`을 만들던 병합 순서를 보완
+- 자동 생성된 첫 parent-prop layer의 빈 객체만 로컬 배열·scalar·callback 계약으로 교정하고, 실제 작성 배열과
+  setup/resolver/Inspector에서 명시한 사용자 값은 계속 우선하도록 경계를 제한
+- `const data = useRows() || {}; data.map(...)`처럼 fallback alias를 거친 hook root의 collection 증거도 버리지
+  않고 최소 배열 payload로 직렬화하며 직접 prop과 hook 양쪽 회귀 테스트 추가
+
+## 0.1.1159 - 2026-07-24
+
+- VirtualPage의 header/sidebar가 사용하는 navigation·tab·column 정적 카탈로그 훅을 일반 backend hook처럼
+  한 항목 생성값으로 치환하지 않고, 반환 배열·복수 record·표시 문자열의 bounded syntax 증거로 원본 유지
+- 보존한 UI 데이터 훅 내부의 session·permission·API hook은 기존 demand-shaped fallback으로 계속 차단해
+  실제 메뉴 구조와 아이콘은 살리면서 프로젝트 backend 및 로그인 runtime이 다시 유입되지 않도록 분리
+- 수백 개 메뉴 record는 최소 정적 증거가 확보되는 즉시 분석을 끝내 대형 navigation source가 parsing budget을
+  소모하지 않게 하고 fluent `.filter(...)`, helper wrapper, local return alias 형태를 모두 지원
+- 실제 RTCC 브라우저에서 한 줄짜리 `급여` placeholder가 9개 원본 메뉴 그룹으로 복원되고 header, page body,
+  footer와 함께 예외 없이 표시되는 것을 확인했으며 fast bundle은 약 8.5초 유지
+
+## 0.1.1158 - 2026-07-24
+
+- JSX `src`/`srcSet`/`poster`/SVG `href`, URL 역할 변수·object property와 인라인 CSS `url(...)`의 정적
+  asset 주소를 실제 import로 전환해 webview artifact 기준의 잘못된 상대·public 경로 해석을 제거
+- nearest package의 `public` 및 source-relative 파일이 실제 존재하고 workspace 경계 안에 있을 때만 `?url`
+  data asset으로 번들링하며, 누락·외부·traversal 경로는 원문을 유지하고 public tree 전수 탐색은 수행하지 않음
+- fast preparation도 정적 render asset 증거가 있는 모듈만 정확 변환 경로로 보내 첫 화면과 full artifact가
+  동일한 이미지를 사용하며, query 제거·SVG fragment·responsive descriptor와 중복 import 재사용을 보존
+- API/XHR의 `connect-src 'none'`은 유지하면서 passive HTTPS CDN 이미지만 CSP에서 허용하고, source transform부터
+  최종 PNG data URL artifact까지의 통합 회귀 테스트 추가
+
+## 0.1.1157 - 2026-07-24
+
+- VirtualPage가 전체 앱 entry를 실행하지 않으면서도 시각 라이브러리에 필요한 정적 module/plugin 등록 호출을
+  dependency-only bootstrap으로 잘라내어 실제 page module보다 먼저 실행
+- 같은 외부 package에서 import된 receiver와 정적 argument만 허용하고 local 변수, JSX, callback, SDK 설정,
+  ReactDOM mount, 상대경로 module은 제외해 로그인·백엔드·분석 초기화가 다시 유입되지 않도록 제한
+- 후보별 bootstrap을 dynamic page import보다 먼저 완료해 library registration과 component module 평가의
+  race를 제거하고, entry snapshot·hot reload watch와 package-local resolution을 유지
+- RTCC 실제 브라우저에서 이전 AG Grid 미등록 오류를 제거하고 header/sidebar/page body, 검색·페이지네이션,
+  grid header와 생성 데이터 row, 현재 target host output을 함께 확인
+
+## 0.1.1156 - 2026-07-24
+
+- 정적 이름만으로 Modal을 추측하지 않고 React portal, dialog host semantic, 명시적 visibility prop을 결합해
+  runtime overlay와 일반 Menu/Panel을 구분하며 Components tree에서 각 overlay를 `Visible/Hidden`으로 제어
+- 현재 파일과 같은 page/source에 있다는 이유만으로 sibling overlay 조건을 자동 활성화하지 않고, exact
+  condition/owner가 현재 target으로 증명된 overlay만 target DFS가 열도록 제한
+- 자식 컴포넌트의 `show={target !== null}` 및 `show={open}` 계약을 부모 hook fallback으로 역전파해 누락 키를
+  `undefined`로 두지 않고 각각 `null`/`false`로 생성하며, RTCC 실페이지에서 세 sibling modal의 기본 닫힘 확인
+- fast build 6.7초, 3,090 dependencies, 현재 target host output과 header/body/footer 유지 및 회귀 테스트 통과
+
+## 0.1.1155 - 2026-07-24
+
+- VirtualPage가 현재 파일의 1-hop JSX만 나열하던 구성을 제거하고, 정확한 render outcome의 wrapper·owner와
+  전후 sibling을 선택적으로 합성해 header, navigation, page body가 같은 작성된 페이지 프레임에 배치되도록 변경
+- corridor owner가 `children` probe를 소비하지 않는다는 이유로 1.8초 뒤 제거되지 않게 하고, route catalog의
+  경쟁 layout·component prop 슬롯·본문이 이미 소유한 wrapper는 중복 마운트하지 않도록 일반화
+- `(data?.items ?? []) as Item[]` 같은 작성된 배열 계약과 import/re-export된 item 타입을 cross-module helper
+  이전에 펼쳐 `{}` 대신 하위 배열·객체 필드까지 갖춘 최소 collection payload를 생성
+- 보고된 3,090-dependency 화면에서 앱 topbar·sidebar·footer와 실제 투자계약 본문·overlay를 확인하고 fast
+  build 7.4초, 진단·브라우저 격리 오류 0건 및 VirtualPage/정적 hook shape 회귀 테스트 통과
+
 ## 0.1.1154 - 2026-07-24
 
 - foreground `prepare`가 같은 profile의 선택적 background package admission을 기다리던 경로를 제거해,
@@ -302,3 +675,19 @@
 - 성공한 esbuild 메타그래프에서 Yarn PnP 가상 경로를 실제 소스로 복원하고 `createPortal` 구현이 증명한 host ID를 엔트리 import 전에 생성해 Next `_app`의 spinner·popup·toast 전역 UI가 중단되지 않도록 수정
 - 포털 host 계획을 target별 hot-build 캐시에 보존하고 실제 portal 구현과 같은 모듈의 ID만 허용해 warm rebuild를 유지하면서 일반 form element ID 오탐을 차단
 - transitive dependency가 자유 전역 `Buffer`를 읽으면 설치된 `buffer` 패키지의 named export를 browser inject로 연결하고, 사용하지 않는 프로젝트에서는 polyfill 코드가 tree-shake되도록 보강
+
+## 0.1.1501 - 2026-09-06
+
+- 후보 평가·오류 블로커 선별·선택 경로 정렬의 반복 모델 검증과 재추론을 배치당 1회 검증·허용 후보당 1회 추론으로 줄임. 오류 관련 집합 안에서 실패 제외와 최신 학습 이력을 우선하고 경로 간선을 탐색별 색인으로 조회. 학습 진행 표시를 독립 구독으로 분리해 대상 페이지·Inspector 트리의 불필요한 재렌더링을 방지
+- 종료 전 탐색 재개를 차단하고 진전 없는 분기의 rollback을 실패 학습·재탐색·진단 결과에 일치시킴. 관찰되지 않은 superseded 시도는 되돌리거나 학습하지 않으며, 관련 대형 runtime·테스트 파일을 책임별로 분리하고 기존 회귀 실패 5건을 해결
+- 최초 mount의 모델 동기화 revision을 호스트와 일치시키고, cold/hot 시작 구분을 revision 숫자에서 분리해 첫 렌더와 시작 완료 신호가 누락되는 회귀를 수정. 긴 문맥에서도 후보·전략 특징을 보존하며 개수 특징의 포화 및 정렬 순서 변경에 따른 실패 기억 단절을 수정
+- hook fallback의 데이터 통과·identity 자체 라벨 반복 학습을 제거하고 실제 렌더 시도로 통합. 미사용 predicate는 학습을 보류하고, 후보 변경·시도 시작 시점의 수동 제어·fatal error를 정확히 귀속
+- 신경망 선택·학습·보정·페이지 실행 검증 로그를 호스트의 제한된 프로토콜에 연결하고 콜드 모델 복원 및 실제 fallback→trace→렌더 검증 회귀 테스트 추가
+- Page Execution 후보가 호스트에 반영된 뒤 deferred activation이 revision 경쟁에서 빠져도 현재 descriptor를 승인 신호로 재조정해, Inspector가 `RESTORING FULL PAGE CONTEXT`와 자동 선택 상태에 영구히 머물지 않도록 수정
+- 동적 라우트 정규식을 포함한 compiler candidate ID를 WebView 재시도 프로토콜이 정상 수용하되 절대 경로·URL·제어 문자는 계속 거부하도록 검증 규칙을 실제 후보 형식과 일치시킴
+- artifact마다 달라지는 도달성·탭 키를 Page Execution 복구 기록에서 제외하고 페이지 후보·대상 소스·export의 안정된 신원을 사용해, `page-authentic`과 `page-sliced`가 새 후보로 초기화되며 교대하던 재빌드 루프를 유한 탐색으로 고정
+- Page Inspector automatic fast/corridor build가 app entry·route registry·loader/action을 실행하지 않고 선택 route/page의 검증된 Page Execution slice와 Frontier v2만 bundle하도록 변경. 중첩 route owner는 실제 첫 page leaf까지 폴더 계층으로 탐색하고 JSX·route factory의 layout wrapper만 leaf 실행 surface에 복원하며, selected-export/local-HOC slice, Next layout 및 Pages Router `_app → Component` 조합을 frozen execution plan에 연결. authored Router root에는 generated MemoryRouter를 중첩하지 않고 detached leaf에는 정확히 하나의 Router만 제공하며, 동적 `:param`의 제약·이름에서 URL 값을 생성해 leaf pattern과 query를 실제 MemoryRouter 경로에 적용. 고정 graph/module/source/native-bundling 시간 budget 없이 target-only보다 높은 page fidelity를 우선 선택하고, selected corridor에서 중복 workspace-wide large-package barrel optimizer를 실행하지 않으며, retained fast preview의 enrichment가 실패해도 route `Preparing…` 상태를 terminal ready로 정리
+- Frontier가 authored runtime static import 및 re-export closure를 모두 admission하여 esbuild가 평가하는 side-effect 모듈을 누락하지 않도록 수정
+- target package가 소유한 styled-components v5/v6 runtime을 preview revision 사이 단일 shared chunk로 재사용하고, automatic ThemeProvider·GlobalStyle·StyleSheetManager 경계를 추가
+- 선택된 Page Inspector outer corridor의 안전하게 증명된 StyleSheetManager props와 setup의 `styledComponentsPreview` override를 지원하며, revision-owned detached style target을 hot replacement에 맞춰 activate/commit/dispose
+- `styled-components/native`, SSR stylesheet 추출, `target`/`sheet`/`nonce` setup props는 지원하지 않아 browser preview 경계를 유지

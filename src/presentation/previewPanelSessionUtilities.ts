@@ -105,3 +105,11 @@ export function rememberPreviewFailureDependencies(
     dependencies.add(canonicalizeExistingPath(absolutePath));
   }
 }
+
+/** Reads the pinned resource debounce in milliseconds and clamps it to the supported 100–2000 range. */
+export function readPreviewPanelUpdateDelay(documentUri: vscode.Uri): number {
+  const configuredDelay = vscode.workspace
+    .getConfiguration('reactPreview', documentUri)
+    .get<number>('updateDelay', 300);
+  return Math.min(2000, Math.max(100, configuredDelay));
+}

@@ -5,6 +5,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from './previewAnalysisSourceFile';
 import type { PreviewRenderChainCandidate } from './renderGraph/previewRenderGraphTypes';
 import type { ReadPreviewStyleContextSource } from './preparePreviewStyleContext';
 import type { PreviewStaticModuleResolver } from './previewStaticModuleResolver';
@@ -217,7 +218,7 @@ function createSourceFile(sourcePath: string, sourceText: string): ts.SourceFile
         : extension === '.js' || extension === '.mjs' || extension === '.cjs'
           ? ts.ScriptKind.JS
           : ts.ScriptKind.TS;
-  return ts.createSourceFile(sourcePath, sourceText, ts.ScriptTarget.Latest, true, scriptKind);
+  return readPreviewAnalysisSourceFile(sourcePath, sourceText, scriptKind);
 }
 
 /** Rejects parser-recovered sources so incomplete editor text cannot create partial style imports. */

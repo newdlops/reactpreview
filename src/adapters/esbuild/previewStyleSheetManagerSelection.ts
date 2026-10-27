@@ -2,6 +2,7 @@
 /* eslint-disable jsdoc/require-description */
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from './previewAnalysisSourceFile';
 import type { PreviewRenderChainCandidate } from './renderGraph/previewRenderGraphTypes';
 import type { PreviewStyledComponentsAvailability } from './previewStyledComponentsAvailability';
 import {
@@ -141,7 +142,7 @@ function createSourceFile(sourcePath: string, text: string): ts.SourceFile {
       : extension === '.jsx'
         ? ts.ScriptKind.JSX
         : ts.ScriptKind.TSX;
-  return ts.createSourceFile(sourcePath, text, ts.ScriptTarget.Latest, true, scriptKind);
+  return readPreviewAnalysisSourceFile(sourcePath, text, scriptKind);
 }
 
 /**

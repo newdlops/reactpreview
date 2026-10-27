@@ -6,24 +6,31 @@
  * peer resolution.
  */
 import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
+import type { PreviewInspectorTargetMode } from '../../../domain/preview';
 import { createPreviewInspectorVirtualPageCandidates } from './previewInspectorVirtualPagePlan';
-import { selectPreviewInspectorExecutableCandidate } from './previewInspectorExecutableCandidateSelection';
+import {
+  selectPreviewInspectorExecutableCandidate,
+  selectPreviewInspectorExecutableTarget,
+} from './previewInspectorExecutableCandidateSelection';
 
 /**
  * Creates an active-candidate-only plugin plan without mutating analyzer-owned evidence.
  *
  * @param plan Full ranked static analysis result.
  * @param selectedPageCandidateId Optional persisted caller-path identity.
+ * @param targetMode Explicit route-leaf intent; omission keeps current-file ownership.
  * @returns A plan containing one candidate, or the original plan when no virtual page exists.
  */
 export function createPreviewInspectorExecutablePlan(
   plan: PreviewInspectorAncestorPlan,
   selectedPageCandidateId: string | undefined,
+  targetMode?: PreviewInspectorTargetMode,
 ): PreviewInspectorAncestorPlan {
   const candidates = createPreviewInspectorVirtualPageCandidates(
     plan.pageCandidates,
     plan.pageCandidates.length,
     plan.shallowVisualPaths ?? [],
+    targetMode,
   );
   const selection = selectPreviewInspectorExecutableCandidate(candidates, selectedPageCandidateId);
   if (selection === undefined) return plan;
@@ -35,11 +42,7 @@ export function createPreviewInspectorExecutablePlan(
    * prepared target module and has an analyzed render chain there.
    */
   const authoredTarget = selection.active.authoredCandidate.target;
-  const activeTarget =
-    authoredTarget?.sourcePath === plan.target.sourcePath &&
-    plan.renderChainsByExport[authoredTarget.exportName] !== undefined
-      ? authoredTarget
-      : plan.target;
+  const activeTarget = selectPreviewInspectorExecutableTarget(plan, authoredTarget);
   const targetExportName = activeTarget.exportName;
   const targetRenderChain = plan.renderChainsByExport[targetExportName] ?? plan.renderChain;
   const executableRenderChain =

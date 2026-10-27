@@ -5,13 +5,14 @@
  * selected component mounted without output, preventing unrelated page overlays from opening.
  */
 import ts from 'typescript';
-import { isReactOverlayComponentName } from './reactOverlayVisibilityInference';
+import { reusePreviewRuntimeHookReferenceTraversal } from './previewRuntimeHookReferenceTraversal';
 import {
   findNearestPreviewRuntimeFunction,
   isPreviewRuntimeFunction,
   previewRuntimeFunctionShadowsName,
   unwrapPreviewRuntimeExpression,
 } from './previewRuntimeHookSyntax';
+import { isReactOverlayComponentName } from './reactOverlayVisibilityInference';
 
 const OVERLAY_STATE_PROP_NAMES = new Set(['state', 'visibilitystate']);
 const VISIBLE_STATE_NAMES = new Set([
@@ -49,7 +50,11 @@ export function inferPreviewRuntimeHookOverlayStateDemand(
 ): PreviewRuntimeHookOverlayStateDemand | undefined {
   const owner = findNearestPreviewRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
-  let directStateCarrier = false;
+  const visitReferencedChildren = reusePreviewRuntimeHookReferenceTraversal(
+    owner,
+    new Set([identifier.text]),
+  );
+  const carrierEvidence = { direct: false };
   const conditionalValues = new Set<string>();
 
   const visitRenderedSyntax = (node: ts.Node): void => {
@@ -62,7 +67,7 @@ export function inferPreviewRuntimeHookOverlayStateDemand(
       if (expression !== undefined) {
         const unwrapped = unwrapPreviewRuntimeExpression(expression);
         if (isIdentifierReference(unwrapped, identifier.text)) {
-          directStateCarrier = true;
+          carrierEvidence.direct = true;
         } else if (ts.isConditionalExpression(unwrapped)) {
           const condition = readTrackedBooleanCondition(unwrapped.condition, identifier.text);
           const whenTrue = classifyStateExpression(unwrapped.whenTrue);
@@ -77,13 +82,13 @@ export function inferPreviewRuntimeHookOverlayStateDemand(
         }
       }
     }
-    ts.forEachChild(node, visitRenderedSyntax);
+    visitReferencedChildren(node, visitRenderedSyntax);
   };
   visitRenderedSyntax(owner);
   if (conditionalValues.size === 1) {
     return Object.freeze({ expression: [...conditionalValues][0] ?? 'true' });
   }
-  if (!directStateCarrier) return undefined;
+  if (!carrierEvidence.direct) return undefined;
 
   const visibleValues = new Set<string>();
   const visitComparisons = (node: ts.Node): void => {
@@ -106,7 +111,7 @@ export function inferPreviewRuntimeHookOverlayStateDemand(
         visibleValues.add(peer.getText(sourceFile));
       }
     }
-    ts.forEachChild(node, visitComparisons);
+    visitReferencedChildren(node, visitComparisons);
   };
   visitComparisons(owner);
   return visibleValues.size === 1
@@ -142,9 +147,7 @@ function classifyStateExpression(expression: ts.Expression): 'hidden' | 'visible
   const value = unwrapPreviewRuntimeExpression(expression);
   const terminalName = ts.isPropertyAccessExpression(value)
     ? value.name.text
-    : ts.isElementAccessExpression(value) &&
-        value.argumentExpression !== undefined &&
-        ts.isStringLiteralLike(value.argumentExpression)
+    : ts.isElementAccessExpression(value) && ts.isStringLiteralLike(value.argumentExpression)
       ? value.argumentExpression.text
       : undefined;
   if (terminalName === undefined) return undefined;
@@ -156,12 +159,10 @@ function classifyStateExpression(expression: ts.Expression): 'hidden' | 'visible
 
 /** Supports ordinary equality while leaving relational/coercion expressions untouched. */
 function isEqualityOperator(kind: ts.SyntaxKind): boolean {
-  return (
-    kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-    kind === ts.SyntaxKind.EqualsEqualsToken
-  );
+  return kind === ts.SyntaxKind.EqualsEqualsEqualsToken || kind === ts.SyntaxKind.EqualsEqualsToken;
 }
 
+/** Checks the unwrapped expression against one exact local identifier binding name. */
 function isIdentifierReference(expression: ts.Expression, name: string): boolean {
   return ts.isIdentifier(expression) && expression.text === name;
 }

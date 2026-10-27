@@ -43,7 +43,9 @@ export async function preparePreviewAdaptiveBuildSeed(
   const referencedGlobalNames = new Set<string>();
   let consumesRouter = false;
   let ownsRouter = false;
-  for (const sourcePath of [...new Set(options.sourcePaths.map((candidate) => path.normalize(candidate)))].sort()) {
+  for (const sourcePath of [
+    ...new Set(options.sourcePaths.map((candidate) => path.normalize(candidate))),
+  ].sort()) {
     const sourceText = await options.readSource(sourcePath);
     if (sourceText === undefined) continue;
     if (sourceText.includes('react-router')) {

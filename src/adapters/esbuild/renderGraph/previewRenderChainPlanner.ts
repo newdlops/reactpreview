@@ -630,7 +630,7 @@ function addLazyEdges(
         certainty: 'conditional',
         childId,
         evidenceSourcePaths: Object.freeze([]),
-        kind: 'react-lazy',
+        kind: fact.kind ?? 'react-lazy',
         occurrenceStart: fact.occurrenceStart,
         ownerId: fact.ownerId,
         wrapperNames: Object.freeze([]),

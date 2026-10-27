@@ -8,6 +8,32 @@ import {
 } from '../../../src/adapters/esbuild/previewTailwindCandidates';
 
 describe('collectPreviewTailwindSnapshotSources', () => {
+  it('keeps the early graph and the complete final corridor together under the same byte ceiling', () => {
+    const root = path.resolve('/workspace');
+    const snapshots = Array.from({ length: 640 }, (_, index) => ({
+      documentPath: path.join(root, 'src', `Exact${index.toString()}.tsx`),
+      language: 'tsx' as const,
+      sourceText:
+        index === 639 ? '<a className="underline underline-offset-4">Link</a>' : '<div />',
+    }));
+    const sources = collectPreviewTailwindSnapshotSources(snapshots, root, root);
+    expect(sources).toHaveLength(640);
+    expect(sources.at(-1)?.sourceText).toContain('underline underline-offset-4');
+    expect(
+      collectPreviewTailwindSnapshotSources(
+        [
+          {
+            documentPath: path.join(root, 'Large.tsx'),
+            language: 'tsx',
+            sourceText: 'x'.repeat(4 * 1024 * 1024 + 1),
+          },
+        ],
+        root,
+        root,
+      ),
+    ).toEqual([]);
+  });
+
   it('deduplicates canonical source identities before applying the file ceiling', () => {
     const workspaceRoot = path.resolve('/workspace');
     const repeatedPath = path.join(workspaceRoot, 'src', 'Repeated.tsx');
@@ -78,5 +104,43 @@ describe('collectPreviewTailwindSnapshotSources', () => {
 
     expect(candidates).toContain('w-full');
     expect(candidates).toHaveLength(8_192);
+  });
+
+  it('retains late authored markup classes before generated type tokens spend the candidate budget', () => {
+    /** Models native lexical ordering without loading or executing workspace packages. */
+    class LexicalScanner implements PreviewTailwindScanner {
+      /** Returns inert string tokens; the adapter still owns every count and byte limit. */
+      scanFiles(
+        inputs: readonly { readonly content: string; readonly extension: string }[],
+      ): readonly string[] {
+        return inputs
+          .flatMap((input) => input.content.split(/\s+/u))
+          .filter(Boolean)
+          .sort();
+      }
+    }
+    const generated = Array.from(
+      { length: 9_000 },
+      (_, index) => `a-type-${index.toString()}`,
+    ).join(' ');
+    const candidates = scanPreviewTailwindInlineCandidates(LexicalScanner, [
+      { extension: 'tsx', sourceText: 'target-class' },
+      { extension: 'ts', sourceText: generated },
+      ...Array.from({ length: 8 }, () => ({ extension: 'ts', sourceText: 'shared-type' })),
+      { extension: 'tsx', sourceText: 'text-3xl sm:text-4xl text-center text-lg' },
+      { extension: 'vue', sourceText: 'vue-class' },
+    ]);
+
+    for (const name of [
+      'target-class',
+      'text-3xl',
+      'sm:text-4xl',
+      'text-center',
+      'text-lg',
+      'vue-class',
+    ])
+      expect(candidates.includes(name), name).toBe(true);
+    expect(candidates).toHaveLength(8_192);
+    expect(Buffer.byteLength(candidates.join(' '), 'utf8')).toBeLessThan(256 * 1024);
   });
 });

@@ -82,11 +82,11 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
       expect(javascript).toContain('resolveRenderCondition');
       expect(javascript).toContain('resolveRenderChoice');
       expect(javascript).toContain('resolveRuntimeHook');
-      expect(javascript).toContain('"hookName": "useIsPageReady"');
-      expect(javascript).toContain('"fallbackLabel": "generated boolean false"');
+      expect(javascript).toMatch(/"?hookName"?:\s*"useIsPageReady"/u);
+      expect(javascript).toMatch(/"?fallbackLabel"?:\s*"generated boolean false"/u);
       expect(javascript).toContain('previewFetch');
       expect(javascript).toContain('/api/page');
-      expect(javascript).toContain('TypeScript: PageData');
+      expect(javascript).toContain('Declared TypeScript type: PageData');
       expect(javascript).toContain('Auto payloads');
       expect(javascript).toContain('logical-and');
       expect(javascript).toContain('<Target>');
@@ -96,7 +96,7 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
       expect(entryJavascript).toContain('UNUSED_TARGET_MARKER');
       expect(javascript).toContain('UNUSED_TARGET_MARKER');
       expect(javascript).toContain('selected-direct-target:UnusedTargetSibling');
-      expect(decodePreviewBundleStyles(bundle)).toContain('min-height: 100vh');
+      expect(decodePreviewBundleStyles(bundle)).toMatch(/min-height:\s*100vh/u);
       expect(bundle.dependencies).toEqual(
         expect.arrayContaining([targetPath, sectionPath, pagePath]),
       );
@@ -483,7 +483,9 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
       expect(entryJavascript.length).toBeGreaterThan(0);
       expect(allJavascript).toContain('PUBLIC_PAGE_CONTEXT');
       expect(allJavascript).not.toContain('STAFF_PAGE_CONTEXT');
-      expect(allJavascript).toContain('Page context path recommendation and source-proven alternatives');
+      expect(allJavascript).toContain(
+        'Page context path recommendation and source-proven alternatives',
+      );
       expect(allJavascript).toContain('PublicPage');
       expect(allJavascript).toContain('StaffPage');
       expect(bundle.dependencies).toEqual(

@@ -15,8 +15,9 @@ export function createPreviewReactDomPortalContainerReplacements(
       !ts.isImportDeclaration(statement) ||
       !ts.isStringLiteral(statement.moduleSpecifier) ||
       statement.moduleSpecifier.text !== 'react-dom' ||
-      statement.importClause?.isTypeOnly === true
-    ) continue;
+      statement.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword
+    )
+      continue;
     const clause = statement.importClause;
     if (clause?.name !== undefined) namespaceBindings.add(clause.name.text);
     const bindings = clause?.namedBindings;
@@ -50,17 +51,20 @@ export function createPreviewReactDomPortalContainerReplacements(
   visit(sourceFile);
   return replacements;
 
+  /** Recognizes portal calls through their supported ReactDOM import syntax without executing the expression. */
   function isReactDomPortalCall(rawExpression: ts.Expression): boolean {
     const expression = unwrapExpression(rawExpression);
     if (ts.isIdentifier(expression)) return directBindings.has(expression.text);
     const receiver = ts.isPropertyAccessExpression(expression)
       ? unwrapExpression(expression.expression)
       : undefined;
-    return ts.isPropertyAccessExpression(expression) &&
+    return (
+      ts.isPropertyAccessExpression(expression) &&
       expression.name.text === 'createPortal' &&
       receiver !== undefined &&
       ts.isIdentifier(receiver) &&
-      namespaceBindings.has(receiver.text);
+      namespaceBindings.has(receiver.text)
+    );
   }
 }
 
@@ -78,6 +82,7 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
     ts.isTypeAssertionExpression(current) ||
     ts.isNonNullExpression(current) ||
     ts.isSatisfiesExpression(current)
-  ) current = current.expression;
+  )
+    current = current.expression;
   return current;
 }

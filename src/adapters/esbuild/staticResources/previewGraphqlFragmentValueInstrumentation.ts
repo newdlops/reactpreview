@@ -11,6 +11,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewGraphqlCollectionUtilityUsage } from './previewGraphqlCollectionUtilityUsage';
 import {
   readPreviewRuntimeHookAliasUsagePaths,
   type PreviewRuntimeHookAliasUsagePath,
@@ -19,8 +20,8 @@ import {
   findNearestPreviewRuntimeFunction,
   hasPreviewRuntimeParseDiagnostics,
   isPreviewRuntimeFunction,
-  type PreviewRuntimeFunction,
   unwrapPreviewRuntimeExpression,
+  type PreviewRuntimeFunction,
 } from './previewRuntimeHookSyntax';
 import { createPreviewRuntimeHookUsageTreeFallback } from './previewRuntimeHookUsageTree';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
@@ -256,7 +257,8 @@ function propagatePreviewGraphqlFragmentOwnerBindings(
       if (declaration.initializer === undefined) continue;
       const path = readPreviewGraphqlFragmentExpressionPath(declaration.initializer, bindings);
       if (path === undefined) continue;
-      changed = appendPreviewGraphqlFragmentBindingPaths(declaration.name, path, bindings) || changed;
+      changed =
+        appendPreviewGraphqlFragmentBindingPaths(declaration.name, path, bindings) || changed;
     }
     if (!changed) break;
   }
@@ -282,11 +284,8 @@ function appendPreviewGraphqlFragmentBindingPaths(
       : String(index);
     if (propertyName === undefined || BLOCKED_FRAGMENT_PROPERTY_NAMES.has(propertyName)) continue;
     changed =
-      appendPreviewGraphqlFragmentBindingPaths(
-        element.name,
-        [...prefix, propertyName],
-        bindings,
-      ) || changed;
+      appendPreviewGraphqlFragmentBindingPaths(element.name, [...prefix, propertyName], bindings) ||
+      changed;
   }
   return changed;
 }
@@ -341,9 +340,7 @@ function visitPreviewGraphqlFragmentUsage(
     const path = readPreviewGraphqlFragmentExpressionPath(node.expression, bindings);
     if (path !== undefined) {
       const literal = node.caseBlock.clauses.flatMap((clause) =>
-        ts.isCaseClause(clause)
-          ? readPreviewGraphqlFragmentLiteral(clause.expression) ?? []
-          : [],
+        ts.isCaseClause(clause) ? (readPreviewGraphqlFragmentLiteral(clause.expression) ?? []) : [],
       )[0];
       if (literal !== undefined) appendPreviewGraphqlFragmentLiteralDemand(path, literal, demands);
     }
@@ -401,13 +398,7 @@ function visitPreviewGraphqlFragmentCollectionCallback(
     [...collectionPath, '[]'],
     callbackBindings,
   );
-  visitPreviewGraphqlFragmentUsage(
-    callback.body,
-    callback,
-    callbackBindings,
-    functions,
-    demands,
-  );
+  visitPreviewGraphqlFragmentUsage(callback.body, callback, callbackBindings, functions, demands);
 }
 
 /** Reads the first finite switch member accepted for one exact local helper parameter. */
@@ -431,7 +422,11 @@ function readPreviewGraphqlFragmentHelperLiteral(
         (node.parent.flags & ts.NodeFlags.Const) !== 0
       ) {
         const initializer = unwrapPreviewRuntimeExpression(node.initializer);
-        if (ts.isIdentifier(initializer) && aliases.has(initializer.text) && !aliases.has(node.name.text)) {
+        if (
+          ts.isIdentifier(initializer) &&
+          aliases.has(initializer.text) &&
+          !aliases.has(node.name.text)
+        ) {
           aliases.add(node.name.text);
           changed = true;
         }
@@ -464,10 +459,7 @@ function collectPreviewGraphqlFragmentLocalFunctions(
   sourceFile: ts.SourceFile,
 ): ReadonlyMap<string, PreviewGraphqlFragmentLocalFunction> {
   const candidates = new Map<string, PreviewGraphqlFragmentLocalFunction | null>();
-  const add = (
-    name: string,
-    node: PreviewGraphqlFragmentLocalFunction['node'],
-  ): void => {
+  const add = (name: string, node: PreviewGraphqlFragmentLocalFunction['node']): void => {
     candidates.set(name, candidates.has(name) ? null : { node });
   };
   const visit = (node: ts.Node): void => {
@@ -573,7 +565,11 @@ function collectPreviewGraphqlFragmentRequiredPaths(call: ts.CallExpression): re
     const callbackItemPaths =
       owner === undefined
         ? []
-        : collectPreviewGraphqlFragmentCollectionCallbackRequiredPaths(parent, owner);
+        : collectPreviewGraphqlFragmentCollectionCallbackRequiredPaths(
+            parent,
+            owner,
+            operationPaths,
+          );
     return Object.freeze(
       [...new Set([...directPaths, ...operationPaths, ...callbackItemPaths])].slice(0, 64),
     );
@@ -618,12 +614,19 @@ function collectPreviewGraphqlFragmentBindingIdentifiers(
 function collectPreviewGraphqlFragmentCollectionCallbackRequiredPaths(
   declaration: ts.VariableDeclaration,
   owner: PreviewRuntimeFunction,
+  operationPaths: readonly string[],
 ): readonly string[] {
   const bindings = new Map<string, readonly string[]>();
   appendPreviewGraphqlFragmentBindingPaths(declaration.name, [], bindings);
   propagatePreviewGraphqlFragmentOwnerBindings(owner, bindings);
   const requiredPaths = new Set<string>();
-  visitPreviewGraphqlFragmentCollectionItemUsage(owner, owner, bindings, requiredPaths);
+  visitPreviewGraphqlFragmentCollectionItemUsage(
+    owner,
+    owner,
+    bindings,
+    requiredPaths,
+    new Set(operationPaths),
+  );
   return Object.freeze([...requiredPaths].slice(0, 64));
 }
 
@@ -633,6 +636,7 @@ function visitPreviewGraphqlFragmentCollectionItemUsage(
   scope: PreviewRuntimeFunction,
   bindings: ReadonlyMap<string, readonly string[]>,
   requiredPaths: Set<string>,
+  operationPaths: ReadonlySet<string>,
 ): void {
   if (requiredPaths.size >= 64 || (node !== scope && isPreviewRuntimeFunction(node))) return;
   if (ts.isPropertyAccessExpression(node) && !ts.isPropertyAccessExpression(node.parent)) {
@@ -643,6 +647,41 @@ function visitPreviewGraphqlFragmentCollectionItemUsage(
     }
   }
   if (ts.isCallExpression(node) && node.questionDotToken === undefined) {
+    const utility = readPreviewGraphqlCollectionUtilityUsage(node);
+    const utilityPath =
+      utility === undefined
+        ? undefined
+        : readPreviewGraphqlFragmentExpressionPath(utility.collection, bindings);
+    // Lodash can order object values too: a separate authored length read must prove this list.
+    if (
+      utilityPath !== undefined &&
+      utility !== undefined &&
+      operationPaths.has(
+        formatPreviewGraphqlFragmentRequiredPath([...utilityPath, 'length'], false),
+      )
+    ) {
+      for (const callback of utility.callbacks) {
+        const parameter = callback.parameters[0];
+        if (parameter === undefined || parameter.dotDotDotToken !== undefined) continue;
+        const itemPrefix = [...utilityPath, '[]'];
+        const callbackBindings = new Map(bindings);
+        appendPreviewGraphqlFragmentBindingPaths(parameter.name, itemPrefix, callbackBindings);
+        for (const binding of collectPreviewGraphqlFragmentBindingIdentifiers(
+          parameter.name,
+          itemPrefix,
+        )) {
+          if (binding.path.length > itemPrefix.length)
+            requiredPaths.add(formatPreviewGraphqlFragmentRequiredPath(binding.path, false));
+        }
+        visitPreviewGraphqlFragmentCollectionItemUsage(
+          callback.body,
+          callback,
+          callbackBindings,
+          requiredPaths,
+          operationPaths,
+        );
+      }
+    }
     const callee = unwrapPreviewRuntimeExpression(node.expression);
     const itemParameterIndex =
       ts.isPropertyAccessExpression(callee) && callee.questionDotToken === undefined
@@ -681,12 +720,19 @@ function visitPreviewGraphqlFragmentCollectionItemUsage(
           callback,
           callbackBindings,
           requiredPaths,
+          operationPaths,
         );
       }
     }
   }
   ts.forEachChild(node, (child) => {
-    visitPreviewGraphqlFragmentCollectionItemUsage(child, scope, bindings, requiredPaths);
+    visitPreviewGraphqlFragmentCollectionItemUsage(
+      child,
+      scope,
+      bindings,
+      requiredPaths,
+      operationPaths,
+    );
   });
 }
 

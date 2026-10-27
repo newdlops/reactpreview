@@ -7,10 +7,9 @@ import path from 'node:path';
 import type { PreviewSourceSnapshot } from '../../domain/preview';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 
-// Final-frontier completion can safely admit up to 192 exact authored modules. Keep the scanner
-// envelope aligned with that producer budget so late-selected lazy leaves are not silently clipped
-// after they have already passed the bounded source and byte checks.
-const MAX_SNAPSHOT_FILES = 192;
+// Keep the 128-file early style graph together with the corridor's 512-module final frontier.
+// The existing 4 MiB text and native candidate budgets still bound memory and generated CSS.
+export const PREVIEW_TAILWIND_MAX_SNAPSHOT_FILES = 640;
 const MAX_PRIORITY_SNAPSHOT_FILES = 8;
 const MAX_SNAPSHOT_SOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_INLINE_CANDIDATES = 8_192;
@@ -71,7 +70,7 @@ export function collectPreviewTailwindSnapshotSources(
     if (totalBytes + sourceBytes > MAX_SNAPSHOT_SOURCE_BYTES) break;
     totalBytes += sourceBytes;
     output.push({ extension, sourceText: snapshot.sourceText });
-    if (output.length >= MAX_SNAPSHOT_FILES) break;
+    if (output.length >= PREVIEW_TAILWIND_MAX_SNAPSHOT_FILES) break;
   }
   return output;
 }
@@ -97,11 +96,19 @@ export function scanPreviewTailwindInlineCandidates(
         })),
       );
     };
-    const candidateGroups = [
-      ...sources.slice(0, MAX_PRIORITY_SNAPSHOT_FILES).map((source) => scanSources([source])),
-      ...(sources.length <= MAX_PRIORITY_SNAPSHOT_FILES ? [] : [scanSources(sources)]),
-    ];
-    for (const candidates of candidateGroups) {
+    /** Keeps the selected source first, then authored markup ahead of generated type identifiers. */
+    function* readCandidateGroups(): Generator<readonly string[]> {
+      yield scanSources(sources.slice(0, 1));
+      const markupSources = sources
+        .slice(1)
+        .filter((source) => /^(?:[cm]?[jt]sx|html|mdx|svelte|vue)$/u.test(source.extension));
+      if (markupSources.length > 0) yield scanSources(markupSources);
+      for (const source of sources.slice(1, MAX_PRIORITY_SNAPSHOT_FILES)) {
+        yield scanSources([source]);
+      }
+      if (sources.length > MAX_PRIORITY_SNAPSHOT_FILES) yield scanSources(sources);
+    }
+    for (const candidates of readCandidateGroups()) {
       for (const candidate of candidates) {
         if (
           seen.has(candidate) ||

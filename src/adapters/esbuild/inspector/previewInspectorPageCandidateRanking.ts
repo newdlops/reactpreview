@@ -48,13 +48,19 @@ export function rankPreviewInspectorPageCandidates(
   return Object.freeze(selected);
 }
 
-/** Sorts descending by semantic score and ascending by stable discovery order. */
+/** Breaks equal semantic coverage in favor of authored containment before stable discovery order. */
 function compareCandidates(
   left: { readonly candidate: PreviewInspectorPageCandidate; readonly discoveryIndex: number },
   right: { readonly candidate: PreviewInspectorPageCandidate; readonly discoveryIndex: number },
 ): number {
   const scoreDifference = scoreCandidate(right.candidate) - scoreCandidate(left.candidate);
-  return scoreDifference !== 0 ? scoreDifference : left.discoveryIndex - right.discoveryIndex;
+  if (scoreDifference !== 0) return scoreDifference;
+  const placementDifference =
+    Number(left.candidate.detachedTargetPlacement !== undefined) -
+    Number(right.candidate.detachedTargetPlacement !== undefined);
+  return placementDifference !== 0
+    ? placementDifference
+    : left.discoveryIndex - right.discoveryIndex;
 }
 
 /** Scores production shell coverage, page roles, and exact direct-ancestry completeness. */

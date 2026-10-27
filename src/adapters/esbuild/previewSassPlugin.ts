@@ -5,28 +5,21 @@
  * cosmetic dependency must not prevent the React component itself from rendering.
  */
 import { stat } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Loader, OnLoadArgs, OnLoadResult, Plugin } from 'esbuild';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import {
+  compilePreviewSass,
+  loadProjectSassImplementation,
+  type PreviewSassImplementation,
+  type PreviewSassTask,
+  type PreviewSassTaskFactory,
+} from './previewSassCompiler';
 
 const SASS_SOURCE_FILTER = /\.s[ac]ss$/i;
 const SASS_MODULE_FILTER = /\.module\.s[ac]ss$/iu;
 const MAX_SASS_CACHE_ENTRIES = 32;
-
-/** Small structural API shared by supported Dart Sass CommonJS releases. */
-interface PreviewSassImplementation {
-  /** Compiles one filesystem entry and reports every loaded file URL. */
-  compileAsync(
-    sourcePath: string,
-    options: {
-      readonly loadPaths: readonly string[];
-      readonly logger: { debug(message: string): void; warn(message: string): void };
-      readonly style: 'expanded';
-    },
-  ): Promise<{ readonly css: string; readonly loadedUrls: readonly URL[] }>;
-}
 
 /** Cached CSS plus dependency fingerprints needed to reject stale hot-reload results. */
 interface PreviewSassCacheEntry {
@@ -34,12 +27,14 @@ interface PreviewSassCacheEntry {
   readonly css: string;
   /** Canonical Sass entry and partial files used by the previous compilation. */
   readonly dependencyPaths: readonly string[];
-  /** Size/mtime identities aligned with `dependencyPaths`. */
+  /** File identity and high-resolution change/modification times aligned with `dependencyPaths`. */
   readonly fingerprints: readonly string[];
 }
 
 /** Public plugin and graph evidence consumed by the compiler after a successful build. */
 export interface PreviewSassBoundary {
+  /** Waits for unused or cancelled initialization to terminate, sharing concurrent disposal. */
+  dispose(): Promise<void>;
   /** Current Sass and partial files that must trigger this panel's hot reload. */
   getDependencyPaths(): readonly string[];
   /** Narrow directories watched after a recoverable Sass compilation failure. */
@@ -54,6 +49,12 @@ export interface PreviewSassPluginOptions {
   readonly projectRoot: string;
   /** Workspace boundary containing monorepo-hoisted dependencies. */
   readonly workspaceRoot: string;
+  /** First-build-only runtime initialization; Sass source reads still start at onLoad. */
+  readonly preparation?: {
+    readonly sourcePath: string;
+    readonly createTask: PreviewSassTaskFactory;
+    readonly signal: AbortSignal;
+  };
 }
 
 /**
@@ -66,7 +67,38 @@ export function createPreviewSassPlugin(options: PreviewSassPluginOptions): Prev
   const dependencyPaths = new Set<string>();
   const watchDirectories = new Set<string>();
   const cacheByEntry = new Map<string, PreviewSassCacheEntry>();
-  const sass = loadProjectSassImplementation(options.projectRoot);
+  let sass: PreviewSassImplementation | undefined;
+  let sassPrepared = false;
+  let preparationAttempted = false;
+  let preparedTask: PreviewSassTask | undefined;
+  let preparedTaskDisposal: Promise<void> | undefined;
+
+  /** Initializes the existing one-shot transport once, without requesting stylesheet contents. */
+  function prepare(): void {
+    if (preparationAttempted || options.preparation === undefined) return;
+    preparationAttempted = true;
+    if (options.preparation.signal.aborted) return;
+    try {
+      preparedTask = options.preparation.createTask(
+        {
+          projectRoot: options.projectRoot,
+          workspaceRoot: options.workspaceRoot,
+          sourcePath: options.preparation.sourcePath,
+        },
+        options.preparation.signal,
+      );
+    } catch {
+      /* Ordinary Sass compilation remains available after a transport failure. */
+    }
+  }
+
+  /** Stops unused, completed, or cancelled initialization before native build cleanup settles. */
+  async function disposePreparedTask(): Promise<void> {
+    const task = preparedTask;
+    preparedTask = undefined;
+    if (task !== undefined) preparedTaskDisposal = task.dispose();
+    await preparedTaskDisposal;
+  }
 
   /** Returns stable dependency evidence from the latest build attempt. */
   function getDependencyPaths(): readonly string[] {
@@ -83,14 +115,6 @@ export function createPreviewSassPlugin(options: PreviewSassPluginOptions): Prev
     const sourcePath = canonicalizeExistingPath(arguments_.path);
     dependencyPaths.add(sourcePath);
     const loader = selectCompiledStyleLoader(sourcePath);
-    if (sass === undefined) {
-      return createSkippedSassResult(
-        sourcePath,
-        loader,
-        'No compatible "sass" package was found from the nearest project package. Install sass to include this stylesheet.',
-      );
-    }
-
     const cached = cacheByEntry.get(sourcePath);
     if (cached !== undefined && (await cacheEntryIsCurrent(cached))) {
       for (const dependencyPath of cached.dependencyPaths) dependencyPaths.add(dependencyPath);
@@ -98,11 +122,28 @@ export function createPreviewSassPlugin(options: PreviewSassPluginOptions): Prev
     }
 
     try {
-      const result = await sass.compileAsync(sourcePath, {
-        loadPaths: [path.dirname(sourcePath), options.projectRoot, options.workspaceRoot],
-        logger: { debug: () => undefined, warn: () => undefined },
-        style: 'expanded',
-      });
+      const task = options.preparation?.sourcePath === sourcePath ? preparedTask : undefined;
+      let result = await task?.compile();
+      if (task !== undefined && options.preparation?.signal.aborted === true) {
+        throw (
+          options.preparation.signal.reason ??
+          new DOMException('Sass build cancelled.', 'AbortError')
+        );
+      }
+      if (result === undefined) {
+        if (!sassPrepared) {
+          sass = loadProjectSassImplementation(options.projectRoot);
+          sassPrepared = true;
+        }
+        if (sass === undefined) {
+          return createSkippedSassResult(
+            sourcePath,
+            loader,
+            'No compatible "sass" package was found from the nearest project package. Install sass to include this stylesheet.',
+          );
+        }
+        result = await compilePreviewSass(sass, { ...options, sourcePath });
+      }
       const loadedPaths = collectLoadedSassPaths(sourcePath, result.loadedUrls);
       const fingerprints = await Promise.all(loadedPaths.map(readFileFingerprint));
       const entry = { css: result.css, dependencyPaths: loadedPaths, fingerprints };
@@ -126,24 +167,16 @@ export function createPreviewSassPlugin(options: PreviewSassPluginOptions): Prev
       build.onStart(() => {
         dependencyPaths.clear();
         watchDirectories.clear();
+        prepare();
       });
       build.onLoad({ filter: SASS_SOURCE_FILTER, namespace: 'file' }, loadSass);
+      build.onEnd(disposePreparedTask);
+      build.onDispose(() => {
+        void disposePreparedTask();
+      });
     },
   };
-  return { getDependencyPaths, getWatchDirectories, plugin };
-}
-
-/** Resolves and loads only the conventional Dart Sass package from the project dependency graph. */
-function loadProjectSassImplementation(projectRoot: string): PreviewSassImplementation | undefined {
-  try {
-    const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
-    const loaded = projectRequire('sass') as Partial<PreviewSassImplementation>;
-    return typeof loaded.compileAsync === 'function'
-      ? (loaded as PreviewSassImplementation)
-      : undefined;
-  } catch {
-    return undefined;
-  }
+  return { dispose: disposePreparedTask, getDependencyPaths, getWatchDirectories, plugin };
 }
 
 /** Returns local-css for Sass modules and ordinary css for global Sass side effects. */
@@ -194,10 +227,10 @@ function collectLoadedSassPaths(sourcePath: string, loadedUrls: readonly URL[]):
   return [...loadedPaths].sort();
 }
 
-/** Produces a cheap exact-file identity used only to validate a prior in-memory Sass result. */
+/** Validates cached Sass without rereading content, including timestamp-preserving same-size edits. */
 async function readFileFingerprint(sourcePath: string): Promise<string> {
   const status = await stat(sourcePath);
-  return `${status.size.toString()}:${status.mtimeMs.toString()}`;
+  return `${status.dev.toString()}:${status.ino.toString()}:${status.size.toString()}:${status.mtimeMs.toString()}:${status.ctimeMs.toString()}`;
 }
 
 /** Checks all prior transitive Sass files in parallel before reusing compiled CSS. */

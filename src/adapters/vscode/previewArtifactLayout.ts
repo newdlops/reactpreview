@@ -227,7 +227,9 @@ function validateModuleImports(
       ) ||
       specifiers.has(moduleImport.specifier)
     ) {
-      throw new TypeError(`Invalid or duplicate React preview module specifier: ${moduleImport.specifier}`);
+      throw new TypeError(
+        `Invalid or duplicate React preview module specifier: ${moduleImport.specifier}`,
+      );
     }
     if (!chunkPaths.has(moduleImport.relativePath) || !moduleImport.relativePath.endsWith('.js')) {
       throw new TypeError(

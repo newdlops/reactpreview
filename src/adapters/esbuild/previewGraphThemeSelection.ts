@@ -6,8 +6,8 @@
  */
 import type { PreviewStyleSignal } from './previewStyleInventory';
 import { collectPreviewStyleSignals, selectPreviewGraphTheme } from './previewStyleInventory';
-import type { PreviewRenderChainCandidate } from './renderGraph/previewRenderGraphTypes';
 import type { PreviewThemeImportSelection } from './previewTargetExports';
+import type { PreviewRenderChainCandidate } from './renderGraph/previewRenderGraphTypes';
 
 const MAX_THEME_SOURCE_FILES = 512;
 const MAX_THEME_SOURCE_BYTES = 2 * 1024 * 1024;
@@ -50,10 +50,9 @@ export async function selectPreviewGraphThemeImport(
 ): Promise<PreviewThemeImportSelection | undefined> {
   const sourcePaths = [
     ...new Set(
-      [
-        ...collectRenderPathThemeSourcePaths(options.renderPath),
-        ...options.dependencyPaths,
-      ].filter((sourcePath) => SOURCE_EXTENSION_PATTERN.test(sourcePath)),
+      [...collectRenderPathThemeSourcePaths(options.renderPath), ...options.dependencyPaths].filter(
+        (sourcePath) => SOURCE_EXTENSION_PATTERN.test(sourcePath),
+      ),
     ),
   ].slice(0, MAX_THEME_SOURCE_FILES);
   const signals: PreviewStyleSignal[] = [];
@@ -66,10 +65,7 @@ export async function selectPreviewGraphThemeImport(
       })),
     );
     for (const source of sources) {
-      if (
-        source.sourceText === undefined ||
-        !source.sourceText.includes('theme')
-      ) {
+      if (!source.sourceText?.includes('theme')) {
         continue;
       }
       for (const signal of collectPreviewStyleSignals(source.sourcePath, source.sourceText)) {

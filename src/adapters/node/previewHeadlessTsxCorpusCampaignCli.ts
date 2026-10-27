@@ -1,8 +1,8 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  calibratePreviewHeadlessTsxCorpusCampaign,
   acceleratePreviewHeadlessTsxCorpusCampaign,
+  calibratePreviewHeadlessTsxCorpusCampaign,
   runPreviewHeadlessTsxCorpusCampaign,
   verifyPreviewHeadlessTsxCorpusCampaign,
 } from './previewHeadlessTsxCorpusCampaign';
@@ -30,7 +30,8 @@ export async function runPreviewHeadlessTsxCorpusCampaignCli(
     return runPreviewHeadlessTsxCorpusLane();
   }
   if (command === '__v12-compiler-lane') {
-    if (arguments_.length !== 1) throw new Error('v12 compiler-lane mode accepts commands only through stdin.');
+    if (arguments_.length !== 1)
+      throw new Error('v12 compiler-lane mode accepts commands only through stdin.');
     return runPreviewHeadlessTsxCorpusCompilerLane();
   }
   if (command === 'verify') {
@@ -48,7 +49,8 @@ export async function runPreviewHeadlessTsxCorpusCampaignCli(
     throw new Error(`Unknown corpus campaign command: ${command ?? '<missing>'}`);
   const values = parseNamedArguments(arguments_.slice(1));
   if (command === 'calibrate') {
-    if (requireValue(values, '--candidates') !== '12,14,16') throw new Error('--candidates must be exactly 12,14,16.');
+    if (requireValue(values, '--candidates') !== '12,14,16')
+      throw new Error('--candidates must be exactly 12,14,16.');
     await calibratePreviewHeadlessTsxCorpusCampaign({
       artifacts: path.resolve(requireValue(values, '--artifacts')),
       chromiumPath: path.resolve(requireValue(values, '--chromium')),
@@ -56,33 +58,45 @@ export async function runPreviewHeadlessTsxCorpusCampaignCli(
       runtimePath: path.resolve(runtimePath),
       sourceRoot: path.resolve(requireValue(values, '--source-root')),
       windowRows: parsePositiveInteger(requireValue(values, '--window-rows'), '--window-rows'),
-      windowStart: parseNonnegativeInteger(requireValue(values, '--window-start'), '--window-start'),
+      windowStart: parseNonnegativeInteger(
+        requireValue(values, '--window-start'),
+        '--window-start',
+      ),
       workspace: path.resolve(requireValue(values, '--workspace')),
     });
     return 0;
   }
   if (command === 'accelerate') {
-    if (requireValue(values, '--candidates') !== '12x4,14x4,16x5') throw new Error('--candidates must be exactly 12x4,14x4,16x5.');
+    if (requireValue(values, '--candidates') !== '12x4,14x4,16x5')
+      throw new Error('--candidates must be exactly 12x4,14x4,16x5.');
     const chunkRows = parsePositiveInteger(requireValue(values, '--chunk-rows'), '--chunk-rows');
     if (chunkRows !== 8) throw new Error('--chunk-rows must be exactly 8.');
     const selectionPath = values.get('--selection');
     await acceleratePreviewHeadlessTsxCorpusCampaign({
       artifacts: path.resolve(requireValue(values, '--artifacts')),
       chromiumPath: path.resolve(requireValue(values, '--chromium')),
-      candidates: '12x4,14x4,16x5', chunkRows,
+      candidates: '12x4,14x4,16x5',
+      chunkRows,
       manifestPath: path.resolve(requireValue(values, '--manifest')),
-      runtimePath: path.resolve(runtimePath), sourceRoot: path.resolve(requireValue(values, '--source-root')),
+      runtimePath: path.resolve(runtimePath),
+      sourceRoot: path.resolve(requireValue(values, '--source-root')),
       ...(selectionPath === undefined ? {} : { selectionPath: path.resolve(selectionPath) }),
       windowRows: parsePositiveInteger(requireValue(values, '--window-rows'), '--window-rows'),
-      windowStart: parseNonnegativeInteger(requireValue(values, '--window-start'), '--window-start'), workspace: path.resolve(requireValue(values, '--workspace')),
+      windowStart: parseNonnegativeInteger(
+        requireValue(values, '--window-start'),
+        '--window-start',
+      ),
+      workspace: path.resolve(requireValue(values, '--workspace')),
     });
     return 0;
   }
   const phase = requireValue(values, '--phase');
-  if (phase !== 'baseline' && phase !== 'final') throw new Error('--phase must be baseline or final.');
+  if (phase !== 'baseline' && phase !== 'final')
+    throw new Error('--phase must be baseline or final.');
   const policyPath = path.resolve(requireValue(values, '--policy'));
   const maxRowsValue = values.get('--max-rows');
-  const maxRows = maxRowsValue === undefined ? undefined : parsePositiveInteger(maxRowsValue, '--max-rows');
+  const maxRows =
+    maxRowsValue === undefined ? undefined : parsePositiveInteger(maxRowsValue, '--max-rows');
   await runPreviewHeadlessTsxCorpusCampaign({
     artifacts: path.resolve(requireValue(values, '--artifacts')),
     chromiumPath: path.resolve(requireValue(values, '--chromium')),
@@ -97,6 +111,7 @@ export async function runPreviewHeadlessTsxCorpusCampaignCli(
   return 0;
 }
 
+/** Parses unique named CLI arguments and rejects missing values or unsupported argument structure. */
 function parseNamedArguments(arguments_: readonly string[]): ReadonlyMap<string, string> {
   const allowed = new Set([
     '--artifacts',
@@ -123,7 +138,8 @@ function parseNamedArguments(arguments_: readonly string[]): ReadonlyMap<string,
   for (let index = 0; index < arguments_.length; index += 2) {
     const name = arguments_[index];
     const value = arguments_[index + 1];
-    if (name === undefined || !allowed.has(name)) throw new Error(`Unknown campaign argument: ${name ?? '<missing>'}`);
+    if (name === undefined || !allowed.has(name))
+      throw new Error(`Unknown campaign argument: ${name ?? '<missing>'}`);
     if (value === undefined || value.startsWith('--')) throw new Error(`${name} requires a value.`);
     if (values.has(name)) throw new Error(`Duplicate campaign argument: ${name}`);
     values.set(name, value);
@@ -131,23 +147,14 @@ function parseNamedArguments(arguments_: readonly string[]): ReadonlyMap<string,
   return values;
 }
 
+/** Returns a required named argument, throwing when its value is absent. */
 function requireValue(values: ReadonlyMap<string, string>, name: string): string {
   const value = values.get(name);
   if (value === undefined) throw new Error(`Missing required campaign argument: ${name}`);
   return value;
 }
 
-function assertExactInteger(
-  values: ReadonlyMap<string, string>,
-  name: string,
-  expected: number,
-): void {
-  const value = requireValue(values, name);
-  if (parsePositiveInteger(value, name) !== expected) {
-    throw new Error(`${name} must be exactly ${expected}.`);
-  }
-}
-
+/** Parses a finite positive integer CLI value and rejects fractions, zero, and invalid numbers. */
 function parsePositiveInteger(value: string, name: string): number {
   if (!/^[1-9]\d*$/u.test(value)) throw new Error(`${name} must be a positive integer.`);
   const parsed = Number(value);
@@ -155,6 +162,7 @@ function parsePositiveInteger(value: string, name: string): number {
   return parsed;
 }
 
+/** Parses a finite nonnegative integer CLI value for bounded campaign counters. */
 function parseNonnegativeInteger(value: string, name: string): number {
   if (!/^\d+$/u.test(value)) throw new Error(`${name} must be a non-negative integer.`);
   const parsed = Number(value);
@@ -163,7 +171,10 @@ function parseNonnegativeInteger(value: string, name: string): number {
 }
 
 const invokedPath = process.argv[1];
-if (invokedPath !== undefined && path.resolve(invokedPath) === path.resolve(fileURLToPath(import.meta.url))) {
+if (
+  invokedPath !== undefined &&
+  path.resolve(invokedPath) === path.resolve(fileURLToPath(import.meta.url))
+) {
   process.exitCode = await runPreviewHeadlessTsxCorpusCampaignCli(
     process.argv.slice(2),
     fileURLToPath(import.meta.url),

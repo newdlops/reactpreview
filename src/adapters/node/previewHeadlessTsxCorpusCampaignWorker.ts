@@ -5,31 +5,33 @@ import path from 'node:path';
 import type { PreviewBuildRequest, PreviewBundle } from '../../domain/preview';
 import { EsbuildPreviewCompiler } from '../esbuild/esbuildPreviewCompiler';
 import { renderCompiledPreviewHeadlessly } from './previewHeadlessRenderer';
-import { createPreviewHeadlessTsxCorpusVendorCache } from './previewHeadlessTsxCorpusVendorCache';
-import {
-  writePreviewTsxCorpusSpool,
-  type PreviewTsxCorpusCompilerLaneCommand,
-} from './previewHeadlessTsxCorpusPipeline';
 import type {
   PreviewTsxCorpusAttemptSpec,
   PreviewTsxCorpusCompilerEvent,
+  PreviewTsxCorpusLaneCommand,
+  PreviewTsxCorpusRowOwnershipEvent,
   PreviewTsxCorpusStageEvent,
   PreviewTsxCorpusStageName,
   PreviewTsxCorpusWorkerLifecycleEvent,
   PreviewTsxCorpusWorkerResult,
-  PreviewTsxCorpusLaneCommand,
-  PreviewTsxCorpusRowOwnershipEvent,
 } from './previewHeadlessTsxCorpusCampaignTypes';
+import {
+  writePreviewTsxCorpusSpool,
+  type PreviewTsxCorpusCompilerLaneCommand,
+} from './previewHeadlessTsxCorpusPipeline';
+import { createPreviewHeadlessTsxCorpusVendorCache } from './previewHeadlessTsxCorpusVendorCache';
 
 /** Persistent compile-only process used by the v12 two-stage accelerator. */
 export async function runPreviewHeadlessTsxCorpusCompilerLane(): Promise<number> {
   let compiler: EsbuildPreviewCompiler | undefined;
-  let cacheNamespace: {
-    readonly campaignId: string;
-    readonly engineDigest: string;
-    readonly policyDigest: string;
-    readonly spoolRoot: string;
-  } | undefined;
+  let cacheNamespace:
+    | {
+        readonly campaignId: string;
+        readonly engineDigest: string;
+        readonly policyDigest: string;
+        readonly spoolRoot: string;
+      }
+    | undefined;
   process.stdout.write(`${JSON.stringify({ kind: 'ready', version: 12 })}\n`);
   let buffer = '';
   try {
@@ -41,8 +43,15 @@ export async function runPreviewHeadlessTsxCorpusCompilerLane(): Promise<number>
         buffer = buffer.slice(newline + 1);
         newline = buffer.indexOf('\n');
         if (line.length === 0) continue;
-        const command = JSON.parse(line) as PreviewTsxCorpusCompilerLaneCommand;
-        if (command.version !== 12) throw new Error('Unsupported v12 compiler-lane protocol version.');
+        const transportValue: unknown = JSON.parse(line);
+        if (
+          typeof transportValue !== 'object' ||
+          transportValue === null ||
+          !('version' in transportValue) ||
+          transportValue.version !== 12
+        )
+          throw new Error('Unsupported v12 compiler-lane protocol version.');
+        const command = transportValue as PreviewTsxCorpusCompilerLaneCommand;
         if (command.kind === 'shutdown') {
           await compiler?.shutdown();
           process.stdout.write(`${JSON.stringify({ kind: 'drained', version: 12 })}\n`);
@@ -54,12 +63,14 @@ export async function runPreviewHeadlessTsxCorpusCompilerLane(): Promise<number>
           policyDigest: command.identity.policyDigest,
           spoolRoot: path.resolve(command.spoolRoot),
         };
-        if (cacheNamespace !== undefined && (
-          cacheNamespace.campaignId !== namespace.campaignId ||
-          cacheNamespace.engineDigest !== namespace.engineDigest ||
-          cacheNamespace.policyDigest !== namespace.policyDigest ||
-          cacheNamespace.spoolRoot !== namespace.spoolRoot
-        )) throw new Error('Compiler lane received a command outside its cache namespace.');
+        if (
+          cacheNamespace !== undefined &&
+          (cacheNamespace.campaignId !== namespace.campaignId ||
+            cacheNamespace.engineDigest !== namespace.engineDigest ||
+            cacheNamespace.policyDigest !== namespace.policyDigest ||
+            cacheNamespace.spoolRoot !== namespace.spoolRoot)
+        )
+          throw new Error('Compiler lane received a command outside its cache namespace.');
         cacheNamespace ??= namespace;
         compiler ??= new EsbuildPreviewCompiler({
           vendorModuleCacheBackend: createPreviewHeadlessTsxCorpusVendorCache(namespace),
@@ -70,13 +81,15 @@ export async function runPreviewHeadlessTsxCorpusCompilerLane(): Promise<number>
           bundle = await compiler.compile(command.request);
         } catch (error) {
           const serialized = serializeError(error);
-          process.stdout.write(`${JSON.stringify({
-            commandId: command.commandId,
-            ...serialized,
-            kind: 'compile-failed',
-            stage: 'compile',
-            version: 12,
-          })}\n`);
+          process.stdout.write(
+            `${JSON.stringify({
+              commandId: command.commandId,
+              ...serialized,
+              kind: 'compile-failed',
+              stage: 'compile',
+              version: 12,
+            })}\n`,
+          );
           continue;
         }
         const compileFinishedAt = Date.now();
@@ -88,23 +101,27 @@ export async function runPreviewHeadlessTsxCorpusCompilerLane(): Promise<number>
             command.request,
             command.absoluteDeadlineEpochMs,
           );
-          process.stdout.write(`${JSON.stringify({
-            commandId: command.commandId,
-            compileFinishedAt,
-            compileStartedAt,
-            descriptor,
-            kind: 'compiled',
-            version: 12,
-          })}\n`);
+          process.stdout.write(
+            `${JSON.stringify({
+              commandId: command.commandId,
+              compileFinishedAt,
+              compileStartedAt,
+              descriptor,
+              kind: 'compiled',
+              version: 12,
+            })}\n`,
+          );
         } catch (error) {
           const serialized = serializeError(error);
-          process.stdout.write(`${JSON.stringify({
-            commandId: command.commandId,
-            ...serialized,
-            kind: 'compile-failed',
-            stage: 'spool',
-            version: 12,
-          })}\n`);
+          process.stdout.write(
+            `${JSON.stringify({
+              commandId: command.commandId,
+              ...serialized,
+              kind: 'compile-failed',
+              stage: 'spool',
+              version: 12,
+            })}\n`,
+          );
         }
       }
     }
@@ -134,30 +151,47 @@ export async function runPreviewHeadlessTsxCorpusLane(): Promise<number> {
       buffer = buffer.slice(newline + 1);
       newline = buffer.indexOf('\n');
       if (line.length === 0) continue;
-      const command = JSON.parse(line) as PreviewTsxCorpusLaneCommand;
-      if (command.version !== 3) throw new Error('Unsupported lane protocol version.');
+      const transportValue: unknown = JSON.parse(line);
+      if (
+        typeof transportValue !== 'object' ||
+        transportValue === null ||
+        !('version' in transportValue) ||
+        transportValue.version !== 3
+      )
+        throw new Error('Unsupported lane protocol version.');
+      const command = transportValue as PreviewTsxCorpusLaneCommand;
       if (command.kind === 'ack') {
-        if (!awaitingDurableAck.delete(command.index)) throw new Error('Lane received an unknown durable acknowledgement.');
+        if (!awaitingDurableAck.delete(command.index))
+          throw new Error('Lane received an unknown durable acknowledgement.');
         continue;
       }
       if (command.kind === 'shutdown' || command.kind === 'drain') {
         if (command.kind === 'drain' && awaitingDurableAck.size !== 0) {
           throw new Error('Lane cannot drain before supervisor durable acknowledgements.');
         }
-        process.stdout.write(`${JSON.stringify({ kind: command.kind === 'drain' ? 'drained' : 'drained', version: 3 })}\n`);
-        if (command.kind === 'shutdown') { await closeLane(); return 0; }
+        process.stdout.write(
+          `${JSON.stringify({ kind: command.kind === 'drain' ? 'drained' : 'drained', version: 3 })}\n`,
+        );
+        if (command.kind === 'shutdown') {
+          await closeLane();
+          return 0;
+        }
         continue;
       }
       if (awaitingDurableAck.size >= 2) throw new Error('Lane two-credit ceiling exceeded.');
-      const encoded = Buffer.from(JSON.stringify({
-        ...command.row,
-        commandId: command.commandId,
-        generationId: command.generationId,
-        laneId: command.laneId,
-      })).toString('base64url');
+      const encoded = Buffer.from(
+        JSON.stringify({
+          ...command.row,
+          commandId: command.commandId,
+          generationId: command.generationId,
+          laneId: command.laneId,
+        }),
+      ).toString('base64url');
       await runPreviewHeadlessTsxCorpusWorker(encoded, lane);
       awaitingDurableAck.add(command.row.index);
-      process.stdout.write(`${JSON.stringify({ commandId: command.commandId, index: command.row.index, kind: 'row-terminal', version: 3 })}\n`);
+      process.stdout.write(
+        `${JSON.stringify({ commandId: command.commandId, index: command.row.index, kind: 'row-terminal', version: 3 })}\n`,
+      );
     }
   }
   await closeLane();
@@ -176,7 +210,13 @@ export async function runPreviewHeadlessTsxCorpusWorker(
   let cleanupPromise: Promise<void> | undefined;
   let renderActive = false;
   let terminationRequested = false;
-  const writeDiagnostic = (event: PreviewTsxCorpusCompilerEvent | PreviewTsxCorpusWorkerLifecycleEvent | PreviewTsxCorpusRowOwnershipEvent): void => {
+  const wasTerminationRequested = (): boolean => terminationRequested;
+  const writeDiagnostic = (
+    event:
+      | PreviewTsxCorpusCompilerEvent
+      | PreviewTsxCorpusWorkerLifecycleEvent
+      | PreviewTsxCorpusRowOwnershipEvent,
+  ): void => {
     try {
       writeSync(3, `${JSON.stringify(event)}\n`);
     } catch {
@@ -240,7 +280,9 @@ export async function runPreviewHeadlessTsxCorpusWorker(
     const sourceText = await readFile(documentPath, 'utf8');
     const sourceDigest = createHash('sha256').update(sourceText).digest('hex');
     if (sourceDigest !== spec.row.sha256) {
-      throw new Error(`Frozen target digest changed: expected ${spec.row.sha256}, got ${sourceDigest}.`);
+      throw new Error(
+        `Frozen target digest changed: expected ${spec.row.sha256}, got ${sourceDigest}.`,
+      );
     }
     emitStage('target-opened', { documentPath, sourceDigest });
     compiler ??= new EsbuildPreviewCompiler();
@@ -280,16 +322,20 @@ export async function runPreviewHeadlessTsxCorpusWorker(
     emitStage('render-started');
     renderActive = true;
     const headless = await renderCompiledPreviewHeadlessly(bundle, request, {
-      chromiumPath: spec.chromiumPath, timeoutMs: 30_000, virtualTimeMs: 5_000,
-      reportOwnership: (ownership) => writeDiagnostic({
-        generation: spec.generationId ?? `lane-${process.pid.toString()}`,
-        index: spec.index,
-        kind: 'row-ownership',
-        lane: spec.laneId ?? 0,
-        ownership,
-        path: spec.row.path,
-        version: 3,
-      }),
+      chromiumPath: spec.chromiumPath,
+      timeoutMs: 30_000,
+      virtualTimeMs: 5_000,
+      reportOwnership: (ownership) => {
+        writeDiagnostic({
+          generation: spec.generationId ?? `lane-${process.pid.toString()}`,
+          index: spec.index,
+          kind: 'row-ownership',
+          lane: spec.laneId ?? 0,
+          ownership,
+          path: spec.row.path,
+          version: 3,
+        });
+      },
     });
     renderActive = false;
     emitStage('renderer-terminal', {
@@ -313,7 +359,7 @@ export async function runPreviewHeadlessTsxCorpusWorker(
     return 0;
   } catch (error) {
     renderActive = false;
-    if (terminationRequested) {
+    if (wasTerminationRequested()) {
       await cleanup();
       process.removeListener('SIGTERM', onSigterm);
       return 124;
@@ -336,18 +382,22 @@ export async function runPreviewHeadlessTsxCorpusWorker(
   }
 }
 
+/** Decodes the worker’s serialized attempt descriptor before validating its campaign inputs. */
 function decodeSpec(encodedSpec: string): PreviewTsxCorpusAttemptSpec {
   const parsed = JSON.parse(Buffer.from(encodedSpec, 'base64url').toString('utf8')) as unknown;
-  if (typeof parsed !== 'object' || parsed === null) throw new Error('Worker spec must be an object.');
+  if (typeof parsed !== 'object' || parsed === null)
+    throw new Error('Worker spec must be an object.');
   return parsed as PreviewTsxCorpusAttemptSpec;
 }
 
+/** Converts a thrown value into a bounded transport-safe error name and message. */
 function serializeError(error: unknown): { readonly error: string; readonly errorName: string } {
   const normalized = normalizeErrorEvidence(error);
   const record = asErrorRecord(error);
-  const diagnostics = record?.diagnostics === undefined
-    ? ''
-    : `; diagnostics=${normalizeErrorEvidence(record.diagnostics)}`;
+  const diagnostics =
+    record?.diagnostics === undefined
+      ? ''
+      : `; diagnostics=${normalizeErrorEvidence(record.diagnostics)}`;
   return {
     error: `${normalized}${diagnostics}`.slice(0, 16_384),
     errorName: typeof record?.name === 'string' && record.name.length > 0 ? record.name : 'Error',
@@ -355,18 +405,22 @@ function serializeError(error: unknown): { readonly error: string; readonly erro
 }
 
 /** Converts cross-realm throw values to stable, bounded transport evidence before JSONL encoding. */
-function normalizeErrorEvidence(value: unknown, seen = new WeakSet<object>(), depth = 0): string {
+function normalizeErrorEvidence(value: unknown, seen = new WeakSet(), depth = 0): string {
   if (value === null) return 'null';
   if (value === undefined) return 'undefined';
   switch (typeof value) {
-    case 'string': return value;
+    case 'string':
+      return value;
     case 'number':
     case 'boolean':
-    case 'bigint': return String(value);
-    case 'symbol': return value.toString();
-    case 'function': return '[function]';
-    case 'object': break;
-    default: return String(value);
+    case 'bigint':
+      return String(value);
+    case 'symbol':
+      return value.toString();
+    case 'function':
+      return '[function]';
+    case 'object':
+      break;
   }
   if (depth >= 4) return '[max-depth]';
   if (seen.has(value)) return '[circular]';
@@ -390,13 +444,16 @@ function normalizeErrorEvidence(value: unknown, seen = new WeakSet<object>(), de
         });
       return `${name ?? 'Error'}${message === undefined || message.length === 0 ? '' : `: ${message}`}${cause === undefined ? '' : `; cause=${normalizeErrorEvidence(cause, seen, depth + 1)}`}${evidence.length === 0 ? '' : `; ${evidence.join(', ')}`}`;
     }
-    const fields = Object.keys(record).sort().slice(0, 16).map((key) => {
-      try {
-        return `${key}=${normalizeErrorEvidence(record[key], seen, depth + 1)}`;
-      } catch {
-        return `${key}=[unreadable]`;
-      }
-    });
+    const fields = Object.keys(record)
+      .sort()
+      .slice(0, 16)
+      .map((key) => {
+        try {
+          return `${key}=${normalizeErrorEvidence(record[key], seen, depth + 1)}`;
+        } catch {
+          return `${key}=[unreadable]`;
+        }
+      });
     return fields.length === 0 ? Object.prototype.toString.call(value) : `{${fields.join(', ')}}`;
   } catch {
     return Object.prototype.toString.call(value);
@@ -405,6 +462,9 @@ function normalizeErrorEvidence(value: unknown, seen = new WeakSet<object>(), de
   }
 }
 
+/** Narrows non-null object errors before inspecting subprocess termination metadata. */
 function asErrorRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined;
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
 }

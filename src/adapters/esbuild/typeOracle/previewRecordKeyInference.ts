@@ -12,6 +12,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewTypeAnalysisNodeCost } from './previewTypedJsonAnalysis';
 
 const MAX_KEYS = 32;
 const MAX_FILES = 600;
@@ -86,7 +87,10 @@ function collectRecordKeys(
     if (files > MAX_FILES) break;
     const visit = (node: ts.Node): void => {
       if (collection.keys.length >= MAX_KEYS || collection.visited >= MAX_VISITED_NODES) return;
-      collection.visited += 1;
+      collection.visited = Math.min(
+        MAX_VISITED_NODES,
+        collection.visited + readPreviewTypeAnalysisNodeCost(node),
+      );
       if (isPropertyRead(node, name) && readsProperty(checker, node, declarations)) {
         collectFromValueUse(checker, node, collection, true);
       }
@@ -176,7 +180,10 @@ function collectFromSymbolReads(
   if (symbol === undefined) return;
   const visit = (node: ts.Node): void => {
     if (collection.keys.length >= MAX_KEYS || collection.visited >= MAX_VISITED_NODES) return;
-    collection.visited += 1;
+    collection.visited = Math.min(
+      MAX_VISITED_NODES,
+      collection.visited + readPreviewTypeAnalysisNodeCost(node),
+    );
     if (ts.isIdentifier(node) && node !== name && node.text === name.text) {
       if (checker.getSymbolAtLocation(node) === symbol) {
         collectFromValueUse(checker, node, collection, followCall);

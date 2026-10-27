@@ -54,16 +54,24 @@ export function collectPreviewInspectorFastResolvedImports(
       : createSourcePathIdentity(options.requiredSourcePath);
   const preferredPaths =
     options.preferredPaths ?? (options.preferredPath === undefined ? [] : [options.preferredPath]);
+  const preferredSegments = preferredPaths.map((preferredPath) =>
+    collectAffinitySegments(preferredPath),
+  );
   const rankedSpecifiers = [...collectPreviewRenderModuleSpecifiers(ownerPath, sourceText)]
-    .map((specifier) => ({
-      score: Math.max(
-        0,
-        ...preferredPaths.map((preferredPath) =>
-          scoreModuleSpecifierAffinity(preferredPath, specifier),
+    .map((specifier) => {
+      const specifierSegments = collectAffinitySegments(specifier).filter(
+        (segment) => segment !== '.' && segment !== '..',
+      );
+      return {
+        score: Math.max(
+          0,
+          ...preferredSegments.map((targetSegments) =>
+            scoreModuleSpecifierAffinity(targetSegments, specifierSegments),
+          ),
         ),
-      ),
-      specifier,
-    }))
+        specifier,
+      };
+    })
     .sort(
       (left, right) => right.score - left.score || left.specifier.localeCompare(right.specifier),
     );
@@ -131,18 +139,9 @@ export function isPreviewInspectorFastAuxiliarySourcePath(
 
 /** Scores lexical target suffixes before any potentially expensive alias resolution occurs. */
 function scoreModuleSpecifierAffinity(
-  preferredPath: string | undefined,
-  moduleSpecifier: string,
+  targetSegments: readonly string[],
+  specifierSegments: readonly string[],
 ): number {
-  if (preferredPath === undefined) return 0;
-  const targetSegments = normalizePortablePath(preferredPath)
-    .replace(SOURCE_FILE_PATTERN, '')
-    .split('/')
-    .filter(Boolean);
-  const specifierSegments = normalizePortablePath(moduleSpecifier)
-    .replace(SOURCE_FILE_PATTERN, '')
-    .split('/')
-    .filter((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
   const suffixMatches = countMatchingPathSuffix(targetSegments, specifierSegments);
   const targetDirectorySegments = targetSegments.slice(0, -1);
   const directorySuffixMatches = countMatchingPathSuffix(
@@ -164,6 +163,14 @@ function scoreModuleSpecifierAffinity(
      */
     Number(directoryBasenameMatch) * 8_000 + directorySuffixMatches * 800,
   );
+}
+
+/** Normalizes each lexical target or specifier once before the bounded affinity cross-product. */
+function collectAffinitySegments(sourcePath: string): readonly string[] {
+  return normalizePortablePath(sourcePath)
+    .replace(SOURCE_FILE_PATTERN, '')
+    .split('/')
+    .filter(Boolean);
 }
 
 /** Counts exact trailing path segments for both file imports and directory-barrel imports. */
@@ -208,7 +215,7 @@ function isAdmittedSourcePath(
 
 /** Segment-aware containment prevents a sibling path prefix from crossing the trusted boundary. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

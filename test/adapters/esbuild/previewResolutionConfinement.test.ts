@@ -1,9 +1,8 @@
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { build, type Plugin } from 'esbuild';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { build, type Plugin } from 'esbuild';
-import type { PreviewBuildRequest } from '../../../src/domain/preview';
 import {
   createPreviewInspectorCorridorPlugin,
   type PreviewInspectorAncestorPlan,
@@ -14,24 +13,26 @@ import {
   createPreviewOwnedNamespaceRegistry,
 } from '../../../src/adapters/esbuild/previewOwnedNamespaceRegistry';
 import {
-  PREVIEW_IMPORT_META_ENV_DEFINE_INPUT,
-  PREVIEW_STDIN_ENTRY_NAME,
-  createPreviewSyntheticInputRegistry,
-} from '../../../src/adapters/esbuild/previewSyntheticInputRegistry';
+  PREVIEW_ASSET_NAMESPACE,
+  PREVIEW_DATA_URL_NAMESPACE,
+  PREVIEW_INSPECTOR_RUNTIME_NAMESPACE,
+} from '../../../src/adapters/esbuild/previewPluginProtocol';
 import {
   assertPreviewBuildInputIdentities,
   assertPreviewResolutionPath,
   assertPreviewResolutionPaths,
+  assertPreviewWatchedPaths,
   createPreviewResolutionConfinementPathMemo,
   createPreviewResolutionConfinementPlugin,
   normalizePreviewResolutionConfinement,
 } from '../../../src/adapters/esbuild/previewResolutionConfinement';
 import { createPreviewStaticModuleResolver } from '../../../src/adapters/esbuild/previewStaticModuleResolver';
 import {
-  PREVIEW_ASSET_NAMESPACE,
-  PREVIEW_DATA_URL_NAMESPACE,
-  PREVIEW_INSPECTOR_RUNTIME_NAMESPACE,
-} from '../../../src/adapters/esbuild/previewPluginProtocol';
+  PREVIEW_IMPORT_META_ENV_DEFINE_INPUT,
+  PREVIEW_STDIN_ENTRY_NAME,
+  createPreviewSyntheticInputRegistry,
+} from '../../../src/adapters/esbuild/previewSyntheticInputRegistry';
+import type { PreviewBuildRequest } from '../../../src/domain/preview';
 
 const temporaryDirectories: string[] = [];
 
@@ -44,6 +45,43 @@ afterEach(async () => {
 });
 
 describe('preview resolution confinement', () => {
+  it('confines future watch files without admitting missing module inputs or symlink escapes', async () => {
+    const directory = await createTemporaryDirectory();
+    const sourceRoot = path.join(directory, 'source');
+    const dependencyRoot = path.join(directory, 'installed', 'node_modules');
+    const outsideRoot = path.join(directory, 'outside');
+    const targetPath = path.join(sourceRoot, 'App.tsx');
+    await Promise.all([
+      mkdir(sourceRoot, { recursive: true }),
+      mkdir(dependencyRoot, { recursive: true }),
+      mkdir(outsideRoot, { recursive: true }),
+    ]);
+    await writeFile(targetPath, 'export default function App() {}');
+    const confinement = normalizePreviewResolutionConfinement(
+      createRequest(sourceRoot, targetPath, dependencyRoot),
+    );
+    if (confinement === undefined) throw new Error('Expected normalized confinement.');
+    const missingEnvironment = path.join(sourceRoot, '.env');
+    expect(() => {
+      assertPreviewWatchedPaths(confinement, [missingEnvironment]);
+    }).not.toThrow();
+    expect(() => assertPreviewResolutionPath(confinement, missingEnvironment)).toThrow(
+      'does not exist',
+    );
+    expect(() => {
+      assertPreviewWatchedPaths(confinement, [path.join(outsideRoot, 'missing.env')]);
+    }).toThrow('escaped');
+    await symlink(outsideRoot, path.join(sourceRoot, 'redirected'));
+    expect(() => {
+      assertPreviewWatchedPaths(confinement, [path.join(sourceRoot, 'redirected', 'missing.env')]);
+    }).toThrow('escaped');
+    const dangling = path.join(sourceRoot, 'dangling.env');
+    await symlink(path.join(outsideRoot, 'missing.env'), dangling);
+    expect(() => {
+      assertPreviewWatchedPaths(confinement, [dangling]);
+    }).toThrow('does not exist');
+  });
+
   it('memoizes only successful exact candidate assertions and releases audit state', () => {
     const memo = createPreviewResolutionConfinementPathMemo();
     const candidates = [

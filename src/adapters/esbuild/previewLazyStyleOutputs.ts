@@ -5,9 +5,13 @@
  */
 import { createHash } from 'node:crypto';
 import type { Metafile } from 'esbuild';
+import {
+  createPreviewLazyStyleRuntimeSource,
+  PREVIEW_LAZY_STYLE_LOADER_SYMBOL,
+  type PreviewLazyStyleAssociation,
+} from './previewLazyStyleRuntimeSource';
 
-/** Global symbol shared by the generated entry bootstrap and every auxiliary ESM module. */
-export const PREVIEW_LAZY_STYLE_LOADER_SYMBOL = 'newdlops.react-preview.lazy-styles.v1';
+export { PREVIEW_LAZY_STYLE_LOADER_SYMBOL } from './previewLazyStyleRuntimeSource';
 const JAVASCRIPT_OUTPUT_PATTERN = /\.[cm]?js$/iu;
 const STYLESHEET_OUTPUT_PATTERN = /\.css$/iu;
 const encoder = new TextEncoder();
@@ -45,14 +49,6 @@ export interface PreviewLazyStyleOutputPlan {
   readonly stylesheets: readonly PreviewLazyStylesheetOutput[];
 }
 
-/** One module-to-stylesheet relationship serialized into the generated entry bootstrap. */
-interface LazyStyleAssociation {
-  /** Validated JavaScript artifact path received later as `import.meta.url`. */
-  readonly modulePath: string;
-  /** Generated exclusive CSS artifact path loaded before the module import resolves. */
-  readonly stylesheetPath: string;
-}
-
 /** Located esbuild CSS section beginning at its generated source-identity comment. */
 interface LocatedCssSection {
   /** Source input identity shared with `metafile.outputs[css].inputs`. */
@@ -86,7 +82,7 @@ export function planPreviewLazyStyleOutputs(
   if (auxiliaryJavaScript.length === 0) return undefined;
 
   const stylesheetByPath = new Map<string, PreviewLazyStylesheetOutput>();
-  const associations: LazyStyleAssociation[] = [];
+  const associations: PreviewLazyStyleAssociation[] = [];
   for (const moduleOutput of auxiliaryJavaScript) {
     const exclusiveCss = selectExclusiveStylesheet(
       moduleOutput,
@@ -107,7 +103,12 @@ export function planPreviewLazyStyleOutputs(
       ? undefined
       : selectExclusiveStylesheet(entryOutput, outputByMetadataPath, inputMetadata);
   const basePlan = {
-    entryPrefix: encoder.encode(createLazyStyleEntryBootstrap(associations)),
+    entryPrefix: encoder.encode(
+      createPreviewLazyStyleRuntimeSource(
+        associations,
+        auxiliaryJavaScript.map((output) => output.relativePath).sort(comparePaths),
+      ),
+    ),
     modulePrefix: encoder.encode(
       `await globalThis[Symbol.for(${JSON.stringify(PREVIEW_LAZY_STYLE_LOADER_SYMBOL)})]?.(import.meta.url);\n`,
     ),
@@ -266,57 +267,6 @@ function locateCssSections(
 function createLazyStylesheetPath(contents: Uint8Array): string {
   const digest = createHash('sha256').update(contents).digest('hex');
   return `chunks/styles/${digest}.css`;
-}
-
-/**
- * Creates the entry-local loader registry used by stable auxiliary module prefixes.
- * CSS failures remain console warnings so cosmetic problems cannot hide otherwise renderable DOM.
- */
-function createLazyStyleEntryBootstrap(associations: readonly LazyStyleAssociation[]): string {
-  const serializedAssociations = associations
-    .map(
-      ({ modulePath, stylesheetPath }) =>
-        `[new URL(${JSON.stringify(`./${modulePath}`)}, import.meta.url).href, new URL(${JSON.stringify(`./${stylesheetPath}`)}, import.meta.url).href]`,
-    )
-    .join(',\n');
-  return `
-const __reactPreviewLazyStyleByModule = new Map([${serializedAssociations}]);
-const __reactPreviewLazyStylePromises = new Map();
-const __reactPreviewLazyStyleRevision = import.meta.url;
-const __reactPreviewLazyStyleLoader = async (moduleUrl) => {
-  const stylesheetUrl = __reactPreviewLazyStyleByModule.get(moduleUrl);
-  if (stylesheetUrl === undefined) return;
-  const existingPromise = __reactPreviewLazyStylePromises.get(stylesheetUrl);
-  if (existingPromise !== undefined) return existingPromise;
-  const existingLink = Array.from(document.querySelectorAll('link[data-react-preview-lazy-style]'))
-    .find((candidate) => candidate.href === stylesheetUrl);
-  if (existingLink !== undefined) {
-    existingLink.dataset.reactPreviewLazyStyleRevision = __reactPreviewLazyStyleRevision;
-    return;
-  }
-  const promise = new Promise((resolve) => {
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = stylesheetUrl;
-    link.dataset.reactPreviewLazyStyle = 'true';
-    link.dataset.reactPreviewLazyStyleRevision = __reactPreviewLazyStyleRevision;
-    link.addEventListener('load', () => resolve(), { once: true });
-    link.addEventListener('error', () => {
-      globalThis.console?.warn?.('React Preview could not load a lazy project stylesheet.', stylesheetUrl);
-      resolve();
-    }, { once: true });
-    document.head.append(link);
-  });
-  __reactPreviewLazyStylePromises.set(stylesheetUrl, promise);
-  return promise;
-};
-__reactPreviewLazyStyleLoader.commit = () => {
-  for (const link of document.querySelectorAll('link[data-react-preview-lazy-style]')) {
-    if (link.dataset.reactPreviewLazyStyleRevision !== __reactPreviewLazyStyleRevision) link.remove();
-  }
-};
-globalThis[Symbol.for(${JSON.stringify(PREVIEW_LAZY_STYLE_LOADER_SYMBOL)})] = __reactPreviewLazyStyleLoader;
-`;
 }
 
 /** Orders artifact paths without locale-sensitive platform behavior. */

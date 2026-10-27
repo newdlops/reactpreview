@@ -1,9 +1,10 @@
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   selectPreviewInspectorFastPageConsumerPaths,
   selectPreviewInspectorFastReverseProbePaths,
+  createPreviewInspectorFastPageCandidateIndex,
 } from '../../../../src/adapters/esbuild/inspector/previewInspectorFastPageCandidates';
 
 describe('previewInspectorFastPageCandidates', () => {
@@ -79,5 +80,79 @@ describe('previewInspectorFastPageCandidates', () => {
     expect(source).not.toMatch(
       /\.sort\(\s*\(left, right\) =>[^)]*score(?:PageConsumer|ReverseProbe)/u,
     );
+  });
+
+  it('preserves ordering and containment across shared-target pivots and lexical spellings', () => {
+    const paths = [
+      remotePagePath,
+      statusPagePath,
+      valueConsumerPath,
+      testPath,
+      adjacentPageTestPath,
+      targetPath,
+      legalPagePath,
+      path.join(projectRoot, '../application-other/src/pages/outside.tsx'),
+      path.join(projectRoot, 'src/법무/pages/요청-page.tsx'),
+      ...Array.from({ length: 2200 }, (_, index) =>
+        path.join(
+          projectRoot,
+          'src/feature-' + String(index % 23),
+          'pages/page-' + String(index) + '.tsx',
+        ),
+      ),
+    ];
+    const index = createPreviewInspectorFastPageCandidateIndex(paths, projectRoot);
+    for (const pivot of [targetPath, valueConsumerPath, legalPagePath, remotePagePath]) {
+      expect(index.selectPageConsumers(pivot)).toEqual(
+        selectPreviewInspectorFastPageConsumerPaths(paths, projectRoot, pivot),
+      );
+      expect(index.selectReverseProbes(pivot)).toEqual(
+        selectPreviewInspectorFastReverseProbePaths(paths, projectRoot, pivot),
+      );
+    }
+  });
+
+  it('owns an inventory snapshot and uses newly created paths only in a new request', () => {
+    const paths = [targetPath, legalPagePath];
+    const first = createPreviewInspectorFastPageCandidateIndex(paths, projectRoot);
+    paths.push(statusPagePath);
+    expect(first.selectPageConsumers(targetPath)).toEqual([legalPagePath]);
+    const next = createPreviewInspectorFastPageCandidateIndex(paths, projectRoot);
+    expect(next.selectPageConsumers(targetPath)).toEqual([statusPagePath, legalPagePath]);
+  });
+
+  it('reuses target-independent admission when the reverse pivot changes', () => {
+    const paths = [targetPath, valueConsumerPath, legalPagePath, testPath];
+    const expected = selectPreviewInspectorFastReverseProbePaths(
+      paths,
+      projectRoot,
+      valueConsumerPath,
+    );
+    const index = createPreviewInspectorFastPageCandidateIndex(paths, projectRoot);
+    const basename = vi.spyOn(path, 'basename');
+    const collation = vi.spyOn(String.prototype, 'localeCompare');
+    index.selectReverseProbes(targetPath);
+    expect(basename).toHaveBeenCalled();
+    expect(collation).toHaveBeenCalled();
+    basename.mockClear();
+    collation.mockClear();
+    expect(index.selectReverseProbes(valueConsumerPath)).toEqual(expected);
+    expect(basename).not.toHaveBeenCalled();
+    expect(collation).not.toHaveBeenCalled();
+    basename.mockRestore();
+    collation.mockRestore();
+  });
+
+  it('preserves stable ties between distinct Unicode spellings with equal native collation', () => {
+    const composed = path.join(projectRoot, 'src/feature/pages/café-page.tsx');
+    const decomposed = path.join(projectRoot, 'src/feature/pages/cafe\u0301-page.tsx');
+    expect(composed.localeCompare(decomposed)).toBe(0);
+    const paths = [decomposed, legalPagePath, composed, targetPath, remotePagePath];
+    const index = createPreviewInspectorFastPageCandidateIndex(paths, projectRoot);
+    for (const pivot of [targetPath, valueConsumerPath, remotePagePath]) {
+      const expected = selectPreviewInspectorFastReverseProbePaths(paths, projectRoot, pivot);
+      expect(index.selectReverseProbes(pivot)).toEqual(expected);
+      expect(expected.indexOf(decomposed)).toBeLessThan(expected.indexOf(composed));
+    }
   });
 });

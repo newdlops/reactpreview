@@ -75,7 +75,7 @@ describe('Preview Inspector overlay outcome convergence runtime', () => {
                 }],
               },
             },
-            target: { exportName: 'DeleteModal' },
+            target: { exportName: 'DeleteModal', sourcePath: '/DeleteModal.tsx' },
           },
         };
         const previewInspectorSession = {
@@ -103,6 +103,8 @@ describe('Preview Inspector overlay outcome convergence runtime', () => {
         const readPreviewInspectorRuntimeFallbacks = () => [];
         const readPreviewInspectorDataRequests = () => [];
         const readPreviewInspectorDataShapePaths = () => [];
+        const readPreviewInspectorTargetFailureRepairRecord = () => undefined;
+        const createPreviewInspectorTargetFailurePropMutation = () => undefined;
         const smartFillPreviewInspectorRuntimeFallbacksForReachability = () => false;
         const smartFillPreviewInspectorDataPayloadsForReachability = () => false;
         const collectPreviewInspectorFiberElements = () => [];
@@ -201,6 +203,8 @@ describe('Preview Inspector overlay outcome convergence runtime', () => {
         const readPreviewInspectorRuntimeFallbacks = () => [];
         const readPreviewInspectorDataRequests = () => [];
         const readPreviewInspectorDataShapePaths = () => [];
+        const readPreviewInspectorTargetFailureRepairRecord = () => undefined;
+        const createPreviewInspectorTargetFailurePropMutation = () => undefined;
         const smartFillPreviewInspectorRuntimeFallbacksForReachability = () => false;
         const smartFillPreviewInspectorDataPayloadsForReachability = () => false;
         const persistPreviewInspectorState = () => undefined;
@@ -224,7 +228,7 @@ describe('Preview Inspector overlay outcome convergence runtime', () => {
         ${createTargetReachabilityFixtureSource()}
         const descriptor = { inspector: {
           renderChainsByExport: { DeleteModal: { paths: [] } },
-          target: { exportName: 'DeleteModal' },
+          target: { exportName: 'DeleteModal', sourcePath: '/DeleteModal.tsx' },
         } };
         const candidate = {
           edges: [],
@@ -246,6 +250,7 @@ describe('Preview Inspector overlay outcome convergence runtime', () => {
         };
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
         previewInspectorSession.boundariesByExport.set('DeleteModal', new Set([{
+          props: { exportName: 'DeleteModal', sourcePath: '/DeleteModal.tsx' },
           state: { error: new Error('modal child failed') },
         }]));
         previewInspectorSession.renderConditions.set('downstream-gate', {

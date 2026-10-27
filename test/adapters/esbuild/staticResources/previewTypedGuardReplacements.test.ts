@@ -3,14 +3,71 @@
  * A stub oracle isolates the rewrite policy from TypeScript program construction.
  */
 import { describe, expect, it } from 'vitest';
-import { createPreviewTypedGuardReplacements } from '../../../../src/adapters/esbuild/staticResources/previewTypedGuardReplacements';
+import { StaticSourceAnalysis } from '../../../../src/adapters/esbuild/staticResources/staticCallParser';
 import { applyPreviewSourceReplacements } from '../../../../src/adapters/esbuild/staticResources/previewSourceReplacement';
+import { createPreviewTypedGuardReplacements } from '../../../../src/adapters/esbuild/staticResources/previewTypedGuardReplacements';
 import type {
   PreviewTypedGuardRequest,
   PreviewTypeOracleView,
 } from '../../../../src/adapters/esbuild/typeOracle/previewTypeOracle';
 
 describe('createPreviewTypedGuardReplacements', () => {
+  it('skips the type oracle when every guarded read is already replaced', () => {
+    const source = 'export function Page({row}) { return row && <b>{row.name}</b>; }';
+    const requests: PreviewTypedGuardRequest[] = [];
+    const result = createPreviewTypedGuardReplacements(
+      '/w/Page.tsx',
+      source,
+      createOracle(requests, { name: 'Name' }, true),
+      () => 'guard',
+      [
+        {
+          start: source.indexOf('row.name'),
+          end: source.indexOf('row.name') + 3,
+          replacement: 'knownRow',
+        },
+      ],
+    );
+    expect(result).toEqual({ declarations: [], replacements: [] });
+    expect(requests).toEqual([]);
+  });
+
+  it('keeps exact source offsets and required paths when reusing a private parse', () => {
+    const path = '/w/Page.tsx',
+      source = 'export function Page({row}) { return row && <b>{row.name}</b>; }';
+    const analysis = new StaticSourceAnalysis(path, source),
+      first: PreviewTypedGuardRequest[] = [],
+      next: PreviewTypedGuardRequest[] = [];
+    const original = createPreviewTypedGuardReplacements(
+      path,
+      source,
+      createOracle(first, { name: 'Name' }, true),
+      () => 'guard',
+      [],
+    );
+    const reused = createPreviewTypedGuardReplacements(
+      path,
+      source,
+      createOracle(next, { name: 'Name' }, true),
+      () => 'guard',
+      [],
+      analysis,
+    );
+    expect(reused).toEqual(original);
+    expect(next).toEqual(first);
+    const changed = source.replace('row.name', 'row.email'),
+      requests: PreviewTypedGuardRequest[] = [];
+    createPreviewTypedGuardReplacements(
+      path,
+      changed,
+      createOracle(requests, { email: 'Email' }, true),
+      () => 'guard',
+      [],
+      analysis,
+    );
+    expect(requests[0]?.requiredPaths).toEqual(['email']);
+  });
+
   /** Reads inside the guarded branch fall back to the typed state; authored truthy state wins. */
   it('rebinds nullable guard reads inside the JSX branch', () => {
     const source = [
@@ -143,6 +200,8 @@ function createOracle(
     readTypedDocumentShapes: () => [],
     readTypedCallResponseShape: () => undefined,
     readTypedComponentProps: () => undefined,
+    readTypedExportValue: () => undefined,
+    readTypedModuleTypeValue: () => undefined,
     readTypedResponseShape: () => undefined,
     release: () => undefined,
     readTypedGuardValue: (request) => {

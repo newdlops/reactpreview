@@ -15,6 +15,7 @@ export function createPreviewInspectorPageExecutionBuildPlugin(
     readonly contents: string;
     readonly watchDirectories: readonly string[];
   }>,
+  prepareSource?: (sourcePath: string, sourceText: string) => string,
 ): Plugin | undefined {
   if (candidate === undefined) return undefined;
   const surfaces = candidate.criticalSurfaces
@@ -38,5 +39,6 @@ export function createPreviewInspectorPageExecutionBuildPlugin(
         readSource: (sourcePath) => readSource(path.normalize(sourcePath)),
         surfaces,
         ...(transformSource === undefined ? {} : { transformSource }),
+        ...(prepareSource === undefined ? {} : { prepareSource }),
       });
 }

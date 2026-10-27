@@ -58,9 +58,7 @@ describe('previewInspectorBundleDiagnostics', () => {
     await collector.measureOptionalClosure(() => Promise.resolve(undefined));
     collector.measureResolveModule(() => undefined);
     collector.measureAuthoredPathCheck(() => true);
-    collector.measureFrontierFinalize(() =>
-      collector.measureFrontierIdentity(() => 'identity'),
-    );
+    collector.measureFrontierFinalize(() => collector.measureFrontierIdentity(() => 'identity'));
     collector.measureCandidateSelection(() => undefined);
 
     const snapshot = collector.snapshot();

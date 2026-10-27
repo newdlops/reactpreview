@@ -11,6 +11,10 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
 import {
+  createPreviewRuntimeSourceSyntax,
+  type PreviewRuntimeSourceSyntax,
+} from './previewRuntimeSourceSyntax';
+import {
   applyPreviewSourceReplacements,
   selectCompatiblePreviewSourceReplacements,
   type PreviewSourceReplacement,
@@ -35,7 +39,11 @@ interface PreviewReactEffectBindings {
  * @param sourceText Source after other preview compatibility transforms have completed.
  * @returns Equivalent source whose proven React effects cannot unmount a static page in Auto mode.
  */
-export function instrumentPreviewReactEffects(sourcePath: string, sourceText: string): string {
+export function instrumentPreviewReactEffects(
+  sourcePath: string,
+  sourceText: string,
+  syntax?: PreviewRuntimeSourceSyntax,
+): string {
   if (
     !sourceText.includes('useEffect') &&
     !sourceText.includes('useInsertionEffect') &&
@@ -43,11 +51,9 @@ export function instrumentPreviewReactEffects(sourcePath: string, sourceText: st
   ) {
     return sourceText;
   }
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = (syntax ?? createPreviewRuntimeSourceSyntax()).readSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     readScriptKind(sourcePath),
   );
   const bindings = collectPreviewReactEffectBindings(sourceFile);
@@ -190,13 +196,29 @@ function instrumentPreviewReactEffectEventListeners(
 ): string {
   const callbackStart = callback.getStart(sourceFile);
   const callbackText = sourceText.slice(callbackStart, callback.end);
-  const subscriptions: Array<{ call: ts.CallExpression; event: ts.Expression; listener: ts.Expression; emitter: ts.Expression }> = [];
-  const cleanups: Array<{ call: ts.CallExpression; event: ts.Expression; listener: ts.Expression; emitter: ts.Expression }> = [];
-  const visit = (node: ts.Node) => {
+  const subscriptions: {
+    call: ts.CallExpression;
+    event: ts.Expression;
+    listener: ts.Expression;
+    emitter: ts.Expression;
+  }[] = [];
+  const cleanups: {
+    call: ts.CallExpression;
+    event: ts.Expression;
+    listener: ts.Expression;
+    emitter: ts.Expression;
+  }[] = [];
+  const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const emitterCall = readPreviewReactEffectEmitterCall(node);
-      if (emitterCall !== undefined && hasPreviewPositiveOverlayEventSemantics(emitterCall.event, sourceText, sourceFile)) {
-        (emitterCall.method === 'on' || emitterCall.method === 'addListener' ? subscriptions : cleanups).push({
+      if (
+        emitterCall !== undefined &&
+        hasPreviewPositiveOverlayEventSemantics(emitterCall.event, sourceText, sourceFile)
+      ) {
+        (emitterCall.method === 'on' || emitterCall.method === 'addListener'
+          ? subscriptions
+          : cleanups
+        ).push({
           call: node,
           emitter: emitterCall.emitter,
           event: emitterCall.event,
@@ -209,19 +231,26 @@ function instrumentPreviewReactEffectEventListeners(
   visit(callback);
   const replacements: PreviewSourceReplacement[] = [];
   for (const subscription of subscriptions) {
-    const cleanup = cleanups.find((candidate) =>
-      previewReactEffectExpressionKey(candidate.emitter, sourceText, sourceFile) ===
-        previewReactEffectExpressionKey(subscription.emitter, sourceText, sourceFile) &&
-      previewReactEffectExpressionKey(candidate.event, sourceText, sourceFile) ===
-        previewReactEffectExpressionKey(subscription.event, sourceText, sourceFile) &&
-      previewReactEffectExpressionKey(candidate.listener, sourceText, sourceFile) ===
-        previewReactEffectExpressionKey(subscription.listener, sourceText, sourceFile),
+    const cleanup = cleanups.find(
+      (candidate) =>
+        previewReactEffectExpressionKey(candidate.emitter, sourceText, sourceFile) ===
+          previewReactEffectExpressionKey(subscription.emitter, sourceText, sourceFile) &&
+        previewReactEffectExpressionKey(candidate.event, sourceText, sourceFile) ===
+          previewReactEffectExpressionKey(subscription.event, sourceText, sourceFile) &&
+        previewReactEffectExpressionKey(candidate.listener, sourceText, sourceFile) ===
+          previewReactEffectExpressionKey(subscription.listener, sourceText, sourceFile),
     );
     if (cleanup === undefined) continue;
-    const occurrenceId = createPreviewReactEffectIdentity(sourcePath, 'event-listener', subscription.call.getStart(sourceFile));
+    const occurrenceId = createPreviewReactEffectIdentity(
+      sourcePath,
+      'event-listener',
+      subscription.call.getStart(sourceFile),
+    );
     const eventMetadata = {
       ...effectMetadata,
-      eventName: sourceText.slice(subscription.event.getStart(sourceFile), subscription.event.end).slice(0, 160),
+      eventName: sourceText
+        .slice(subscription.event.getStart(sourceFile), subscription.event.end)
+        .slice(0, 160),
       id: occurrenceId,
       occurrenceId,
     };
@@ -236,14 +265,33 @@ function instrumentPreviewReactEffectEventListeners(
   );
 }
 
+/** Recognizes supported effect emitter calls and retains the authored call operands for instrumentation. */
 function readPreviewReactEffectEmitterCall(call: ts.CallExpression):
-  | { emitter: ts.Expression; event: ts.Expression; listener: ts.Expression; method: 'on' | 'addListener' | 'off' | 'removeListener' }
+  | {
+      emitter: ts.Expression;
+      event: ts.Expression;
+      listener: ts.Expression;
+      method: 'on' | 'addListener' | 'off' | 'removeListener';
+    }
   | undefined {
-  if (!ts.isPropertyAccessExpression(call.expression) || call.arguments.length < 2) return undefined;
+  if (!ts.isPropertyAccessExpression(call.expression) || call.arguments.length < 2)
+    return undefined;
   const method = call.expression.name.text;
-  if (method !== 'on' && method !== 'addListener' && method !== 'off' && method !== 'removeListener') return undefined;
+  if (
+    method !== 'on' &&
+    method !== 'addListener' &&
+    method !== 'off' &&
+    method !== 'removeListener'
+  )
+    return undefined;
   const [event, listener] = call.arguments;
-  if (event === undefined || listener === undefined || ts.isSpreadElement(event) || ts.isSpreadElement(listener)) return undefined;
+  if (
+    event === undefined ||
+    listener === undefined ||
+    ts.isSpreadElement(event) ||
+    ts.isSpreadElement(listener)
+  )
+    return undefined;
   return { emitter: call.expression.expression, event, listener, method };
 }
 
@@ -257,15 +305,29 @@ function hasPreviewPositiveOverlayEventSemantics(
     .slice(event.getStart(sourceFile), event.end)
     .replace(/[^a-z]/giu, '')
     .toLowerCase();
-  return /show|open|present/u.test(normalized) && /modal|dialog|drawer|overlay|popover|sheet|toast/u.test(normalized);
+  return (
+    /show|open|present/u.test(normalized) &&
+    /modal|dialog|drawer|overlay|popover|sheet|toast/u.test(normalized)
+  );
 }
 
-function previewReactEffectExpressionKey(node: ts.Expression, sourceText: string, sourceFile: ts.SourceFile): string {
+/** Creates a stable syntax identity for matching effect emitter expressions in one source. */
+function previewReactEffectExpressionKey(
+  node: ts.Expression,
+  sourceText: string,
+  sourceFile: ts.SourceFile,
+): string {
   return sourceText.slice(node.getStart(sourceFile), node.end).replace(/\s+/gu, '');
 }
 
+/** Generates an effect emitter wrapper that retains the original call and its source evidence. */
 function createPreviewReactEffectEmitterReplacement(
-  entry: { call: ts.CallExpression; emitter: ts.Expression; event: ts.Expression; listener: ts.Expression },
+  entry: {
+    call: ts.CallExpression;
+    emitter: ts.Expression;
+    event: ts.Expression;
+    listener: ts.Expression;
+  },
   callbackStart: number,
   metadata: Record<string, unknown>,
   registration: boolean,
@@ -276,7 +338,9 @@ function createPreviewReactEffectEmitterReplacement(
   const eventText = entry.event.getText();
   const listenerText = entry.listener.getText();
   const method = (entry.call.expression as ts.PropertyAccessExpression).name.text;
-  const apiMethod = registration ? 'registerLocalUiEventListener' : 'unregisterLocalUiEventListener';
+  const apiMethod = registration
+    ? 'registerLocalUiEventListener'
+    : 'unregisterLocalUiEventListener';
   return {
     end: callEnd - callbackStart,
     replacement: [

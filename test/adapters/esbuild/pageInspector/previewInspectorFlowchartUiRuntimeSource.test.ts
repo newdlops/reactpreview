@@ -94,8 +94,7 @@ describe('Preview Inspector flowchart UI runtime source', () => {
     const source = createPreviewInspectorFlowchartUiRuntimeSource();
     const context: Record<string, unknown> = {};
     new vm.Script(
-      `${source}\n` +
-        'globalThis.__readSymbol = readPreviewInspectorFlowchartNodeSymbol;',
+      `${source}\n` + 'globalThis.__readSymbol = readPreviewInspectorFlowchartNodeSymbol;',
     ).runInNewContext(context);
     const readSymbol = context.__readSymbol as (step: Record<string, unknown>) => string;
 

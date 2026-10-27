@@ -59,6 +59,7 @@ export async function runPreviewImmutableSnapshotCli(
   }
 }
 
+/** Validates snapshot CLI paths and required options before any filesystem mutation occurs. */
 export function parsePreviewImmutableSnapshotArguments(
   arguments_: readonly string[],
 ): PreviewImmutableSnapshotArguments {
@@ -115,6 +116,7 @@ export function parsePreviewImmutableSnapshotArguments(
   });
 }
 
+/** Requires a fresh snapshot destination so existing user data cannot be overwritten. */
 async function assertDestinationMissing(destination: string): Promise<void> {
   try {
     await lstat(destination);
@@ -125,6 +127,7 @@ async function assertDestinationMissing(destination: string): Promise<void> {
   throw new Error('Immutable snapshot destination already exists.');
 }
 
+/** Restores permissions on a failed snapshot tree so owned temporary output can be removed. */
 async function makeWritableForCleanup(candidatePath: string): Promise<void> {
   let metadata;
   try {

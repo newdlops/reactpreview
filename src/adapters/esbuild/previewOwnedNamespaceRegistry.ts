@@ -1,14 +1,18 @@
 /** Owns the exact compiler-private namespace set admitted by confined esbuild invocations. */
-import { createHash } from 'node:crypto';
 import type { Plugin } from 'esbuild';
+import { createHash } from 'node:crypto';
 import { PreviewCompilationError } from '../../domain/preview';
+import {
+  PREVIEW_MAIN_ENTRY_NAMESPACE,
+  PREVIEW_RUNTIME_ANCHOR_NAMESPACE,
+} from './previewBuildEntryPlugin';
 import {
   PREVIEW_APOLLO_BRIDGE_NAMESPACE,
   PREVIEW_ASSET_NAMESPACE,
   PREVIEW_CONTEXT_BRIDGE_NAMESPACE,
   PREVIEW_DATA_URL_NAMESPACE,
+  PREVIEW_DRAG_DROP_BRIDGE_NAMESPACE,
   PREVIEW_FORMIK_BRIDGE_NAMESPACE,
-  PREVIEW_YARN_LIBUI_BRIDGE_NAMESPACE,
   PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE,
   PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE,
   PREVIEW_INSPECTOR_PAGE_SURFACE_NAMESPACE,
@@ -24,14 +28,11 @@ import {
   PREVIEW_TARGET_BRIDGE_NAMESPACE,
   PREVIEW_THEME_BRIDGE_NAMESPACE,
   PREVIEW_THEME_CANDIDATE_NAMESPACE,
+  PREVIEW_YARN_LIBUI_BRIDGE_NAMESPACE,
 } from './previewPluginProtocol';
-import {
-  PREVIEW_MAIN_ENTRY_NAMESPACE,
-  PREVIEW_RUNTIME_ANCHOR_NAMESPACE,
-} from './previewBuildEntryPlugin';
 
 /** Namespace-aware confinement policy identity. Bump whenever registry admission semantics change. */
-export const PREVIEW_OWNED_NAMESPACE_POLICY_VERSION = 6;
+export const PREVIEW_OWNED_NAMESPACE_POLICY_VERSION = 7;
 
 /** Compiler-private namespace values that are intentionally unavailable to build requests. */
 export const PREVIEW_COMPILER_PRIVATE_NAMESPACES = Object.freeze({
@@ -49,6 +50,7 @@ export const PREVIEW_COMPILER_PRIVATE_NAMESPACES = Object.freeze({
   inspectorVirtualPageComponentRuntime: 'react-preview-inspector-virtual-page-component-runtime',
   largePackageBarrel: 'react-preview-large-package-barrel',
   nextAppNavigation: 'react-preview-next-app-navigation',
+  nextAuthSession: 'react-preview-next-auth-session',
   nextPagesRouter: 'react-preview-next-pages-router',
   nextPagesRouterContext: 'react-preview-next-pages-router-context',
   nextRenderFallback: 'react-preview-next-render-fallback',
@@ -137,6 +139,10 @@ const BASE_COMPILER_REGISTRATIONS = Object.freeze([
   registration(PREVIEW_YARN_LIBUI_BRIDGE_NAMESPACE, 'react-preview-yarn-libui-bridge'),
   registration(PREVIEW_REACT_QUERY_BRIDGE_NAMESPACE, 'react-preview-react-query-bridge'),
   registration(PREVIEW_REDUX_BRIDGE_NAMESPACE, 'react-preview-redux-bridge'),
+  registration(
+    PREVIEW_COMPILER_PRIVATE_NAMESPACES.nextAuthSession,
+    'react-preview-next-auth-session',
+  ),
   registration(PREVIEW_ROUTER_BRIDGE_NAMESPACE, 'react-preview-router-bridge'),
   registration(
     PREVIEW_COMPILER_PRIVATE_NAMESPACES.nextAppNavigation,
@@ -160,6 +166,7 @@ const BASE_COMPILER_REGISTRATIONS = Object.freeze([
   ),
   registration(PREVIEW_ASSET_NAMESPACE, 'react-preview-assets'),
   registration(PREVIEW_DATA_URL_NAMESPACE, 'react-preview-assets'),
+  registration(PREVIEW_DRAG_DROP_BRIDGE_NAMESPACE, 'react-preview-drag-drop-bridge'),
 ] as const);
 
 /** Stable campaign-facing digest of the closed namespace policy, independent of active build shape. */

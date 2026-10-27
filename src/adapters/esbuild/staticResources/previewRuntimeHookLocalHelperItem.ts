@@ -8,6 +8,7 @@
  * or executes code, and fixed traversal limits keep large modules inexpensive.
  */
 import ts from 'typescript';
+import { hasPreviewRuntimeHookGeneratedStringIdentity } from './previewRuntimeHookGeneratedStringIdentity';
 import {
   unwrapPreviewRuntimeExpression,
   unwrapPreviewRuntimeParentExpression,
@@ -19,6 +20,8 @@ export interface PreviewRuntimeLocalHelperItemFallback {
   readonly expression: string;
   /** Human-readable description shown for generated data. */
   readonly label: string;
+  /** True only for compiler-generated display strings used directly as a JSX key. */
+  readonly generatedStringIdentity?: true;
   /** Property paths relative to the collection item that are required during rendering. */
   readonly requiredPaths?: readonly string[];
 }
@@ -85,7 +88,11 @@ export function inferPreviewRuntimeLocalHelperArrayItemFallback(
       appendUniqueFallback(candidates, createBindingFallback(demand.parameter.name, sourceFile));
     }
   }
-  return combineLocalHelperItemFallbacks(candidates);
+  const result = combineLocalHelperItemFallbacks(candidates);
+  return result !== undefined &&
+    hasPreviewRuntimeHookGeneratedStringIdentity(callback, result.expression)
+    ? { ...result, generatedStringIdentity: true }
+    : result;
 }
 
 /** Reads one immutable identifier that receives the item-or-undefined result of `find`/`findLast`. */

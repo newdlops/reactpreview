@@ -8,7 +8,7 @@ import { collectPreviewImplicitPackageGlobals } from '../../../../src/adapters/e
 
 describe('collectPreviewImplicitPackageGlobals', () => {
   /**
-   * Approves an ambient build-provided `dayjs` value through its installed type entry while keeping
+   * Approves an ambient build-provided `dayjs` value through its installed runtime entry while keeping
    * local bindings, member names, erased types, JSX host tags, and feature probes untouched.
    */
   it('collects only package-backed free runtime references and their exact spans', async () => {
@@ -47,9 +47,7 @@ describe('collectPreviewImplicitPackageGlobals', () => {
         globalName: 'dayjs',
         moduleSpecifier: 'dayjs',
       });
-      expect(inventory.globals[0]?.resolvedPath).toMatch(
-        /node_modules[/\\]dayjs[/\\]index\.d\.ts$/u,
-      );
+      expect(inventory.globals[0]?.resolvedPath).toMatch(/node_modules[/\\]dayjs[/\\]index\.js$/u);
       expect(
         inventory.globals[0]?.references.map((reference) =>
           sourceText.slice(reference.start, reference.end),

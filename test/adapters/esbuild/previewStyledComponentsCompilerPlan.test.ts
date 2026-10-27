@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PREVIEW_BUILD_ENTRY_STRATEGY_VERSION } from '../../../src/adapters/esbuild/previewBuildEntryStrategy';
 import { createPreviewStyledComponentsCompilerPlan } from '../../../src/adapters/esbuild/previewStyledComponentsCompilerPlan';
 import { createPreviewStyledComponentsPlan } from '../../../src/adapters/esbuild/previewStyledComponentsPlan';
 
@@ -15,7 +16,10 @@ describe('createPreviewStyledComponentsCompilerPlan', () => {
     const plan = createPreviewStyledComponentsCompilerPlan(styledComponentsPlan);
 
     expect(plan.buildIdentity).toEqual({
-      entryStrategy: { kind: 'shared-styled-runtime', version: 1 },
+      entryStrategy: {
+        kind: 'shared-styled-runtime',
+        version: PREVIEW_BUILD_ENTRY_STRATEGY_VERSION,
+      },
       styledComponentsPlan,
     });
     expect(plan.dependencyPaths).toEqual(styledComponentsPlan.dependencyPaths);

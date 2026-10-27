@@ -2,13 +2,6 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { PreviewCompiler } from '../../../src/application/previewCompiler';
-import {
-  PreviewRouteExecutionPlanInvariantError,
-  type PreviewBuildRequest,
-  type PreviewBundle,
-} from '../../../src/domain/preview';
-import type { PreviewBuildExecutionContext } from '../../../src/domain/previewBuildExecution';
 import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
 import {
   PREVIEW_COMPLETE_ROUTE_REPLAY_POLICY_DIGEST,
@@ -16,20 +9,11 @@ import {
   type PreviewInspectorCompleteRunnableRoute,
 } from '../../../src/adapters/esbuild/inspector/previewInspectorCompleteRouteInventory';
 import { PREVIEW_ABSENCE_EXECUTION_ROOT_POLICY_DIGEST } from '../../../src/adapters/esbuild/inspector/previewInspectorExecutionRootModuleContract';
-import { PREVIEW_METAFILE_DEPENDENCY_RECOVERY_POLICY_DIGEST } from '../../../src/adapters/esbuild/previewBuildResult';
 import { PREVIEW_TARGET_FACADE_OWNERSHIP_POLICY_DIGEST } from '../../../src/adapters/esbuild/inspector/previewInspectorTargetModuleContract';
+import { PREVIEW_METAFILE_DEPENDENCY_RECOVERY_POLICY_DIGEST } from '../../../src/adapters/esbuild/previewBuildResult';
 import { PREVIEW_OWNED_NAMESPACE_POLICY_DIGEST } from '../../../src/adapters/esbuild/previewOwnedNamespaceRegistry';
-import { PREVIEW_SYNTHETIC_INPUT_POLICY_DIGEST } from '../../../src/adapters/esbuild/previewSyntheticInputRegistry';
 import { PREVIEW_ROUTE_EXECUTION_PLAN_POLICY_DIGEST } from '../../../src/adapters/esbuild/previewRouteExecutionPlan';
-import {
-  deserializePreviewCompilerWorkerError,
-  serializePreviewCompilerWorkerError,
-} from '../../../src/adapters/worker/previewCompilerWorkerProtocol';
-import {
-  PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_DIGEST,
-  PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_VERSION,
-} from '../../../src/adapters/worker/previewCompilerWorkerIsolation';
-import { PREVIEW_MANAGED_CHILD_ENVIRONMENT_POLICY_DIGEST } from '../../../src/adapters/node/previewManagedChildEnvironment';
+import { PREVIEW_SYNTHETIC_INPUT_POLICY_DIGEST } from '../../../src/adapters/esbuild/previewSyntheticInputRegistry';
 import type { PreviewHeadlessResult } from '../../../src/adapters/node/previewHeadlessRenderer';
 import {
   formatPreviewHeadlessRouteCampaignSummary,
@@ -38,8 +22,24 @@ import {
   type PreviewHeadlessRouteCampaignIsolatedCompiler,
   type RunPreviewHeadlessRouteCampaignOptions,
 } from '../../../src/adapters/node/previewHeadlessRouteCampaign';
-import { createRealPreviewCompilerCampaignFixture } from '../../support/realPreviewCompilerCampaignFixture';
+import { PREVIEW_MANAGED_CHILD_ENVIRONMENT_POLICY_DIGEST } from '../../../src/adapters/node/previewManagedChildEnvironment';
+import {
+  PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_DIGEST,
+  PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_VERSION,
+} from '../../../src/adapters/worker/previewCompilerWorkerIsolation';
+import {
+  deserializePreviewCompilerWorkerError,
+  serializePreviewCompilerWorkerError,
+} from '../../../src/adapters/worker/previewCompilerWorkerProtocol';
+import type { PreviewCompiler } from '../../../src/application/previewCompiler';
+import {
+  PreviewRouteExecutionPlanInvariantError,
+  type PreviewBuildRequest,
+  type PreviewBundle,
+} from '../../../src/domain/preview';
+import type { PreviewBuildExecutionContext } from '../../../src/domain/previewBuildExecution';
 import { createPreviewRouteExecutionPlanFixture } from '../../support/previewRouteExecutionPlanFixture';
+import { createRealPreviewCompilerCampaignFixture } from '../../support/realPreviewCompilerCampaignFixture';
 
 const temporaryDirectories: string[] = [];
 const SYNTHETIC_SCALE_ROUTE_COUNT = 37;
@@ -181,9 +181,7 @@ describe('headless route campaign v5.5.6', () => {
       expect(report.results).toHaveLength(1);
       expect(report.summary.pending).toBe(runnableCount - 1);
       expect(report.summary.pending).toBeGreaterThan(0);
-      const ledgerLines = (await readFile(options.ledgerPath, 'utf8'))
-        .split('\n')
-        .filter(Boolean);
+      const ledgerLines = (await readFile(options.ledgerPath, 'utf8')).split('\n').filter(Boolean);
       expect(ledgerLines).toHaveLength(2);
       const durableReport = JSON.parse(await readFile(options.reportPath, 'utf8')) as {
         readonly results: readonly { readonly status: string }[];
@@ -232,10 +230,8 @@ describe('headless route campaign v5.5.6', () => {
       retryRouteIds: [],
       targetFacadeOwnershipPolicyDigest: PREVIEW_TARGET_FACADE_OWNERSHIP_POLICY_DIGEST,
       executionPlanPolicyDigest: PREVIEW_ROUTE_EXECUTION_PLAN_POLICY_DIGEST,
-      inventoryCompilerIsolationPolicyDigest:
-        PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_DIGEST,
-      inventoryCompilerIsolationPolicyVersion:
-        PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_VERSION,
+      inventoryCompilerIsolationPolicyDigest: PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_DIGEST,
+      inventoryCompilerIsolationPolicyVersion: PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_VERSION,
       version: 7,
     });
     expect(report.namespaceConfinementPolicyDigest).toBe(PREVIEW_OWNED_NAMESPACE_POLICY_DIGEST);
@@ -470,10 +466,18 @@ describe('headless route campaign v5.5.6', () => {
     const routeCompiler: PreviewHeadlessRouteCampaignIsolatedCompiler = {
       compile: (_request, context) =>
         new Promise<PreviewBundle>((_resolve, reject) => {
-          context?.signal?.addEventListener('abort', () => { reject(new Error('worker shutdown')); }, {
-            once: true,
-          });
-          setTimeout(() => { controller.abort(); }, 1);
+          context?.signal?.addEventListener(
+            'abort',
+            () => {
+              reject(new Error('worker shutdown'));
+            },
+            {
+              once: true,
+            },
+          );
+          setTimeout(() => {
+            controller.abort();
+          }, 1);
         }),
       waitForCancellationRecovery: recoverCancellation,
     };
@@ -575,10 +579,7 @@ describe('headless route campaign v5.5.6', () => {
     );
     await expect(runPreviewHeadlessRouteCampaign(options)).rejects.toThrow('does not match');
     const legacyIsolationDigestHeader = { ...header };
-    Reflect.deleteProperty(
-      legacyIsolationDigestHeader,
-      'inventoryCompilerIsolationPolicyDigest',
-    );
+    Reflect.deleteProperty(legacyIsolationDigestHeader, 'inventoryCompilerIsolationPolicyDigest');
     await writeFile(
       options.ledgerPath,
       [JSON.stringify(legacyIsolationDigestHeader), ...recordLines].join('\n'),
@@ -586,10 +587,7 @@ describe('headless route campaign v5.5.6', () => {
     );
     await expect(runPreviewHeadlessRouteCampaign(options)).rejects.toThrow('does not match');
     const legacyIsolationVersionHeader = { ...header };
-    Reflect.deleteProperty(
-      legacyIsolationVersionHeader,
-      'inventoryCompilerIsolationPolicyVersion',
-    );
+    Reflect.deleteProperty(legacyIsolationVersionHeader, 'inventoryCompilerIsolationPolicyVersion');
     await writeFile(
       options.ledgerPath,
       [JSON.stringify(legacyIsolationVersionHeader), ...recordLines].join('\n'),

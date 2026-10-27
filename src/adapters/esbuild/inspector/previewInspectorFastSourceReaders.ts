@@ -7,6 +7,10 @@
  * incorrectly look like a missing source. These readers share one raw read cache and one admitted
  * source set, but reserve bounded new-source capacity for each phase. The four reservations still
  * sum to the original 16 MiB safety envelope.
+ *
+ * Callers rank sources before requesting them. Admission therefore follows request order instead
+ * of disk completion order. Raw reads still start concurrently, and admitted text remains available
+ * immediately without waiting for unrelated pending admissions.
  */
 import path from 'node:path';
 import type { ReadPreviewInspectorSource } from './previewInspectorAncestorTypes';
@@ -53,6 +57,7 @@ export function createPreviewInspectorFastSourceReaders(
     reverse: 0,
     subtree: 0,
   };
+  let admissionTail: Promise<void> = Promise.resolve();
 
   /** Reads one normalized path once without deciding which analysis phase may retain it. */
   const readRawSource = (sourcePath: string): Promise<string | undefined> => {
@@ -64,19 +69,30 @@ export function createPreviewInspectorFastSourceReaders(
     return pending;
   };
 
-  /** Creates one lane whose new admissions cannot consume another phase's reserved capacity. */
+  /** Starts raw I/O immediately, then commits new admissions in the caller's ranked request order. */
   const createLane = (lane: SourceReaderLane): ReadPreviewInspectorSource => {
     return async (sourcePath) => {
       const normalizedPath = path.normalize(sourcePath);
-      const sourceText = await readRawSource(normalizedPath);
-      if (sourceText === undefined || admittedPaths.has(normalizedPath)) return sourceText;
-      const byteLength = Buffer.byteLength(sourceText, 'utf8');
-      if (admittedBytesByLane[lane] + byteLength > LANE_BUDGET_BYTES[lane]) {
-        return undefined;
-      }
-      admittedBytesByLane[lane] += byteLength;
-      admittedPaths.add(normalizedPath);
-      return sourceText;
+      const pendingSource = readRawSource(normalizedPath);
+      if (admittedPaths.has(normalizedPath)) return pendingSource;
+      const admission = admissionTail.then(async () => {
+        const sourceText = await pendingSource;
+        if (sourceText === undefined || admittedPaths.has(normalizedPath)) return sourceText;
+        const byteLength = Buffer.byteLength(sourceText, 'utf8');
+        if (admittedBytesByLane[lane] + byteLength > LANE_BUDGET_BYTES[lane]) {
+          return undefined;
+        }
+        admittedBytesByLane[lane] += byteLength;
+        admittedPaths.add(normalizedPath);
+        return sourceText;
+      });
+      admissionTail = admission.then(
+        () => undefined,
+        () => undefined,
+      );
+      // Raw failures reach callers immediately; only successful text waits for ordered admission.
+      // The tail observes a failed slot separately so later admissions retain their predecessor.
+      return pendingSource.then(() => admission);
     };
   };
 

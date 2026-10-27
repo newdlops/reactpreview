@@ -311,8 +311,9 @@ function selectPreviewInspectorHookGraphqlIdentity(fieldName, identities) {
 }
 
 /**
- * Aligns a direct selected entity ID with the variable that requested it.
- * This deterministic equality is required by common route guards and therefore needs no user input.
+ * Aligns generated selected entities and one generated list row with the requesting ID variable.
+ * Membership guards must find the selected entity in the same query's list. Real query payloads
+ * never enter this generator; other rows retain their identities and ambiguous collections stay put.
  */
 function alignPreviewInspectorHookGraphqlResponseIdentities(data, readOptions) {
   const identities = readPreviewInspectorHookGraphqlIdentityVariables(readOptions);
@@ -321,10 +322,23 @@ function alignPreviewInspectorHookGraphqlResponseIdentities(data, readOptions) {
   const aligned = { ...data };
   for (const fieldName of Object.keys(aligned)) {
     const entity = aligned[fieldName];
-    if (entity === null || typeof entity !== 'object' || Array.isArray(entity)) continue;
-    if (readPreviewInspectorHookGraphqlOwnValue(entity, 'id') === undefined) continue;
+    if (entity === null || typeof entity !== 'object') continue;
     const identity = selectPreviewInspectorHookGraphqlIdentity(fieldName, identities);
-    if (identity === undefined || entity.id === identity) continue;
+    if (identity === undefined) continue;
+    if (Array.isArray(entity)) {
+      if (entity.length === 0 || entity.length > 16) continue;
+      const normalizedField = fieldName.replace(/[^A-Za-z0-9]/gu, '').toLowerCase();
+      if (!identities.some((item) => item.value === identity && item.baseName.length > 0 &&
+        (normalizedField.endsWith(item.baseName) || normalizedField.endsWith(item.baseName + 's')))) continue;
+      if (entity.some((item) => readPreviewInspectorHookGraphqlOwnValue(item, 'id') === identity)) continue;
+      const first = readPreviewInspectorHookGraphqlOwnValue(entity, '0');
+      if (readPreviewInspectorHookGraphqlOwnValue(first, 'id') === undefined) continue;
+      aligned[fieldName] = Object.freeze([Object.freeze({ ...first, id: identity }), ...entity.slice(1)]);
+      changed = true;
+      continue;
+    }
+    const entityId = readPreviewInspectorHookGraphqlOwnValue(entity, 'id');
+    if (entityId === undefined || entityId === identity) continue;
     aligned[fieldName] = Object.freeze({ ...entity, id: identity });
     changed = true;
   }
@@ -559,14 +573,9 @@ function createPreviewInspectorHookGraphqlFallback(fallback, readDocument, readO
   const alignedData = structuralFallbackData === undefined
     ? data
     : alignPreviewInspectorHookGraphqlStructure(data, structuralFallbackData);
-  const settled = hasObjectFallback ? { ...fallback, data: alignedData } : { data: alignedData };
-  settled.loading = false;
-  settled.fallback = null;
-  settled.error = null;
-  settled.networkStatus = 7;
-  if (typeof settled.refetch !== 'function') {
-    settled.refetch = Object.freeze(() => Promise.resolve({ data: alignedData }));
-  }
+  const settled = settlePreviewInspectorHookGraphqlTransport(
+    hasObjectFallback ? { ...fallback, data: alignedData } : { data: alignedData },
+  );
   try {
     const document = readDocument();
     const recommendation = previewInspectorHookGraphqlPendingRenderedCollectionRecommendations.get(
@@ -598,6 +607,21 @@ function createPreviewInspectorHookGraphqlFallback(fallback, readDocument, readO
       }
     }
   } catch { /* The fallback itself must not depend on diagnostics. */ }
+  return Object.freeze(settled);
+}
+
+/**
+ * Keeps successful generated transport sentinels authoritative after generic shape completion.
+ * A compiler-inferred Error or React fallback is a type shape, not a failed network response.
+ * This runs only while creating a cached generated query value, never on an authored result.
+ */
+function settlePreviewInspectorHookGraphqlTransport(value) {
+  const data = readPreviewInspectorHookGraphqlOwnValue(value, 'data');
+  if (data === null || typeof data !== 'object') return value;
+  const settled = { ...value, loading: false, fallback: null, error: null, networkStatus: 7 };
+  if (typeof settled.refetch !== 'function') {
+    settled.refetch = Object.freeze(() => Promise.resolve({ data }));
+  }
   return Object.freeze(settled);
 }
 

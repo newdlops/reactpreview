@@ -639,6 +639,40 @@ function collectMockExampleFromCall(
   );
 }
 
+/**
+ * Reports an assertion that bypasses structural checking, which can conceal an empty placeholder.
+ * Concrete fixtures and explicit null/empty collections remain useful evidence even with a cast.
+ *
+ * @param expression Mock result expression, including any outer assertion or grouping nodes.
+ * @returns Whether the parsed value needs an empty-record placeholder check.
+ */
+function isTypeEscapedExpression(expression: ts.Expression): boolean {
+  let current = expression;
+  for (;;) {
+    if (ts.isAsExpression(current) || ts.isTypeAssertionExpression(current)) {
+      const kind = current.type.kind;
+      if (
+        kind === ts.SyntaxKind.NeverKeyword ||
+        kind === ts.SyntaxKind.AnyKeyword ||
+        kind === ts.SyntaxKind.UnknownKeyword
+      ) {
+        return true;
+      }
+      current = current.expression;
+      continue;
+    }
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isSatisfiesExpression(current) ||
+      ts.isNonNullExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    return false;
+  }
+}
+
 /** Maps only repeatable mock APIs to the execution behavior they prove. */
 function readMockMode(
   methodName: string,
@@ -683,6 +717,17 @@ function readStaticContractValue(
 ): PreviewLearnedContractValue | undefined {
   const value = parseStaticValue(expression, sourceFile, { nodes: 0 }, 0, scope);
   if (value === undefined) return undefined;
+  // A populated fixture or an explicit null/empty collection can be intentional. Only an empty
+  // record asserted past structural checking supplies no declared result fields (`{} as never`).
+  if (
+    isTypeEscapedExpression(expression) &&
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 0
+  ) {
+    return undefined;
+  }
   const serialized = JSON.stringify(value);
   return Buffer.byteLength(serialized, 'utf8') <= MAXIMUM_SERIALIZED_VALUE_BYTES
     ? freezeContractValue(value)
@@ -844,7 +889,7 @@ function readScriptKind(sourcePath: string): ts.ScriptKind {
 
 /** Segment-aware containment prevents adjacent discovery from escaping the active project. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

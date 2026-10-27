@@ -39,7 +39,8 @@ export async function resolvePreviewInspectorDirectRouteCatalogHelper(options: {
   }
   if (catalogNames.size !== 1) return undefined;
   const bindingName = [...catalogNames][0];
-  if (bindingName === undefined || !hasTopLevelValueBinding(sourceFile, bindingName)) return undefined;
+  if (bindingName === undefined || !hasTopLevelValueBinding(sourceFile, bindingName))
+    return undefined;
   return Object.freeze({
     bindingKind: 'local' as const,
     bindingName,
@@ -100,9 +101,10 @@ function isExportedAs(
   if (
     localName === exportName &&
     ts.canHaveModifiers(declaration) &&
-    (ts.getModifiers(declaration)?.some(
-      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-    ) ?? false)
+    (ts
+      .getModifiers(declaration)
+      ?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ??
+      false)
   ) {
     return true;
   }
@@ -149,11 +151,9 @@ function collectReturnedCatalogNames(
     if (ts.isFunctionLike(node)) return;
     if (ts.isElementAccessExpression(node)) {
       const receiver = unwrap(node.expression);
-      const argument =
-        node.argumentExpression === undefined ? undefined : unwrap(node.argumentExpression);
+      const argument = unwrap(node.argumentExpression);
       if (
         ts.isIdentifier(receiver) &&
-        argument !== undefined &&
         ts.isIdentifier(argument) &&
         argument.text === parameterName
       ) {
@@ -168,7 +168,10 @@ function collectReturnedCatalogNames(
 /** Ensures the inferred catalog receiver is an immutable local value or runtime import. */
 function hasTopLevelValueBinding(sourceFile: ts.SourceFile, name: string): boolean {
   return sourceFile.statements.some((statement) => {
-    if (ts.isImportDeclaration(statement) && statement.importClause?.isTypeOnly !== true) {
+    if (
+      ts.isImportDeclaration(statement) &&
+      statement.importClause?.phaseModifier !== ts.SyntaxKind.TypeKeyword
+    ) {
       const clause = statement.importClause;
       if (clause?.name?.text === name) return true;
       const bindings = clause?.namedBindings;

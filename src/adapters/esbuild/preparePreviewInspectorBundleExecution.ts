@@ -1,19 +1,19 @@
 /** Prepares the frozen automatic Inspector frontier before native esbuild begins. */
+import { PreviewBuildStalledError } from '../../domain/previewBuildExecution';
 import type {
   PreviewCompilerBundleFrontierActivity,
   PreviewCompilerGraphPlanActivity,
 } from '../../domain/previewCompilerActivity';
-import { PreviewBuildStalledError } from '../../domain/previewBuildExecution';
 import type { PreviewInspectorAncestorPlan } from './inspector/previewInspectorAncestorPlan';
 import type { PreviewInspectorBundleDiagnosticsCollector } from './inspector/previewInspectorBundleDiagnostics';
-import type { PreviewInspectorPageExecutionCandidate } from './inspector/previewInspectorPageExecutionTypes';
-import { preparePreviewInspectorPageExecutionSelection } from './inspector/previewInspectorPageFrontier';
 import {
   createPreviewInspectorBundleSourceInventoryMemo,
   preparePreviewInspectorBundleFrontier,
-  type PreviewInspectorBundleSourceInventoryMemo,
   type PreparedPreviewInspectorBundleFrontier,
+  type PreviewInspectorBundleSourceInventoryMemo,
 } from './inspector/previewInspectorBundleFrontier';
+import type { PreviewInspectorPageExecutionCandidate } from './inspector/previewInspectorPageExecutionTypes';
+import { preparePreviewInspectorPageExecutionSelection } from './inspector/previewInspectorPageFrontier';
 import type { PreviewPreparationPolicy } from './previewPreparationPolicy';
 
 export interface PreparedPreviewInspectorBundleExecution {
@@ -80,23 +80,21 @@ export async function preparePreviewInspectorBundleExecution(
       options.executionCandidates === undefined
         ? undefined
         : await preparePreviewInspectorPageExecutionSelection({
-          candidates: options.executionCandidates,
-          ...(options.bundleDiagnostics === undefined
-            ? {}
-            : { bundleDiagnostics: options.bundleDiagnostics }),
-          ...(options.runtimeCompanionSourcePaths === undefined
-            ? {}
-            : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
-          plan: options.executablePlan,
-          policy: options.policy.frontierPolicy,
-          ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
-          readSource: options.readSource,
-          resolveModule: options.resolveModule,
-          ...(sourceInventoryMemo === undefined
-            ? {}
-            : { sourceInventoryMemo }),
-          workspaceRoot: options.workspaceRoot,
-        });
+            candidates: options.executionCandidates,
+            ...(options.bundleDiagnostics === undefined
+              ? {}
+              : { bundleDiagnostics: options.bundleDiagnostics }),
+            ...(options.runtimeCompanionSourcePaths === undefined
+              ? {}
+              : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
+            plan: options.executablePlan,
+            policy: options.policy.frontierPolicy,
+            ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
+            readSource: options.readSource,
+            resolveModule: options.resolveModule,
+            ...(sourceInventoryMemo === undefined ? {} : { sourceInventoryMemo }),
+            workspaceRoot: options.workspaceRoot,
+          });
     const selection = selectionResult?.kind === 'selected' ? selectionResult : undefined;
     const rejectedSelection = selectionResult?.kind === 'rejected' ? selectionResult : undefined;
     const pageExecutionCandidate =
@@ -104,72 +102,70 @@ export async function preparePreviewInspectorBundleExecution(
     const prepared =
       selectionResult?.prepared ??
       (await preparePreviewInspectorBundleFrontier({
-      ...(options.runtimeCompanionSourcePaths === undefined
-        ? {}
-        : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
-      plan: options.executablePlan,
-      policy: options.policy.frontierPolicy,
-      ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
-      ...(options.bundleDiagnostics === undefined
-        ? {}
-        : { bundleDiagnostics: options.bundleDiagnostics }),
-      readSource: options.readSource,
-      resolveModule: options.resolveModule,
-      ...(sourceInventoryMemo === undefined
-        ? {}
-        : { sourceInventoryMemo }),
-      workspaceRoot: options.workspaceRoot,
+        ...(options.runtimeCompanionSourcePaths === undefined
+          ? {}
+          : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
+        plan: options.executablePlan,
+        policy: options.policy.frontierPolicy,
+        ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
+        ...(options.bundleDiagnostics === undefined
+          ? {}
+          : { bundleDiagnostics: options.bundleDiagnostics }),
+        readSource: options.readSource,
+        resolveModule: options.resolveModule,
+        ...(sourceInventoryMemo === undefined ? {} : { sourceInventoryMemo }),
+        workspaceRoot: options.workspaceRoot,
       }));
     const summary = prepared.frontier.summary;
     const activity: PreviewCompilerBundleFrontierActivity = {
-    analysisCandidateCount: options.analysisCandidateCount,
-    authoredEdgeCount: summary.authoredEdgeCount,
-    corridorSourceCount: options.corridorSourceCount,
-    dependencySnapshotCount: options.dependencySnapshotCount,
-    discoveryScope: 'selected-corridor',
-    discoveryTruncated: options.discoveryTruncated,
-    exactModuleCount: summary.exactModuleCount,
-    executableCandidateCount: 1,
-    frontierSourceBytes: summary.sourceBytes,
-    graphAdmission:
-      (summary.boundedProjectionCount ?? 0) > 0 ? 'bounded-projection' : 'unbounded',
-    kind: 'bundle-frontier',
-    maximumDepth: summary.maximumDepth,
-    optionalComponentCount: summary.optionalComponentCount,
-    packageDemandSourceCount: summary.packageDemandSourceCount,
-    phase: prepared.rejected ? 'rejected' : 'planned',
-    preparationMode: options.policy.frontierPolicy.mode,
-    projectedEdgeCount: summary.projectedEdgeCount,
-    styleSnapshotCount: options.styleSnapshotCount,
-    supportModuleCount: summary.supportModuleCount,
-    totalAuthoredModuleCount: summary.totalAuthoredModuleCount,
-    truncated: prepared.rejected,
-    truncationReasons: summary.truncationReasons,
-    ...(pageExecutionCandidate === undefined
-      ? {}
-      : {
-          pageExecution: {
-            candidateFidelity: pageExecutionCandidate.fidelity,
-            candidateId: pageExecutionCandidate.id,
-            disposition: selectionResult?.disposition ?? 'rejected-structural',
-            selectedCriticalSurfaceCount: pageExecutionCandidate.criticalSurfaces.length,
-          },
-        }),
-  };
+      analysisCandidateCount: options.analysisCandidateCount,
+      authoredEdgeCount: summary.authoredEdgeCount,
+      corridorSourceCount: options.corridorSourceCount,
+      dependencySnapshotCount: options.dependencySnapshotCount,
+      discoveryScope: 'selected-corridor',
+      discoveryTruncated: options.discoveryTruncated,
+      exactModuleCount: summary.exactModuleCount,
+      executableCandidateCount: 1,
+      frontierSourceBytes: summary.sourceBytes,
+      graphAdmission:
+        (summary.boundedProjectionCount ?? 0) > 0 ? 'bounded-projection' : 'unbounded',
+      kind: 'bundle-frontier',
+      maximumDepth: summary.maximumDepth,
+      optionalComponentCount: summary.optionalComponentCount,
+      packageDemandSourceCount: summary.packageDemandSourceCount,
+      phase: prepared.rejected ? 'rejected' : 'planned',
+      preparationMode: options.policy.frontierPolicy.mode,
+      projectedEdgeCount: summary.projectedEdgeCount,
+      styleSnapshotCount: options.styleSnapshotCount,
+      supportModuleCount: summary.supportModuleCount,
+      totalAuthoredModuleCount: summary.totalAuthoredModuleCount,
+      truncated: prepared.rejected,
+      truncationReasons: summary.truncationReasons,
+      ...(pageExecutionCandidate === undefined
+        ? {}
+        : {
+            pageExecution: {
+              candidateFidelity: pageExecutionCandidate.fidelity,
+              candidateId: pageExecutionCandidate.id,
+              disposition: selectionResult?.disposition ?? 'rejected-structural',
+              selectedCriticalSurfaceCount: pageExecutionCandidate.criticalSurfaces.length,
+            },
+          }),
+    };
     return {
-    activity,
-    ...(selection === undefined ? {} : { executionCandidate: selection.executionPlan.candidate }),
-    prepared,
-    throwIfRejected: (target) => {
-      if (prepared.rejected)
-        throw new PreviewBuildStalledError(
-          target,
-          'analyzing-project',
-          0,
-          'candidate-unavailable',
-          activity,
-        );
-    },
+      activity,
+      ...(selection === undefined ? {} : { executionCandidate: selection.executionPlan.candidate }),
+      prepared,
+      throwIfRejected: (target) => {
+        if (prepared.rejected)
+          throw new PreviewBuildStalledError(
+            target,
+            'analyzing-project',
+            0,
+            'candidate-unavailable',
+            activity,
+          );
+      },
     };
   } finally {
     ownedSourceInventoryMemo?.release();

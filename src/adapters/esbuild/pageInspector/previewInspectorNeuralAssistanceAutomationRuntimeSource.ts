@@ -5,6 +5,8 @@ export function createPreviewInspectorNeuralAssistanceAutomationRuntimeSource():
 function readPreviewInspectorAutomaticNeuralAssistanceCorridor() {
   if (isPreviewInspectorNeuralAssistancePaused()) return undefined;
   const reachability = readPreviewInspectorNeuralAssistanceReachability();
+  if (typeof isPreviewInspectorTargetHiddenByPageTabInteraction === 'function' &&
+    isPreviewInspectorTargetHiddenByPageTabInteraction(reachability)) return undefined;
   const activeBlockers = readPreviewInspectorNeuralAssistanceBlockers().active;
   const hasActiveNonReachabilityBlocker = activeBlockers.some((node) =>
     node?.blockerKind !== 'target-reachability' &&

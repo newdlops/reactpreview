@@ -41,12 +41,14 @@ export function normalizePreviewBlockerCategory(kind: string): PreviewBlockerCat
   return PREVIEW_BLOCKER_KIND_CATEGORIES[kind] ?? 'unsupported';
 }
 
+/** Narrows an untrusted value against the closed set of supported blocker categories. */
 export function isPreviewBlockerCategory(value: unknown): value is PreviewBlockerCategory {
   return (
     typeof value === 'string' && (PREVIEW_BLOCKER_CATEGORIES as readonly string[]).includes(value)
   );
 }
 
+/** Narrows an untrusted value against the closed set of recorded blocker outcomes. */
 export function isPreviewBlockerOutcome(value: unknown): value is PreviewBlockerOutcome {
   return (
     typeof value === 'string' && (PREVIEW_BLOCKER_OUTCOMES as readonly string[]).includes(value)

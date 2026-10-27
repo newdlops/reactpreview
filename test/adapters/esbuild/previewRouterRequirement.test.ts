@@ -75,6 +75,25 @@ describe('requiresPreviewRouter', () => {
 });
 
 describe('selectPreviewInitialRouterBuild', () => {
+  it('keeps Inspector planning independent of candidate-local provider ownership', () => {
+    const consumer = { consumesRouter: true, ownsRouter: false };
+    const provider = { consumesRouter: true, ownsRouter: true };
+    expect(
+      selectPreviewInitialRouterBuild(undefined, consumer, provider, 'page-inspector'),
+    ).toEqual({ automaticallyWrap: true, enabled: true });
+    expect(
+      selectPreviewInitialRouterBuild(provider, consumer, undefined, 'page-inspector'),
+    ).toEqual({ automaticallyWrap: true, enabled: true });
+    expect(
+      selectPreviewInitialRouterBuild(
+        { consumesRouter: false, ownsRouter: false },
+        { consumesRouter: false, ownsRouter: false },
+        provider,
+        'page-inspector',
+      ),
+    ).toEqual({ automaticallyWrap: false, enabled: false });
+  });
+
   it('uses frontier ownership only until the reached graph has proved it absent', () => {
     const target = { consumesRouter: true, ownsRouter: false };
     const frontier = { consumesRouter: true, ownsRouter: true };

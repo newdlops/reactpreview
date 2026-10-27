@@ -3,6 +3,11 @@ export const V53_CANONICAL_ROOT: string;
 export const DARWIN_MAIN_SOCKET: string;
 export const PREVIEW_BLOCKER_SIGNATURE_FAMILIES: readonly string[];
 
+/** Resolves inherited dedicated loopback configuration and rejects non-loopback interfaces. */
+export function resolvePreviewBlockerLoopbackHost(
+  environment?: Readonly<NodeJS.ProcessEnv>,
+): string;
+
 export function censusPreviewBlockerSource(
   sourceText: string,
   fileName?: string,

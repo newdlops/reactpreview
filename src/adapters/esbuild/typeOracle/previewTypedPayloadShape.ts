@@ -13,6 +13,7 @@ import ts from 'typescript';
 import { createPreviewCanonicalSampleMonthDay } from '../previewSampleDateRuntimeSource';
 import { readPreviewDateTextEvidence } from './previewDateTextEvidence';
 import type { PreviewRecordKeyReader } from './previewRecordKeyInference';
+import type { PreviewNumericTextReader } from './previewNumericTextInference';
 
 /** Shape contract shared with the Page Inspector data runtime (`normalizePreviewInspectorDataShape`). */
 export type PreviewTypedPayloadShape =
@@ -22,7 +23,8 @@ export type PreviewTypedPayloadShape =
       readonly kind: 'object';
     }
   | { readonly kind: 'literal'; readonly value: string }
-  | { readonly kind: 'boolean' | 'null' | 'number' | 'string' | 'unknown' };
+  | { readonly kind: 'string'; readonly numeric?: true }
+  | { readonly kind: 'boolean' | 'null' | 'number' | 'unknown' };
 
 const MAX_DEPTH = 10;
 const MAX_NODES = 1_500;
@@ -39,6 +41,8 @@ interface ShapeState {
   nodes: number;
   /** Literal keys the project reads from a record-typed property (`Record<string, T>`). */
   readonly readRecordKeys?: PreviewRecordKeyReader | undefined;
+  /** Exact-property evidence that authored consumers convert open text into a number. */
+  readonly readNumericText?: PreviewNumericTextReader | undefined;
 }
 
 /**
@@ -48,6 +52,7 @@ interface ShapeState {
  * @param type Declared response type, for example a GraphQL operation result.
  * @param anchor Node used to resolve property types in context.
  * @param readRecordKeys Optional reader of literal keys read from record-typed fields.
+ * @param readNumericText Optional source-proven numeric string evidence for this program.
  * @returns Shape, or `undefined` when the type carries no structure (`any`, an empty record).
  */
 export function createPreviewTypedPayloadShape(
@@ -55,8 +60,9 @@ export function createPreviewTypedPayloadShape(
   type: ts.Type,
   anchor: ts.Node,
   readRecordKeys?: PreviewRecordKeyReader,
+  readNumericText?: PreviewNumericTextReader,
 ): PreviewTypedPayloadShape | undefined {
-  const shape = convert({ anchor, checker, nodes: 0, readRecordKeys }, type, 0);
+  const shape = convert({ anchor, checker, nodes: 0, readRecordKeys, readNumericText }, type, 0);
   if (shape.kind === 'unknown') return undefined;
   if (shape.kind === 'object' && Object.keys(shape.fields).length === 0) return undefined;
   return shape;
@@ -134,7 +140,7 @@ function convert(
   }
   if ((flags & ts.TypeFlags.NumberLike) !== 0) return { kind: 'number' };
   if ((flags & ts.TypeFlags.BooleanLike) !== 0) return { kind: 'boolean' };
-  if ((flags & ts.TypeFlags.StringLike) !== 0) return convertText(name, fieldSymbol);
+  if ((flags & ts.TypeFlags.StringLike) !== 0) return convertText(state, name, fieldSymbol);
   if (type.isUnion()) return convertUnion(state, type, depth, name, fieldSymbol);
   if ((flags & ts.TypeFlags.Object) !== 0 || type.isIntersection()) {
     return convertObject(state, type, depth, name, fieldSymbol);
@@ -167,7 +173,7 @@ function convertUnion(
     return convert(state, members[0] ?? type, depth + 1);
   }
   if (members.every((member) => (member.flags & ts.TypeFlags.StringLike) !== 0)) {
-    return convertText(name, fieldSymbol);
+    return convertText(state, name, fieldSymbol);
   }
   if (members.every((member) => (member.flags & ts.TypeFlags.NumberLike) !== 0)) {
     return { kind: 'number' };
@@ -188,10 +194,11 @@ function convertUnion(
  * Declared text is open, but a date-named field has a calendar format that consumers extend
  * (`\`${date}T00:00:00Z\``), so it keeps the synthesizer's fixed sample instead of generated text.
  */
-function convertText(name: string, fieldSymbol?: ts.Symbol): PreviewTypedPayloadShape {
-  if (DATE_TIME_NAME_PATTERN.test(name))
-    return { kind: 'literal', value: '2026-01-15T09:00:00.000Z' };
-  if (DATE_ONLY_NAME_PATTERN.test(name)) return { kind: 'literal', value: '2026-01-15' };
+function convertText(
+  state: ShapeState,
+  name: string,
+  fieldSymbol?: ts.Symbol,
+): PreviewTypedPayloadShape {
   const dated = readPreviewDateTextEvidence(name, fieldSymbol?.valueDeclaration);
   if (dated !== undefined) {
     const value =
@@ -202,6 +209,12 @@ function convertText(name: string, fieldSymbol?: ts.Symbol): PreviewTypedPayload
           : createPreviewCanonicalSampleMonthDay(0, dated === 'month-day-padded');
     return { kind: 'literal', value };
   }
+  if (fieldSymbol !== undefined && state.readNumericText?.(fieldSymbol) === true) {
+    return { kind: 'string', numeric: true };
+  }
+  if (DATE_TIME_NAME_PATTERN.test(name))
+    return { kind: 'literal', value: '2026-01-15T09:00:00.000Z' };
+  if (DATE_ONLY_NAME_PATTERN.test(name)) return { kind: 'literal', value: '2026-01-15' };
   return { kind: 'string' };
 }
 

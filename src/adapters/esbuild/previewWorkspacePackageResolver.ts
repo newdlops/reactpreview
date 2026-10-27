@@ -634,7 +634,7 @@ function normalizeTrustedDirectory(
 
 /** Checks containment without accepting a sibling path that merely shares the root prefix. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

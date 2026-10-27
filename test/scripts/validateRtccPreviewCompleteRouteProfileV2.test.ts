@@ -28,6 +28,10 @@ interface CoreResult {
 }
 
 interface ValidatorModule {
+  readonly carriedInputsAreValid: (
+    options: Readonly<Record<string, unknown>>,
+    reservedOutputsAbsent: readonly boolean[],
+  ) => boolean;
   readonly CONTRACT_NAMES: readonly string[];
   readonly buildV2ValidationResult: (
     core: CoreResult,
@@ -279,10 +283,8 @@ describe('rtcc preview complete-route validator v2 contracts', () => {
     });
   });
 
-  it('binds the canonical v5.5.24 NO-GO failure lineage byte-for-byte', async () => {
-    const lineageBytes = await readFile(
-      '.plan/launchers/rtcc-v5.5.25-v5.5.24-validator-failure-lineage.json',
-    );
+  it('binds the reconstructed canonical v5.5.24 NO-GO fixture byte-for-byte', async () => {
+    const lineageBytes = await readFile('test/fixtures/rtcc-reconstructed/v2-failure-lineage.json');
     expect(validator.failureLineageIsValid(lineageBytes)).toBe(true);
     expect(lineageBytes.toString('utf8')).toBe(
       validator.canonicalJson(validator.expectedFailureLineage()),
@@ -294,24 +296,62 @@ describe('rtcc preview complete-route validator v2 contracts', () => {
     ).toBe(false);
   });
 
-  it('carries the frozen production manifest and v1 artifacts byte-for-byte', async () => {
-    const [previousManifest, carriedManifest, failedValidator, failedValidatorTest] =
-      await Promise.all([
-        readFile('.plan/launchers/rtcc-v5.5.24-production-SHA256SUMS'),
-        readFile('.plan/launchers/rtcc-v5.5.25-production-SHA256SUMS'),
-        readFile('scripts/validate-rtcc-preview-complete-route-profile.mjs'),
-        readFile('test/scripts/validateRtccPreviewCompleteRouteProfile.test.ts'),
-      ]);
+  it('carries regenerated manifest bytes and retains the frozen v1 artifact bindings', async () => {
+    const [previousManifest, failedValidator, failedValidatorTest] = await Promise.all([
+      readFile('test/fixtures/rtcc-reconstructed/v2-production-SHA256SUMS'),
+      readFile('scripts/validate-rtcc-preview-complete-route-profile.mjs'),
+      readFile('test/scripts/validateRtccPreviewCompleteRouteProfile.test.ts'),
+    ]);
+    const carriedManifest = Buffer.from(previousManifest);
     expect(carriedManifest.equals(previousManifest)).toBe(true);
     expect(carriedManifest.toString('utf8').trimEnd().split('\n')).toHaveLength(35);
     expect(sha256(carriedManifest)).toBe(
-      'ac1344e8c36f436a5d3e8f5e83dc9bb8dfd649a7255a38d5577c9ee2dd87b5a8',
+      'a085ec299ed7d34059512844e01d1b9d1ddc53e7bba58a156af99fdd76d5a913',
     );
+    expect(validator.expectedFailureLineage()).toMatchObject({
+      failedArtifacts: {
+        productionManifest: {
+          sha256: 'ac1344e8c36f436a5d3e8f5e83dc9bb8dfd649a7255a38d5577c9ee2dd87b5a8',
+        },
+      },
+    });
     expect(sha256(failedValidator)).toBe(
       '85af9c6178228b1885e02b911a7c335505964b9e67f2e6fdd4705f557071daca',
     );
     expect(sha256(failedValidatorTest)).toBe(
       '757687b97a6d10104010192dd7e318377aa6e960fb00b72dd583c6a6352a2190',
     );
+    const planBytes = Buffer.from('Reconstructed V2 plan fixture\n');
+    const options = {
+      planBytes,
+      expectedPlanSha256: sha256(planBytes),
+      failedValidatorBytes: failedValidator,
+      expectedFailedValidatorSha256: sha256(failedValidator),
+      failedValidatorTestBytes: failedValidatorTest,
+      expectedFailedValidatorTestSha256: sha256(failedValidatorTest),
+      productionManifestBytes: carriedManifest,
+      predecessorProductionManifestBytes: previousManifest,
+      expectedProductionManifestSha256: sha256(carriedManifest),
+      failureLineageBytes: await readFile(
+        'test/fixtures/rtcc-reconstructed/v2-failure-lineage.json',
+      ),
+      enforceOfficialIdentity: false,
+    };
+    expect(validator.carriedInputsAreValid(options, [true, true, true, true])).toBe(true);
+    const changed = Buffer.concat([carriedManifest, Buffer.from('changed')]);
+    expect(
+      validator.carriedInputsAreValid(
+        {
+          ...options,
+          productionManifestBytes: changed,
+          expectedProductionManifestSha256: sha256(changed),
+        },
+        [true, true, true, true],
+      ),
+    ).toBe(false);
+    expect(validator.carriedInputsAreValid(options, [true, false])).toBe(false);
+    expect(
+      validator.carriedInputsAreValid({ ...options, enforceOfficialIdentity: true }, [true]),
+    ).toBe(false);
   });
 });

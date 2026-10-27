@@ -1,7 +1,7 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { build } from 'esbuild';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { verifyPreviewInspectorBundleFrontierMetafile } from '../../../../src/adapters/esbuild/inspector/previewInspectorBundleFrontierMetafile';
 import type { PreviewCompilerBundleFrontierActivity } from '../../../../src/domain/previewCompilerActivity';

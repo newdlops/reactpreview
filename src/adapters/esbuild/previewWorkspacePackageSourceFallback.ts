@@ -15,6 +15,8 @@ const PACKAGE_MANIFEST_NAME = 'package.json';
 const MAXIMUM_MANIFEST_BYTES = 1024 * 1024;
 const MAXIMUM_EXPORT_NODES = 128;
 const MAXIMUM_EXPORT_TARGETS = 32;
+/** Bounds per-build parent lookup reuse without limiting which packages may still be resolved. */
+const MAXIMUM_PACKAGE_LOOKUPS = 4096;
 const OUTPUT_DIRECTORY_NAMES = new Set(['build', 'dist', 'lib', 'out']);
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 const EXACT_STYLE_SOURCE_EXTENSIONS = new Set(['.css']);
@@ -93,13 +95,12 @@ export function createPreviewWorkspacePackageSourceFallbackPlugin(
         const resolveDirectory = readResolveDirectory(arguments_);
         if (request === undefined || resolveDirectory === undefined) return undefined;
 
-        const lookupKey = `${resolveDirectory}\0${request.packageName}`;
-        let packagePromise = packageLookupCache.get(lookupKey);
-        if (packagePromise === undefined) {
-          packagePromise = findLinkedWorkspacePackage(resolveDirectory, request, workspaceRoot);
-          packageLookupCache.set(lookupKey, packagePromise);
-        }
-        const linkedPackage = await packagePromise;
+        const linkedPackage = await findLinkedWorkspacePackage(
+          resolveDirectory,
+          request,
+          workspaceRoot,
+          packageLookupCache,
+        );
         if (linkedPackage === undefined) return undefined;
 
         const fallbackKey = `${linkedPackage.physicalRoot}\0${request.subpath}`;
@@ -182,32 +183,49 @@ function parsePackageRequest(moduleSpecifier: string): PackageRequest | undefine
  * A real workspace dependency is represented by a symlink whose canonical target is workspace-owned
  * and is not another package-manager node_modules store.
  */
-async function findLinkedWorkspacePackage(
+function findLinkedWorkspacePackage(
   startDirectory: string,
   request: PackageRequest,
   workspaceRoot: string,
+  cache: Map<string, Promise<LinkedWorkspacePackage | undefined>>,
 ): Promise<LinkedWorkspacePackage | undefined> {
-  let directory = path.resolve(startDirectory);
-  while (isPathInsideOrEqual(workspaceRoot, directory)) {
-    const logicalRoot = path.join(directory, 'node_modules', ...request.packageSegments);
-    if (await isSymbolicLink(logicalRoot)) {
-      const physicalRoot = canonicalizeExistingPath(logicalRoot);
-      const relativePhysicalRoot = path.relative(workspaceRoot, physicalRoot);
-      if (
-        isPathInside(workspaceRoot, physicalRoot) &&
-        !relativePhysicalRoot.split(path.sep).includes('node_modules')
-      ) {
-        const manifestPath = path.join(physicalRoot, PACKAGE_MANIFEST_NAME);
-        const manifest = await readWorkspacePackageManifest(manifestPath);
-        if (manifest?.name === request.packageName) {
-          return { manifest, physicalRoot };
-        }
-      }
+  const directory = path.resolve(startDirectory);
+  if (!isPathInsideOrEqual(workspaceRoot, directory)) return Promise.resolve(undefined);
+  const key = `${directory}\0${request.packageName}`;
+  const retained = cache.get(key);
+  if (retained !== undefined) return retained;
+  const lookup = inspectLinkedWorkspacePackageDirectory(directory, request, workspaceRoot, cache);
+  if (cache.size < MAXIMUM_PACKAGE_LOOKUPS) cache.set(key, lookup);
+  return lookup;
+}
+
+/**
+ * Checks the nearest directory before sharing its parent's exact lookup with sibling issuers.
+ * The cache is cleared at each onStart; links, manifests, and missing outputs are rechecked on
+ * rebuild. Registry packages, outside links, nearest-package precedence, and source proof stay intact.
+ */
+async function inspectLinkedWorkspacePackageDirectory(
+  directory: string,
+  request: PackageRequest,
+  workspaceRoot: string,
+  cache: Map<string, Promise<LinkedWorkspacePackage | undefined>>,
+): Promise<LinkedWorkspacePackage | undefined> {
+  const logicalRoot = path.join(directory, 'node_modules', ...request.packageSegments);
+  if (await isSymbolicLink(logicalRoot)) {
+    const physicalRoot = canonicalizeExistingPath(logicalRoot);
+    const relativePhysicalRoot = path.relative(workspaceRoot, physicalRoot);
+    if (
+      isPathInside(workspaceRoot, physicalRoot) &&
+      !relativePhysicalRoot.split(path.sep).includes('node_modules')
+    ) {
+      const manifestPath = path.join(physicalRoot, PACKAGE_MANIFEST_NAME);
+      const manifest = await readWorkspacePackageManifest(manifestPath);
+      if (manifest?.name === request.packageName) return { manifest, physicalRoot };
     }
-    if (directory === workspaceRoot) break;
-    directory = path.dirname(directory);
   }
-  return undefined;
+  return directory === workspaceRoot
+    ? undefined
+    : findLinkedWorkspacePackage(path.dirname(directory), request, workspaceRoot, cache);
 }
 
 /** Reads bounded, inert JSON and never follows package build/config scripts. */
@@ -517,7 +535,7 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 
 /** Checks containment while accepting the workspace root itself during upward traversal. */
 function isPathInsideOrEqual(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&
@@ -528,7 +546,7 @@ function isPathInsideOrEqual(rootPath: string, candidatePath: string): boolean {
 
 /** Checks strict containment so a package root itself cannot masquerade as recovered source. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length > 0 &&
     relativePath !== '..' &&

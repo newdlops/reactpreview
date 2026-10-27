@@ -1,7 +1,7 @@
 /** Enforces an opt-in immutable source and approved installed-dependency resolution boundary. */
-import { realpathSync } from 'node:fs';
-import path from 'node:path';
 import type { Plugin } from 'esbuild';
+import { lstatSync, realpathSync } from 'node:fs';
+import path from 'node:path';
 import {
   PreviewCompilationError,
   type PreviewBuildRequest,
@@ -165,6 +165,42 @@ export function assertPreviewResolutionPaths(
   if (confinement === undefined) return;
   for (const candidatePath of candidatePaths) {
     assertPreviewResolutionPath(confinement, candidatePath);
+  }
+}
+
+/**
+ * Audits published watch identities, including convention files that may be created later.
+ * Missing paths are confined through their nearest existing ancestor. Existing and dangling
+ * symlinks still undergo the ordinary realpath check; this never admits a missing module input.
+ *
+ * @param confinement Immutable roots for this build, or undefined for an unconfined request.
+ * @param candidatePaths Absolute file identities retained by the preview's save/create watchers.
+ * @throws PreviewCompilationError when inspection fails or an existing ancestor escapes the roots.
+ */
+export function assertPreviewWatchedPaths(
+  confinement: NormalizedPreviewResolutionConfinement | undefined,
+  candidatePaths: readonly string[],
+): void {
+  if (confinement === undefined) return;
+  for (const candidatePath of candidatePaths) {
+    let existingPath = path.resolve(stripImportSuffix(candidatePath));
+    for (;;) {
+      try {
+        if (lstatSync(existingPath, { throwIfNoEntry: false }) !== undefined) break;
+      } catch {
+        throw createConfinementError(
+          `A confined watch path could not be inspected: ${existingPath}`,
+        );
+      }
+      const parentPath = path.dirname(existingPath);
+      if (parentPath === existingPath) {
+        throw createConfinementError(
+          `A confined watch path has no existing ancestor: ${candidatePath}`,
+        );
+      }
+      existingPath = parentPath;
+    }
+    assertPreviewResolutionPath(confinement, existingPath);
   }
 }
 

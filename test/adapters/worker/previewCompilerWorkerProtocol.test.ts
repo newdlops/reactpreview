@@ -22,6 +22,9 @@ import {
   serializePreviewCompilerWorkerError,
 } from '../../../src/adapters/worker/previewCompilerWorkerProtocol';
 
+/** Mutable transport copies used to exercise required-field rejection without changing source fixtures. */
+type MutablePartial<T> = { -readonly [Key in keyof T]?: T[Key] };
+
 describe('previewCompilerWorkerProtocol', () => {
   /** Preserves structured compiler diagnostics and cancellation semantics across cloning. */
   it('round-trips domain failures', () => {
@@ -277,7 +280,10 @@ describe('previewCompilerWorkerProtocol', () => {
         }),
       ).toBe(false);
     }
-    const { frontierCount: _frontierCount, ...missingDiagnosticsKey } = createBundleDiagnostics();
+    const missingDiagnosticsKey: MutablePartial<ReturnType<typeof createBundleDiagnostics>> = {
+      ...createBundleDiagnostics(),
+    };
+    delete missingDiagnosticsKey.frontierCount;
     expect(
       isPreviewCompleteRouteInventoryTelemetryEvent({
         ...bundleComplete,
@@ -404,8 +410,10 @@ describe('previewCompilerWorkerProtocol', () => {
       true,
     );
     expect(isPreviewCompleteRouteInventoryTelemetryEvent(replayComplete, replayStart)).toBe(true);
-    const { enumerationPrefixEntryCount: _missing, ...missingEnumerationCounter } =
-      enumerationStart;
+    const missingEnumerationCounter: MutablePartial<typeof enumerationStart> = {
+      ...enumerationStart,
+    };
+    delete missingEnumerationCounter.enumerationPrefixEntryCount;
     expect(isPreviewCompleteRouteInventoryTelemetryEvent(missingEnumerationCounter)).toBe(false);
     expect(
       isPreviewCompleteRouteInventoryTelemetryEvent({

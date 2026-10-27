@@ -58,7 +58,11 @@ try {
         headlessStatus: result.status,
         nestedMountCount: composition?.pageExecutionNestedMountCount,
         preparationMode,
-        rootHtmlPreview: result.rootHtml.replace(/<[^>]+>/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 320),
+        rootHtmlPreview: result.rootHtml
+          .replace(/<[^>]+>/gu, ' ')
+          .replace(/\s+/gu, ' ')
+          .trim()
+          .slice(0, 320),
         stabilizedOutcome: result.stabilizedOutcome,
         targetContextualFallbackRequested: composition?.targetContextualFallbackRequested,
         targetError: composition?.targetError,

@@ -21,6 +21,10 @@ import {
   type PreviewSourceReplacement,
 } from './previewSourceReplacement';
 import { selectPreviewRuntimeScriptKind } from './previewRuntimeHookSyntax';
+import {
+  createPreviewRuntimeSourceSyntax,
+  type PreviewRuntimeSourceSyntax,
+} from './previewRuntimeSourceSyntax';
 
 /** Host attribute available to Inspector and runtime regression probes. */
 export const PREVIEW_ASYNC_COMPONENT_ATTRIBUTE = 'data-react-preview-async-component';
@@ -55,7 +59,11 @@ interface PreviewAsyncComponentCandidate {
  * @param sourceText Source after ordinary condition, trigger, effect, and request instrumentation.
  * @returns Original source when evidence is insufficient, otherwise an adapted browser copy.
  */
-export function isolatePreviewAsyncReactComponents(sourcePath: string, sourceText: string): string {
+export function isolatePreviewAsyncReactComponents(
+  sourcePath: string,
+  sourceText: string,
+  syntax?: PreviewRuntimeSourceSyntax,
+): string {
   const nextAppServerSurface = isNextAppServerSurfaceSource(sourcePath);
   if (
     !isJavaScriptLikeSource(sourcePath) ||
@@ -64,11 +72,9 @@ export function isolatePreviewAsyncReactComponents(sourcePath: string, sourceTex
   ) {
     return sourceText;
   }
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = (syntax ?? createPreviewRuntimeSourceSyntax()).readSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     selectPreviewRuntimeScriptKind(sourcePath),
   );
   if (hasParseDiagnostics(sourceFile) || hasUseClientDirective(sourceFile)) return sourceText;

@@ -290,6 +290,12 @@ function fingerprintPreviewInspectorRequirementValue(value, state, depth = 0) {
   }
   if (state.seen.has(value)) return '[circular]';
   state.seen.add(value);
+  const element = typeof readPreviewInspectorNeuralSnapshotElement === 'function'
+    ? readPreviewInspectorNeuralSnapshotElement(value)
+    : undefined;
+  if (element !== undefined) {
+    return fingerprintPreviewInspectorRequirementValue(element, state, depth + 1);
+  }
   let descriptors;
   try { descriptors = Object.getOwnPropertyDescriptors(value); } catch { return '[unreadable]'; }
   if (Array.isArray(value)) {

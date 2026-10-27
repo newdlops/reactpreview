@@ -6,9 +6,9 @@ import type {
   PreviewResolutionConfinement,
   PreviewSourceLanguage,
 } from '../../domain/preview';
-import { PreviewCompleteRouteInventoryWorkerClient } from '../worker/previewCompleteRouteInventoryWorkerClient';
 import { PreviewCompilerWorkerClient } from '../worker/previewCompilerWorkerClient';
 import { assertPreviewCompilerWorkerIsolation } from '../worker/previewCompilerWorkerIsolation';
+import { PreviewCompleteRouteInventoryWorkerClient } from '../worker/previewCompleteRouteInventoryWorkerClient';
 import {
   formatPreviewHeadlessRouteCampaignSummary,
   runPreviewHeadlessRouteCampaign,
@@ -53,9 +53,7 @@ export async function runPreviewHeadlessRouteCampaignCli(
     useStorybookPreview: true,
     workspaceRoot: workspace,
   });
-  const inventoryCompiler = new PreviewCompleteRouteInventoryWorkerClient(
-    path.resolve(workerPath),
-  );
+  const inventoryCompiler = new PreviewCompleteRouteInventoryWorkerClient(path.resolve(workerPath));
   const routeCompiler = new PreviewCompilerWorkerClient(path.resolve(workerPath), {
     cancellationGraceMs: 3_000,
     idleWorkerTimeoutMs: 60_000,

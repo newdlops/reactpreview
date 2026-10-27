@@ -10,6 +10,26 @@ import { collectPreviewStaticRouteProjectionInventory } from '../../../../src/ad
 import { createPreviewStaticModuleResolver } from '../../../../src/adapters/esbuild/previewStaticModuleResolver';
 
 describe('static Page Inspector route projections', () => {
+  it.each([
+    '{ ListPage: InitialPage, [key]: ReplacementPage }',
+    '{ ListPage: InitialPage, ...makePages() }',
+    '{ get CreatePage() { return ReplacementPage; }, ListPage: InitialPage }',
+  ])('keeps opaque page-map construction authentic: %s', (pages) => {
+    const inventory = collectPreviewStaticRouteProjectionInventory(
+      '/workspace/src/application.tsx',
+      `import InitialPage from './InitialPage';
+       import ReplacementPage from './ReplacementPage';
+       import IndependentPage from './IndependentPage';
+       const key = 'ListPage';
+       function makePages() { return { CreatePage: ReplacementPage }; }
+       export const app = createApplication('/base', ${pages}, [],
+         ({ pageRoutes }) => <Routes>{pageRoutes}</Routes>);
+       export const independent = createApplication('/other', { IndependentPage }, [],
+         ({ pageRoutes }) => <Routes>{pageRoutes}</Routes>);`,
+    );
+    expect([...inventory.projectionsBySpecifier.keys()]).toEqual(['./IndependentPage']);
+  });
+
   it('omits eager leaf siblings while retaining the selected route and authored shell', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-static-route-'));
     const sourceRoot = path.join(workspaceRoot, 'src');
@@ -121,7 +141,7 @@ describe('static Page Inspector route projections', () => {
     ]);
   });
 
-  it('recognizes page maps and neutral submodules while keeping shell callbacks authentic', () => {
+  it('keeps unknown imported page groups authentic while projecting independent submodules', () => {
     const sourcePath = '/workspace/src/application.tsx';
     const inventory = collectPreviewStaticRouteProjectionInventory(
       sourcePath,
@@ -143,12 +163,10 @@ describe('static Page Inspector route projections', () => {
       ].join('\n'),
     );
 
-    expect([...inventory.projectionsBySpecifier.keys()]).toEqual([
-      './PageOne',
-      './PageTwo',
-      './GroupedPages',
-      './SubApplication',
-    ]);
+    expect([...inventory.projectionsBySpecifier.keys()]).toEqual(['./SubApplication']);
+    expect(inventory.projectionsBySpecifier.has('./PageOne')).toBe(false);
+    expect(inventory.projectionsBySpecifier.has('./PageTwo')).toBe(false);
+    expect(inventory.projectionsBySpecifier.has('./GroupedPages')).toBe(false);
     expect(inventory.projectionsBySpecifier.get('./SubApplication')).toMatchObject({
       neutralRouteBasePath: '/base/__react-preview-omitted__',
     });
@@ -179,7 +197,7 @@ describe('static Page Inspector route projections', () => {
     expect(inventory.projectionsBySpecifier.size).toBe(0);
   });
 
-  it('follows route-only local page groups without retaining every grouped page graph', () => {
+  it('keeps the complete page map authentic after a local group escapes', () => {
     const sourcePath = '/workspace/src/application.tsx';
     const inventory = collectPreviewStaticRouteProjectionInventory(
       sourcePath,
@@ -204,12 +222,27 @@ describe('static Page Inspector route projections', () => {
       ].join('\n'),
     );
 
+    expect([...inventory.projectionsBySpecifier.keys()]).toEqual([]);
+    expect(inventory.projectionsBySpecifier.has('./EscapedPage')).toBe(false);
+    expect(inventory.projectionsBySpecifier.has('./Layout')).toBe(false);
+  });
+
+  it('still projects independent pages and stable literal groups without an opaque construction', () => {
+    const inventory = collectPreviewStaticRouteProjectionInventory(
+      '/workspace/src/application.tsx',
+      `import DirectPage from './DirectPage';
+       import GroupedPage from './GroupedPage';
+       import WrappedPage from './WrappedPage';
+       import Layout from './Layout';
+       const GroupedPages = { GroupedPage, wrapped: () => <WrappedPage /> };
+       export const app = createApplication('/base', { DirectPage, ...GroupedPages }, [],
+         ({ pageRoutes }) => <Layout>{pageRoutes}</Layout>);`,
+    );
     expect([...inventory.projectionsBySpecifier.keys()]).toEqual([
       './DirectPage',
       './GroupedPage',
       './WrappedPage',
     ]);
-    expect(inventory.projectionsBySpecifier.has('./EscapedPage')).toBe(false);
     expect(inventory.projectionsBySpecifier.has('./Layout')).toBe(false);
   });
 

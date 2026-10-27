@@ -3,25 +3,29 @@
  * App, Head, image, and font modules require Next's bootstrap or build transforms even when
  * installed, while the `server-only` marker deliberately throws in a browser; `next/headers` and
  * `next/cache` are server-only APIs, so they always use inert facades. Link, navigation, dynamic,
- * and server defer to normal resolution (an installed Next or the router bridge) first. Every
+ * and server defer to normal resolution (an installed Next or the router bridge) first; an
+ * installed `next/server` keeps its exports except the request-scoped `after()` and `connection()`,
+ * which throw outside a Next request and so use the inert facade forms. Every
  * fallback still requires an inert, workspace-owned manifest that declares Next. It never imports
  * configuration, starts a server, or executes package scripts.
  */
+import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import ts from 'typescript';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import { createPreviewNextAppNavigationRuntimeSource } from './previewNextAppNavigationRuntimeSource';
 import {
   createNextCacheFallbackSource,
   createNextDynamicFallbackSource,
   createNextHeadersFallbackSource,
   createNextServerFallbackSource,
+  createNextServerInstalledScopeSource,
 } from './previewNextServerFallbackSources';
-import { createPreviewNextAppNavigationRuntimeSource } from './previewNextAppNavigationRuntimeSource';
 import { isFileBackedPreviewNamespace, PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
 
 const NEXT_RENDER_FALLBACK_NAMESPACE = 'react-preview-next-render-fallback';
+const NEXT_INSTALLED_SERVER_KIND = 'react-preview-next-installed-server';
 const NEXT_RENDER_MODULE_PATTERN =
   /^(?:next\/(?:(?:app|cache|dynamic|head|headers|link|navigation|server)(?:\.js)?|font\/google|image)|server-only)$/;
 /** Public modules whose installed implementation (or the router bridge) is preferred when resolvable. */
@@ -53,6 +57,14 @@ interface PreviewNextFrameworkFallbackData {
   readonly manifestPath: string;
   /** One of the small render-only public modules supported by this adapter. */
   readonly moduleSpecifier: string;
+}
+
+/** An installed `next/server` served through the request-scope wrapper. */
+interface PreviewNextInstalledServerData {
+  /** Absolute path of the resolved installed module. */
+  readonly installedPath: string;
+  /** Discriminant that prevents unrelated plugin metadata from being accepted. */
+  readonly kind: typeof NEXT_INSTALLED_SERVER_KIND;
 }
 
 /** Minimal package metadata accepted without evaluating JavaScript configuration. */
@@ -113,7 +125,14 @@ export function createPreviewNextFrameworkFallbackPlugin(
           resolveDir: arguments_.resolveDir,
           with: arguments_.with,
         });
-        if (resolved.errors.length === 0) return resolved;
+        if (resolved.errors.length === 0) {
+          return isNextServerSpecifier(arguments_.path) &&
+            !resolved.external &&
+            resolved.namespace === 'file' &&
+            path.isAbsolute(resolved.path)
+            ? createInstalledNextServerResolution(resolved.path)
+            : resolved;
+        }
 
         const manifestPath = await manifestPromise;
         if (manifestPath === undefined) {
@@ -168,6 +187,14 @@ export function createPreviewNextFrameworkFallbackPlugin(
 
       /** Emits a module-specific browser facade and watches only its inert declaration evidence. */
       function loadNextRenderModule(arguments_: OnLoadArgs): OnLoadResult | undefined {
+        const installedPath = readInstalledNextServerPath(arguments_.pluginData);
+        if (installedPath !== undefined) {
+          return {
+            contents: createNextServerInstalledScopeSource(installedPath),
+            loader: 'js',
+            resolveDir: path.dirname(installedPath),
+          };
+        }
         const data = readFallbackData(arguments_.pluginData);
         if (data === undefined) return undefined;
         const contents = createNextRenderModuleSource(data.moduleSpecifier, data.fontExportNames);
@@ -245,6 +272,34 @@ async function manifestDeclaresNext(manifestPath: string, workspaceRoot: string)
   } catch {
     return false;
   }
+}
+
+/** Reports the public `next/server` spellings. */
+function isNextServerSpecifier(specifier: string): boolean {
+  return specifier.replace(/\.js$/u, '') === 'next/server';
+}
+
+/** Routes an installed `next/server` through the wrapper with inert request-scoped functions. */
+function createInstalledNextServerResolution(installedPath: string): OnResolveResult {
+  return {
+    namespace: NEXT_RENDER_FALLBACK_NAMESPACE,
+    path: 'next/server?installed',
+    pluginData: {
+      installedPath,
+      kind: NEXT_INSTALLED_SERVER_KIND,
+    } satisfies PreviewNextInstalledServerData,
+  };
+}
+
+/** Narrows wrapper metadata to the installed module path. */
+function readInstalledNextServerPath(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as Partial<PreviewNextInstalledServerData>;
+  return candidate.kind === NEXT_INSTALLED_SERVER_KIND &&
+    typeof candidate.installedPath === 'string' &&
+    path.isAbsolute(candidate.installedPath)
+    ? candidate.installedPath
+    : undefined;
 }
 
 /** Narrows virtual metadata before a filesystem path can become a watch dependency. */

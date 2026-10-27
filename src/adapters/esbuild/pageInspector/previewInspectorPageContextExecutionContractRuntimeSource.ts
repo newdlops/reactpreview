@@ -147,7 +147,9 @@ function createPreviewInspectorNeuralTemporalStateSnapshot(state) {
   const conditionEntries = collectPreviewInspectorNeuralTemporalConditionEntries(state);
   const targetRoleTransient = previewInspectorNeuralTransientTargetPattern.test(targetExportName);
   const statusTransient = previewInspectorNeuralTransientStatePattern.test(String(state?.status ?? ''));
-  const transient = targetRoleTransient || statusTransient ||
+  const selectedSuspenseCheckpoint = typeof hasPreviewInspectorSelectedSuspenseCheckpoint === 'function' &&
+    hasPreviewInspectorSelectedSuspenseCheckpoint(state);
+  const transient = targetRoleTransient || statusTransient || selectedSuspenseCheckpoint ||
     runtimeStateEntries.some((entry) => entry.transient === true);
   const kind = transient ? 'transient-checkpoint' : 'terminal-stable';
   const backendScenarioEntries = collectPreviewInspectorNeuralTemporalBackendEntries(
@@ -182,7 +184,7 @@ function createPreviewInspectorNeuralTemporalStateSnapshot(state) {
     released,
     runtimeStateEntries,
     signalCount: Number(targetRoleTransient) + Number(statusTransient) +
-      runtimeStateEntries.length + conditionEntries.length + backendScenarioEntries.length,
+      Number(selectedSuspenseCheckpoint) + runtimeStateEntries.length + conditionEntries.length + backendScenarioEntries.length,
     targetExportName,
   });
 }
@@ -356,6 +358,9 @@ function releasePreviewInspectorNeuralTemporalStateContract() {
     released: true,
     releasedAt: Date.now(),
   });
+  if (typeof releasePreviewInspectorSelectedSuspenseCheckpoints === 'function') {
+    releasePreviewInspectorSelectedSuspenseCheckpoints(active.pageCandidateId);
+  }
   previewInspectorSession.neuralTemporalStateChangeRevision =
     (Number(previewInspectorSession.neuralTemporalStateChangeRevision) || 0) + 1;
   previewInspectorSession.dataRevision = (Number(previewInspectorSession.dataRevision) || 0) + 1;
@@ -460,15 +465,45 @@ function scorePreviewInspectorNeuralPageContextRecoveryRecipe(snapshot) {
     Math.min(9, Number(context?.authoredOwnerDepth) || 0);
 }
 
+/** Keeps current-frontier, output-verified full pages out of partial-path repair replays. */
+function hasPreviewInspectorVerifiedCompletePageContract(record, candidateId) {
+  return record?.evaluatedCandidateIds?.has(candidateId) === true &&
+    record?.successfulCandidateIds?.has(candidateId) === true &&
+    record?.executionContractByCandidateId?.get(candidateId)
+      ?.snapshot?.pageExecutionContext?.contextComplete === true;
+}
+
+/**
+ * Covers redundant automatic mount attempts only after this exact caller path and authored route
+ * produced a verified complete page. Untried variants stay unlabelled and manually selectable;
+ * provisional, partial, regressed, and pinned loading contracts cannot cover them.
+ */
+function readPreviewInspectorVerifiedPageContextPathKeys(record, inventory) {
+  const keys = new Set();
+  for (const group of inventory.groups) {
+    if (group.candidates.some((candidate) =>
+      hasPreviewInspectorVerifiedCompletePageContract(record, candidate.id) &&
+      record.executionContractByCandidateId.get(candidate.id)
+        ?.snapshot?.temporalState?.kind !== 'transient-checkpoint')) {
+      keys.add(group.key);
+    }
+  }
+  return keys;
+}
+
 /** Returns the next previously blocked full page that can consume the retained component recipe. */
 function readPreviewInspectorNeuralPageContextRecoveryCandidate(descriptor, record, candidates) {
   const recipe = record?.pageContextRecoveryRecipe;
   if (recipe === undefined || typeof isPreviewInspectorCompletePageCandidateContext !== 'function') {
     return undefined;
   }
+  const inventory = createPreviewInspectorPageContextPathInventory(candidates);
+  const verifiedPaths = readPreviewInspectorVerifiedPageContextPathKeys(record, inventory);
   return candidates.find((candidate) =>
     candidate?.id !== recipe.sourceCandidateId &&
     isPreviewInspectorCompletePageCandidateContext(candidate) &&
+    !hasPreviewInspectorVerifiedCompletePageContract(record, candidate?.id) &&
+    !verifiedPaths.has(inventory.groupByCandidateId.get(candidate?.id)?.key) &&
     !record.failedCandidateIds.has(candidate?.id));
 }
 
@@ -503,7 +538,9 @@ function retainPreviewInspectorNeuralPageContextRecoveryRecipe(
     for (const fullPageCandidate of readPreviewInspectorPageCandidates(descriptor)) {
       if (
         fullPageCandidate?.id === candidate.id ||
-        !isPreviewInspectorCompletePageCandidateContext(fullPageCandidate)
+        !isPreviewInspectorCompletePageCandidateContext(fullPageCandidate) ||
+        record.authoredStateCandidateIds?.has(fullPageCandidate.id) === true ||
+        hasPreviewInspectorVerifiedCompletePageContract(record, fullPageCandidate.id)
       ) continue;
       record.evaluatedCandidateIds.delete(fullPageCandidate.id);
       record.failedCandidateIds.delete(fullPageCandidate.id);

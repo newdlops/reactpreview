@@ -55,7 +55,7 @@ describe('Preview runtime health summary', () => {
               active: true,
               kind: 'target-reachability',
               name: 'Error fallback shown instead · TargetPanel',
-              ownerPath: 'Application > GlobalErrorBoundary > FiStaManagementApp',
+              ownerPath: 'Application > GlobalErrorBoundary > ApplicationWrapper',
             },
           ],
           total: 1,
@@ -77,7 +77,7 @@ describe('Preview runtime health summary', () => {
         },
         targetState: {
           errorMessage: 'Error: Unreachable',
-          errorOwner: 'FiStaManagementApp',
+          errorOwner: 'ApplicationWrapper',
           exportName: 'TargetPanel',
           outputKind: 'fallback-output',
           reachabilityHasOutput: true,
@@ -110,7 +110,7 @@ describe('Preview runtime health summary', () => {
     expect(summary).toContain('fallback-output');
     expect(summary).toContain('current-file-mounted=0');
     expect(summary).toContain('reachability-host-claim=true');
-    expect(summary).toContain('Output blocker: FiStaManagementApp · Error: Unreachable');
+    expect(summary).toContain('Output blocker: ApplicationWrapper · Error: Unreachable');
     expect(summary).toContain(
       'Error fallback shown instead · TargetPanel · at Application > GlobalErrorBoundary',
     );

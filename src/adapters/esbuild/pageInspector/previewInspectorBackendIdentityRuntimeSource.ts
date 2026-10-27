@@ -3,8 +3,8 @@
  *
  * Static payload generation cannot know schema resolver semantics, but a scalar `companyId`
  * variable and a directly returned `company... { id }` entity prove one equality commonly used by
- * route guards. This adapter repairs only that exact relationship and leaves ambiguous, nested,
- * collection, and explicitly user-authored payloads unchanged.
+ * route guards. A generated root list may contain the same entity. This adapter repairs only that
+ * exact relationship and leaves ambiguous, nested, and explicitly user-authored payloads unchanged.
  */
 
 /** Creates browser source that aligns direct generated entities with unique GraphQL ID variables. */
@@ -54,10 +54,24 @@ function alignPreviewInspectorBackendGraphqlIdentities(payload, requestPayload, 
   const aligned = { ...payload };
   const paths = [];
   for (const [rootFieldName, entity] of Object.entries(payload)) {
-    if (entity === null || typeof entity !== 'object' || Array.isArray(entity)) continue;
-    if (!Object.hasOwn(entity, 'id')) continue;
+    if (entity === null || typeof entity !== 'object') continue;
     const identity = selectPreviewInspectorBackendIdentity(rootFieldName, candidates);
-    if (identity === undefined || entity.id === identity.value) continue;
+    if (identity === undefined) continue;
+    if (Array.isArray(entity)) {
+      if (payloadMode !== 'auto' || entity.length === 0 || entity.length > 16) continue;
+      const normalizedRoot = rootFieldName.replace(/[^A-Za-z0-9]/gu, '').toLowerCase();
+      if (identity.baseName.length === 0 ||
+        (!normalizedRoot.endsWith(identity.baseName) &&
+          !normalizedRoot.endsWith(identity.baseName + 's'))) continue;
+      if (entity.some((item) => item?.id === identity.value)) continue;
+      const first = entity[0];
+      if (first === null || typeof first !== 'object' || Array.isArray(first) ||
+        !Object.hasOwn(first, 'id')) continue;
+      aligned[rootFieldName] = [{ ...first, id: identity.value }, ...entity.slice(1)];
+      paths.push(rootFieldName + '[0].id <- ' + identity.name);
+      continue;
+    }
+    if (!Object.hasOwn(entity, 'id') || entity.id === identity.value) continue;
     aligned[rootFieldName] = { ...entity, id: identity.value };
     paths.push(rootFieldName + '.id <- ' + identity.name);
   }

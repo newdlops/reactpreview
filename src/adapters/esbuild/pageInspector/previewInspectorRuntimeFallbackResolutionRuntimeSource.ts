@@ -146,6 +146,8 @@ function readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback) {
       nonNegativeNumberPaths: metadata.nonNegativeNumberPaths,
       renderGuardPaths: metadata.renderGuardPaths,
       requiredPaths: metadata.requiredPaths,
+      typedLiterals: metadata.typedLiterals,
+      repairLiteralArrays: true,
     });
   }
   let completions = previewInspectorSession.runtimeFallbackCompletions.get(value);
@@ -155,6 +157,8 @@ function readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback) {
     nonNegativeNumberPaths: metadata.nonNegativeNumberPaths,
     renderGuardPaths: metadata.renderGuardPaths,
     requiredPaths: metadata.requiredPaths,
+    typedLiterals: metadata.typedLiterals,
+    repairLiteralArrays: true,
   });
   if (completion.changed) {
     if (completions === undefined) {

@@ -24,6 +24,8 @@ interface PreviewRuntimeHookUsageNode {
   collectionExpression?: string;
   /** Distinct object-shaped item contracts proven by every callback over this collection. */
   collectionItemExpressions?: string[];
+  /** True only for a synthetic string item proven to supply a JSX display identity. */
+  collectionItemStringIdentity?: true;
   /** True only for a terminal ordinary call that an Array can satisfy intrinsically. */
   terminalOrdinaryCall?: true;
 }
@@ -118,6 +120,10 @@ function deduplicatePreviewRuntimeHookUsagePaths(
         ? { callResultExpression: path_.callResultExpression }
         : {}),
       ...(collectionItemExpression === undefined ? {} : { collectionItemExpression }),
+      ...(existing.collectionItemStringIdentity === true ||
+      path_.collectionItemStringIdentity === true
+        ? { collectionItemStringIdentity: true }
+        : {}),
       ...(itemRequiredPaths.length === 0
         ? {}
         : { collectionItemRequiredPaths: Object.freeze(itemRequiredPaths) }),
@@ -261,6 +267,7 @@ function retainUsageNodeMetadata(
   path_: PreviewRuntimeHookAliasUsagePath,
 ): void {
   if (path_.collectionProperty !== undefined) {
+    if (path_.collectionItemStringIdentity === true) node.collectionItemStringIdentity = true;
     if (node.expression !== undefined) node.collectionExpression = node.expression;
     if (path_.collectionItemExpression !== undefined) {
       const expressions = node.collectionItemExpressions ?? [];
@@ -291,7 +298,10 @@ function createUsagePathExpression(
     (path_.collectionProperty !== undefined
       ? path_.collectionItemExpression === undefined
         ? (existingExpression ?? 'Object.freeze([])')
-        : createPreviewGeneratedListExpression(path_.collectionItemExpression)
+        : createPreviewGeneratedListExpression(
+            path_.collectionItemExpression,
+            path_.collectionItemStringIdentity === true,
+          )
       : path_.stringProperty !== undefined
         ? JSON.stringify(createPreviewRuntimeSemanticString(semanticName))
         : path_.called
@@ -339,12 +349,15 @@ function serializeCollectionUsageNode(node: PreviewRuntimeHookUsageNode): string
   const expressions = node.collectionItemExpressions ?? [];
   if (expressions.length === 0) return node.collectionExpression;
   if (expressions.length === 1)
-    return createPreviewGeneratedListExpression(expressions[0] ?? 'undefined');
+    return createPreviewGeneratedListExpression(
+      expressions[0] ?? 'undefined',
+      node.collectionItemStringIdentity === true,
+    );
   if (!expressions.every(isMergeableCollectionItemObjectExpression)) {
     const last = expressions.at(-1);
     return last === undefined
       ? node.collectionExpression
-      : createPreviewGeneratedListExpression(last);
+      : createPreviewGeneratedListExpression(last, node.collectionItemStringIdentity === true);
   }
   return createPreviewGeneratedListExpression(
     `Object.freeze(Object.assign({}, ${expressions.join(', ')}))`,
@@ -352,8 +365,14 @@ function serializeCollectionUsageNode(node: PreviewRuntimeHookUsageNode): string
 }
 
 /** Uses the shared runtime count while retaining a reorderable three-item cold fallback. */
-export function createPreviewGeneratedListExpression(itemExpression: string): string {
+export function createPreviewGeneratedListExpression(
+  itemExpression: string,
+  distinctStringItems = false,
+): string {
   const runtimeKey = JSON.stringify(PREVIEW_GENERATED_LIST_RUNTIME_KEY);
+  if (distinctStringItems) {
+    return `((__createPreviewItem) => (globalThis[Symbol.for(${runtimeKey})]?.create?.(__createPreviewItem, undefined, true) ?? Array.from({ length: 3 }, (_, index) => { const value = __createPreviewItem(index); return typeof value === 'string' && value.length > 0 && index > 0 ? value + ' ' + String(index + 1) : value; })))(() => (${itemExpression}))`;
+  }
   return `((__createPreviewItem) => (globalThis[Symbol.for(${runtimeKey})]?.create?.(__createPreviewItem) ?? Array.from({ length: 3 }, __createPreviewItem)))(() => (${itemExpression}))`;
 }
 

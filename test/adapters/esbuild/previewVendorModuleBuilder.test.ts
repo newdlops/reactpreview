@@ -1,8 +1,8 @@
 /** Verifies vendor facades preserve the package boundary that owns each preview target. */
+import type { Metafile } from 'esbuild';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { Metafile } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { createPreviewGlobalPackageBridgePlan } from '../../../src/adapters/esbuild/globalPackageBridge';
 import { PreviewVendorModuleBuilder } from '../../../src/adapters/esbuild/previewVendorModuleBuilder';
@@ -118,6 +118,58 @@ describe('PreviewVendorModuleBuilder', () => {
   });
 
   /** Resolves an external package from the workspace module that actually imported it. */
+  /** Leaves a package's guarded import of its uninstalled optional peer to reject like Node. */
+  it('skips uninstalled optional peers that installed packages import dynamically', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-vendor-optional-'));
+    const mailerRoot = path.join(workspaceRoot, 'node_modules', 'preview-mailer');
+    const mailerSource = 'try { await import("preview-optional-renderer"); } catch {}';
+    const applicationSource = `${APPLICATION_SOURCE}\n${mailerSource}`;
+    const guardedImport = {
+      external: true,
+      kind: 'dynamic-import' as const,
+      path: 'preview-optional-renderer',
+    };
+    /** Bundles the application with the guarded import authored by `importer`. */
+    const prepare = (importer: string): Promise<PreviewBundle> => {
+      const metafile = createApplicationMetafile(PACKAGE_NAME, applicationSource, 'app.ts');
+      return new PreviewVendorModuleBuilder().prepare({
+        bundle: createApplicationBundle(applicationSource),
+        globalPackagePlan: EMPTY_GLOBAL_PACKAGE_PLAN,
+        metafile: {
+          ...metafile,
+          inputs: {
+            ...metafile.inputs,
+            [importer]: { bytes: mailerSource.length, imports: [guardedImport] },
+          },
+        },
+        nodePaths: [],
+        projectRoot: workspaceRoot,
+        workspaceRoot,
+      });
+    };
+    try {
+      await writeProjectPackage(workspaceRoot, 'optional-peer-marker');
+      await mkdir(mailerRoot, { recursive: true });
+      await writeFile(
+        path.join(mailerRoot, 'package.json'),
+        `${JSON.stringify({
+          name: 'preview-mailer',
+          peerDependencies: { 'preview-optional-renderer': '*' },
+          peerDependenciesMeta: { 'preview-optional-renderer': { optional: true } },
+        })}\n`,
+        'utf8',
+      );
+
+      const result = await prepare('node_modules/preview-mailer/index.mjs');
+
+      expect(result.moduleImports?.map(({ specifier }) => specifier)).toEqual([PACKAGE_NAME]);
+      expect(decodeJavaScriptChunks(result)).toContain('optional-peer-marker');
+      await expect(prepare('mailer.ts')).rejects.toThrow('preview-optional-renderer');
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
   it('uses the authored importer directory for workspace-package vendor demands', async () => {
     const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-vendor-owner-'));
     const projectRoot = path.join(workspaceRoot, 'apps', 'web');

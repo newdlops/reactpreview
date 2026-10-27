@@ -245,7 +245,7 @@ function restorePreviewInspectorNeuralPageGenerationBaseline(baseline) {
     if (baseline.hasResolverProps) {
       previewInspectorSession.resolverPropsByExport.set(
         baseline.exportName,
-        copyPreviewInspectorNeuralSuccessValue(baseline.resolverProps),
+        copyPreviewInspectorNeuralRuntimeSnapshotValue(baseline.resolverProps),
       );
     } else {
       previewInspectorSession.resolverPropsByExport.delete(baseline.exportName);

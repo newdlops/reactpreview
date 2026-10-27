@@ -18,15 +18,18 @@ interface SuccessCheckpointFixture {
     readonly successfulPaths?: readonly unknown[];
   };
   readonly recoveryRequests: () => number;
+  readonly pendingVerifications: () => number;
   readonly restorationActive: () => boolean;
   readonly settle: () => unknown;
   readonly setConditions: (entries: readonly (readonly [string, boolean])[]) => void;
+  readonly setAttemptPending: (pending: boolean) => void;
   readonly setFatalBlocker: (active: boolean) => void;
   readonly setOutput: (output: boolean, direct?: boolean) => void;
   readonly setRemainingExploration: (remaining: boolean) => void;
   readonly setProps: (props: unknown) => void;
   readonly setRuntimeValue: (value: unknown) => void;
   readonly setViewerValues: (dataMode: string, runtimeStatus: string, smart: boolean) => void;
+  readonly state: () => Record<string, unknown>;
   readonly status: () => unknown;
 }
 
@@ -230,11 +233,17 @@ function createSuccessCheckpointFixture(
         },
         record: () => previewInspectorSession.automaticNeuralAssistanceByKey.get(key),
         recoveryRequests: () => globalThis.__recoveryRequests,
+        pendingVerifications: () => restorationTimers.length,
         restorationActive: () =>
           isPreviewInspectorNeuralSuccessfulPathRestorationActive(),
         settle: () => settlePreviewInspectorNeuralSuccessfulPaths(key),
         setConditions: (entries) => {
           previewInspectorSession.renderConditionAutoOverrides = new Map(entries);
+        },
+        setAttemptPending: (pending) => {
+          previewInspectorSession.blockerTraceActiveAttempt = pending
+            ? { traceId: 'current-render' }
+            : { traceId: 'current-render', settledAt: 100 };
         },
         setFatalBlocker: (active) => {
           fatalBlockers = active ? [{ blockerKind: 'target-error', blocker: {} }] : [];
@@ -261,6 +270,7 @@ function createSuccessCheckpointFixture(
           if (smart) previewInspectorSession.runtimeFallbackSmartIds.add('fallback:feed');
           else previewInspectorSession.runtimeFallbackSmartIds.delete('fallback:feed');
         },
+        state: () => state,
         status: () => learningStatus,
       };
     `,
@@ -273,6 +283,77 @@ function createSuccessCheckpointFixture(
 }
 
 describe('Preview Inspector neural success checkpoint runtime source', () => {
+  /** The live current state already has the same three success observations as a restored one. */
+  it('settles the already verified current recipe without scheduling a redundant restoration', () => {
+    const fixture = createSuccessCheckpointFixture(true, true);
+    fixture.setRemainingExploration(false);
+    expect(fixture.capture()).toBe(true);
+    fixture.flushRestorationVerification();
+    fixture.flushRestorationVerification();
+    expect(fixture.record().successfulPaths).toHaveLength(0);
+    fixture.flushRestorationVerification();
+
+    expect(fixture.record().successfulPaths).toHaveLength(1);
+    expect(fixture.restorationActive()).toBe(false);
+    expect(fixture.pendingVerifications()).toBe(0);
+    expect(fixture.currentProps()).toEqual({ taxType: 'heavy_tax' });
+    expect(fixture.status()).toMatchObject({ phase: 'applied', restoring: false });
+  });
+
+  /** Reapplying a different viewer state retains every original restoration observation. */
+  it('still verifies a real restoration over three delayed observations', () => {
+    const fixture = createSuccessCheckpointFixture(true, true);
+    fixture.setRemainingExploration(false);
+    fixture.capture();
+    for (let pass = 0; pass < 3; pass += 1) fixture.flushRestorationVerification();
+    fixture.setProps({ taxType: 'changed' });
+    fixture.setOutput(false);
+    expect(fixture.settle()).toMatchObject({ restoring: true, settled: false });
+    fixture.setOutput(true, true);
+    fixture.flushRestorationVerification();
+    expect(fixture.restorationActive()).toBe(true);
+    fixture.flushRestorationVerification();
+    expect(fixture.restorationActive()).toBe(true);
+    fixture.flushRestorationVerification();
+    expect(fixture.restorationActive()).toBe(false);
+  });
+
+  /** An unsettled render attempt cannot borrow a finished observation's completion boundary. */
+  it('keeps the restoration barrier while a render attempt remains in flight', () => {
+    const fixture = createSuccessCheckpointFixture(true, true);
+    fixture.setRemainingExploration(false);
+    fixture.setAttemptPending(true);
+    fixture.capture();
+    for (let pass = 0; pass < 3; pass += 1) fixture.flushRestorationVerification();
+    expect(fixture.restorationActive()).toBe(true);
+    expect(fixture.pendingVerifications()).toBe(1);
+    fixture.setAttemptPending(false);
+    fixture.flushRestorationVerification();
+    expect(fixture.restorationActive()).toBe(false);
+    expect(fixture.pendingVerifications()).toBe(0);
+    expect(fixture.status()).toMatchObject({ phase: 'applied' });
+  });
+
+  it('requires three fresh observations after the verified current state changes', () => {
+    const fixture = createSuccessCheckpointFixture(true, true);
+    fixture.setRemainingExploration(false);
+    fixture.setAttemptPending(true);
+    fixture.capture();
+    for (let pass = 0; pass < 3; pass += 1) fixture.flushRestorationVerification();
+    fixture.setProps({ taxType: 'changed' });
+    fixture.flushRestorationVerification();
+    expect(fixture.restorationActive()).toBe(true);
+    fixture.setProps({ taxType: 'heavy_tax' });
+    fixture.setAttemptPending(false);
+    fixture.setOutput(true, true);
+    fixture.flushRestorationVerification();
+    expect(fixture.restorationActive()).toBe(true);
+    fixture.flushRestorationVerification();
+    expect(fixture.restorationActive()).toBe(true);
+    fixture.flushRestorationVerification();
+    expect(fixture.restorationActive()).toBe(false);
+  });
+
   it('retains component-only output as a recovery recipe without learning page success', () => {
     const fixture = createSuccessCheckpointFixture(true, false, false, true);
 
@@ -322,6 +403,36 @@ describe('Preview Inspector neural success checkpoint runtime source', () => {
     });
     expect(fixture.record().provisionalSuccessfulPath).toBeUndefined();
     expect(fixture.collectionSettled()).toBe(false);
+  });
+
+  it('resamples a changed live viewer value without teaching that visible output regressed', () => {
+    const fixture = createSuccessCheckpointFixture();
+    expect(fixture.capture()).toBe(true);
+    fixture.setRuntimeValue({ status: 'ready', settled: true });
+    fixture.flushRestorationVerification();
+    expect(fixture.record().successfulPaths).toHaveLength(0);
+    expect(fixture.state().neuralStableOutputRegressed).not.toBe(true);
+    fixture.flushRestorationVerification();
+    fixture.flushRestorationVerification();
+    expect(fixture.record().successfulPaths).toHaveLength(0);
+    fixture.flushRestorationVerification();
+    expect(fixture.record().successfulPaths).toHaveLength(1);
+    expect(fixture.state()).toMatchObject({
+      neuralStableOutputVerified: true,
+      neuralStableOutputRegressed: false,
+    });
+  });
+
+  it('keeps a continuously changing visible contract unlabelled within a finite sampling budget', () => {
+    const fixture = createSuccessCheckpointFixture();
+    fixture.capture();
+    for (let revision = 0; revision < 70; revision += 1) {
+      fixture.setRuntimeValue({ revision });
+      fixture.flushRestorationVerification();
+    }
+    expect(fixture.record().successfulPaths).toHaveLength(0);
+    expect(fixture.state().neuralStableOutputRegressed).not.toBe(true);
+    expect(fixture.pendingVerifications()).toBe(0);
   });
 
   it('keeps a stable checkpoint provisional to the sweep while finite alternatives remain', () => {

@@ -6,12 +6,14 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
 import type {
   PreviewRenderChainCertainty,
   PreviewRenderChainEdgeKind,
   PreviewRenderInvocation,
 } from './previewRenderGraphTypes';
 import { readPreviewRenderInvocation } from './previewRenderInvocation';
+import { collectPreviewRenderDeferredImportFacts } from './previewRenderDeferredImportFacts';
 
 /** One top-level declaration that can carry a component through route/configuration value flow. */
 export interface PreviewRenderValueFact {
@@ -71,8 +73,10 @@ export interface PreviewRenderLocalEdgeFact {
   readonly wrapperNames: readonly string[];
 }
 
-/** Literal dynamic-import identity attached to a React.lazy declaration. */
+/** Literal deferred-export identity carried by a lazy boundary or factory result. */
 export interface PreviewRenderLazyFact {
+  /** Generic loader arguments prove conditional value flow, without asserting React.lazy. */
+  readonly kind?: 'value-flow';
   /** Export selected from the dynamically imported module. */
   readonly importedName: string;
   /** Literal authored dynamic-import specifier. */
@@ -103,11 +107,10 @@ interface MutableValueFact {
   readonly routeLike: boolean;
 }
 
-/** React import aliases needed to prove that a dynamic import is actually consumed by React.lazy. */
-interface ReactLazyBindings {
-  readonly directNames: ReadonlySet<string>;
-  readonly namespaceNames: ReadonlySet<string>;
-}
+/** JSX nodes whose context-free label contributions can be reused during one module analysis. */
+type JsxWrapperElement = ts.JsxElement | ts.JsxSelfClosingElement;
+
+const NO_WRAPPER_NAMES: readonly string[] = Object.freeze([]);
 
 /**
  * Parses one authored module into bounded declarations, imports, exports, lazy edges, and value flow.
@@ -121,11 +124,9 @@ export function collectPreviewRenderModuleFacts(
   sourceText: string,
 ): PreviewRenderModuleFacts {
   const normalizedPath = path.normalize(sourcePath);
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = readPreviewAnalysisSourceFile(
     normalizedPath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     normalizedPath.toLowerCase().endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   return collectPreviewRenderModuleFactsFromSourceFile(normalizedPath, sourceFile);
@@ -153,11 +154,11 @@ export function collectPreviewRenderModuleFactsFromSourceFile(
   const routeLikeNames = new Set(
     values.filter((value) => value.routeLike).map((value) => value.localName),
   );
-  const lazyBindings = collectReactLazyBindings(sourceFile);
   const exports = collectExports(sourceFile, values, imports);
-  const lazyImports = values.flatMap((value) => collectLazyFacts(value, lazyBindings));
+  const lazyImports = collectPreviewRenderDeferredImportFacts(sourceFile, values);
+  const wrapperNamesByElement = new Map<JsxWrapperElement, readonly string[]>();
   const localEdges = values.flatMap((value) =>
-    collectLocalEdges(value, localNames, routeLikeNames),
+    collectLocalEdges(value, localNames, routeLikeNames, wrapperNamesByElement),
   );
 
   return Object.freeze({
@@ -251,7 +252,10 @@ function collectValues(sourcePath: string, sourceFile: ts.SourceFile): MutableVa
       }
       continue;
     }
-    if (ts.isExportAssignment(statement) && !ts.isIdentifier(statement.expression)) {
+    if (
+      ts.isExportAssignment(statement) &&
+      !ts.isIdentifier(unwrapDefaultExportExpression(statement.expression))
+    ) {
       values.push(
         createMutableValue(
           sourcePath,
@@ -319,9 +323,10 @@ function collectExports(
       continue;
     }
     if (ts.isExportAssignment(statement)) {
+      const expression = unwrapDefaultExportExpression(statement.expression);
       exports.push({
         exportName: 'default',
-        localName: ts.isIdentifier(statement.expression) ? statement.expression.text : '@default',
+        localName: ts.isIdentifier(expression) ? expression.text : '@default',
         occurrenceStart: statement.getStart(),
         wildcard: false,
       });
@@ -362,6 +367,21 @@ function collectExports(
     }
   }
   return deduplicateExports(exports);
+}
+
+/** Removes only parentheses and erased TypeScript wrappers; calls and value-producing operators retain separate identities. */
+function unwrapDefaultExportExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isNonNullExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
 }
 
 /** Flattens runtime identifiers introduced by one top-level variable binding pattern. */
@@ -471,173 +491,12 @@ function deduplicateExports(
   });
 }
 
-/**
- * Reads aliases that prove a call expression is React.lazy, a React namespace lazy member, or
- * Next's `dynamic` (the default export of `next/dynamic`). `dynamic(() => import('./Page'))`
- * renders that module's component exactly like a lazy boundary, so a page whose only child is a
- * dynamic `MainImpl` keeps it in the render chain instead of reading it as an unrelated branch.
- */
-function collectReactLazyBindings(sourceFile: ts.SourceFile): ReactLazyBindings {
-  const directNames = new Set<string>();
-  const namespaceNames = new Set<string>();
-  for (const statement of sourceFile.statements) {
-    if (
-      !ts.isImportDeclaration(statement) ||
-      !ts.isStringLiteralLike(statement.moduleSpecifier) ||
-      statement.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword
-    ) {
-      continue;
-    }
-    if (statement.moduleSpecifier.text === 'next/dynamic') {
-      const dynamicName = statement.importClause?.name;
-      if (dynamicName !== undefined) directNames.add(dynamicName.text);
-      continue;
-    }
-    if (statement.moduleSpecifier.text !== 'react') continue;
-    const clause = statement.importClause;
-    if (clause?.name !== undefined) {
-      namespaceNames.add(clause.name.text);
-    }
-    const bindings = clause?.namedBindings;
-    if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
-      namespaceNames.add(bindings.name.text);
-    } else if (bindings !== undefined) {
-      for (const element of bindings.elements) {
-        if (!element.isTypeOnly && (element.propertyName ?? element.name).text === 'lazy') {
-          directNames.add(element.name.text);
-        }
-      }
-    }
-  }
-  return { directNames, namespaceNames };
-}
-
-/** Finds literal dynamic imports owned by a proven React.lazy call within one declaration. */
-function collectLazyFacts(
-  value: MutableValueFact,
-  bindings: ReactLazyBindings,
-): PreviewRenderLazyFact[] {
-  const facts: PreviewRenderLazyFact[] = [];
-  visit(value.analysisNode);
-  return facts;
-
-  /** Visits only syntax beneath this declaration and records each exact lazy import once. */
-  function visit(node: ts.Node): void {
-    if (ts.isCallExpression(node) && isReactLazyCall(node, bindings)) {
-      const selection = readLazyImportSelection(node.arguments[0]);
-      if (selection !== undefined) {
-        facts.push({ ...selection, ownerId: value.id, occurrenceStart: node.getStart() });
-      }
-      return;
-    }
-    ts.forEachChild(node, visit);
-  }
-}
-
-/** Proves a lazy call through a direct named import or a React namespace/default import. */
-function isReactLazyCall(call: ts.CallExpression, bindings: ReactLazyBindings): boolean {
-  const expression = call.expression;
-  return (
-    (ts.isIdentifier(expression) && bindings.directNames.has(expression.text)) ||
-    (ts.isPropertyAccessExpression(expression) &&
-      expression.name.text === 'lazy' &&
-      ts.isIdentifier(expression.expression) &&
-      bindings.namespaceNames.has(expression.expression.text))
-  );
-}
-
-/** Resolves the default or `.then`-selected export from one React.lazy loader callback. */
-function readLazyImportSelection(
-  loader: ts.Expression | undefined,
-): { readonly importedName: string; readonly moduleSpecifier: string } | undefined {
-  if (loader === undefined || (!ts.isArrowFunction(loader) && !ts.isFunctionExpression(loader))) {
-    return undefined;
-  }
-  const body = ts.isBlock(loader.body)
-    ? loader.body.statements.find(ts.isReturnStatement)?.expression
-    : loader.body;
-  if (body === undefined) {
-    return undefined;
-  }
-  const importCall = findDynamicImportCall(body);
-  const specifier = importCall?.arguments[0];
-  if (importCall === undefined || specifier === undefined || !ts.isStringLiteralLike(specifier)) {
-    return undefined;
-  }
-  return {
-    importedName: readLazySelectedExport(body) ?? 'default',
-    moduleSpecifier: specifier.text,
-  };
-}
-
-/** Finds the literal `import()` call under a bounded lazy loader expression. */
-function findDynamicImportCall(node: ts.Node): ts.CallExpression | undefined {
-  if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-    return node;
-  }
-  let selected: ts.CallExpression | undefined;
-  ts.forEachChild(node, (child) => {
-    selected ??= findDynamicImportCall(child);
-  });
-  return selected;
-}
-
-/** Recognizes common `then(module => module.Named)` and `{ default: module.Named }` adapters. */
-function readLazySelectedExport(body: ts.Expression): string | undefined {
-  if (
-    !ts.isCallExpression(body) ||
-    !ts.isPropertyAccessExpression(body.expression) ||
-    body.expression.name.text !== 'then'
-  ) {
-    return undefined;
-  }
-  const callback = body.arguments[0];
-  if (
-    callback === undefined ||
-    (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback))
-  ) {
-    return undefined;
-  }
-  const parameterName = callback.parameters[0]?.name;
-  if (parameterName === undefined || !ts.isIdentifier(parameterName)) {
-    return undefined;
-  }
-  const result = ts.isBlock(callback.body)
-    ? callback.body.statements.find(ts.isReturnStatement)?.expression
-    : callback.body;
-  return result === undefined ? undefined : readSelectedModuleProperty(result, parameterName.text);
-}
-
-/** Reads a module property directly or from an object literal's `default` adapter property. */
-function readSelectedModuleProperty(
-  expression: ts.Expression,
-  moduleName: string,
-): string | undefined {
-  const unwrapped = ts.isParenthesizedExpression(expression) ? expression.expression : expression;
-  if (
-    ts.isPropertyAccessExpression(unwrapped) &&
-    ts.isIdentifier(unwrapped.expression) &&
-    unwrapped.expression.text === moduleName
-  ) {
-    return unwrapped.name.text;
-  }
-  if (!ts.isObjectLiteralExpression(unwrapped)) {
-    return undefined;
-  }
-  const defaultProperty = unwrapped.properties.find(
-    (property): property is ts.PropertyAssignment =>
-      ts.isPropertyAssignment(property) && readPropertyName(property.name) === 'default',
-  );
-  return defaultProperty === undefined
-    ? undefined
-    : readSelectedModuleProperty(defaultProperty.initializer, moduleName);
-}
-
 /** Collects declaration references and classifies JSX, route, and ordinary value-flow edges. */
 function collectLocalEdges(
   owner: MutableValueFact,
   knownLocalNames: ReadonlySet<string>,
   routeLikeNames: ReadonlySet<string>,
+  wrapperNamesByElement: Map<JsxWrapperElement, readonly string[]>,
 ): PreviewRenderLocalEdgeFact[] {
   const edges: PreviewRenderLocalEdgeFact[] = [];
   const seen = new Set<string>();
@@ -653,12 +512,13 @@ function collectLocalEdges(
       isRuntimeValueReference(node) &&
       !isInsideTaggedTemplateBody(node, owner.analysisNode)
     ) {
-      const wrapperNames = collectWrapperNames(node, owner.analysisNode);
+      const wrapperNames = collectWrapperNames(node, owner.analysisNode, wrapperNamesByElement);
       const routeEdge =
         owner.routeLike || wrapperNames.some(isRouteLabel) || routeLikeNames.has(node.text);
       const kind = classifyLocalEdge(node, routeEdge);
       const invocation = readPreviewRenderInvocation(node, owner.analysisNode);
-      const key = `${node.text}\0${kind}\0${node.getStart().toString()}`;
+      const occurrenceStart = node.getStart();
+      const key = `${node.text}\0${kind}\0${occurrenceStart.toString()}`;
       if (!seen.has(key)) {
         seen.add(key);
         edges.push({
@@ -667,7 +527,7 @@ function collectLocalEdges(
           ...(invocation === undefined ? {} : { invocation }),
           kind,
           ownerId: owner.id,
-          occurrenceStart: node.getStart(),
+          occurrenceStart,
           wrapperNames: Object.freeze(wrapperNames),
         });
       }
@@ -710,7 +570,11 @@ function classifyLocalEdge(
 }
 
 /** Returns component-like JSX ancestors around one reference, nearest wrapper first. */
-function collectWrapperNames(node: ts.Node, boundary: ts.Node): string[] {
+function collectWrapperNames(
+  node: ts.Node,
+  boundary: ts.Node,
+  wrapperNamesByElement: Map<JsxWrapperElement, readonly string[]>,
+): string[] {
   const names: string[] = [];
   const directParent = node.parent;
   let current: ts.Node =
@@ -719,24 +583,37 @@ function collectWrapperNames(node: ts.Node, boundary: ts.Node): string[] {
       ? directParent.parent
       : directParent;
   while (current !== boundary && !ts.isSourceFile(current)) {
-    if (ts.isJsxElement(current)) {
-      for (const routeWrapper of readRouteElementWrapperNames(current.openingElement)) {
-        if (names.at(-1) !== routeWrapper) {
-          names.push(routeWrapper);
-        }
-      }
-      const name = readJsxTagName(current.openingElement.tagName);
-      if (name !== undefined && names.at(-1) !== name) {
-        names.push(name);
-      }
-    } else if (ts.isJsxSelfClosingElement(current)) {
-      const name = readJsxTagName(current.tagName);
-      if (name !== undefined && names.at(-1) !== name) {
-        names.push(name);
+    if (ts.isJsxElement(current) || ts.isJsxSelfClosingElement(current)) {
+      for (const name of readWrapperElementNames(current, wrapperNamesByElement)) {
+        if (names.at(-1) !== name) names.push(name);
       }
     }
     current = current.parent;
   }
+  return names;
+}
+
+/**
+ * Reads one element's own labels without caching its owner-dependent ancestry or route decision.
+ *
+ * @param element Current immutable parser element.
+ * @param namesByElement Temporary module-local catalog, discarded when collection returns.
+ * @returns Route-element labels followed by the element's own component label in original order.
+ */
+function readWrapperElementNames(
+  element: JsxWrapperElement,
+  namesByElement: Map<JsxWrapperElement, readonly string[]>,
+): readonly string[] {
+  const tagName = ts.isJsxElement(element) ? element.openingElement.tagName : element.tagName;
+  if (!mayHaveComponentTagName(tagName)) return NO_WRAPPER_NAMES;
+  const previous = namesByElement.get(element);
+  if (previous !== undefined) return previous;
+  const names = ts.isJsxElement(element)
+    ? [...readRouteElementWrapperNames(element.openingElement)]
+    : [];
+  const name = readJsxTagName(tagName);
+  if (name !== undefined) names.push(name);
+  namesByElement.set(element, names);
   return names;
 }
 
@@ -821,6 +698,7 @@ function isJsxTagIdentifier(node: ts.Identifier): boolean {
 
 /** Detects React.createElement-style value reads through their enclosing call expression. */
 function isInsideCreateElementCall(node: ts.Node): boolean {
+  let child: ts.Node = node;
   let current: ts.Node = node.parent;
   while (!ts.isSourceFile(current) && !ts.isStatement(current)) {
     if (
@@ -829,26 +707,14 @@ function isInsideCreateElementCall(node: ts.Node): boolean {
         (ts.isPropertyAccessExpression(current.expression) &&
           current.expression.name.text === 'createElement'))
     ) {
-      return (
-        current.arguments.includes(node as ts.Expression) ||
-        current.arguments.some((argument) => containsNode(argument, node))
-      );
+      // The existing parent walk already proves the direct child of this call. Only an argument
+      // child qualifies; the callee and type arguments remain ordinary value references.
+      return current.arguments.some((argument) => argument === child);
     }
+    child = current;
     current = current.parent;
   }
   return false;
-}
-
-/** Bounded AST containment helper used only inside one already selected call expression. */
-function containsNode(root: ts.Node, target: ts.Node): boolean {
-  if (root === target) {
-    return true;
-  }
-  let contained = false;
-  ts.forEachChild(root, (child) => {
-    contained ||= containsNode(child, target);
-  });
-  return contained;
 }
 
 /** Classifies route/page-map/router values by both stable names and React Router-shaped syntax. */
@@ -885,9 +751,22 @@ function isRouteLikeValue(localName: string, node: ts.Node): boolean {
 
 /** Reads a simple JSX component label while excluding intrinsic lowercase host elements. */
 function readJsxTagName(name: ts.JsxTagNameExpression): string | undefined {
+  if (!mayHaveComponentTagName(name)) return undefined;
   const text = name.getText();
   const firstSegment = text.split('.', 1)[0];
   return firstSegment !== undefined && /^[$A-Z_]/u.test(firstSegment) ? text : undefined;
+}
+
+/**
+ * Rejects identifier spellings the existing authored-text rule cannot admit before reading text.
+ *
+ * @param name Parser tag; qualified/namespaced spellings still require the existing text check.
+ * @returns Whether the tag may start with ASCII uppercase, dollar or underscore; no new names pass.
+ */
+function mayHaveComponentTagName(name: ts.JsxTagNameExpression): boolean {
+  if (!ts.isIdentifier(name)) return true;
+  const first = name.text.charCodeAt(0);
+  return first === 36 || first === 95 || (first >= 65 && first <= 90);
 }
 
 /** Treats React Router wrapper names as conditional route branch evidence. */

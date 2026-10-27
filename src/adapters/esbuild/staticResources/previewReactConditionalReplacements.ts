@@ -29,24 +29,33 @@ export function applyPreviewReactConditionalReplacements(
   sourceText: string,
   replacements: readonly PreviewReactConditionalReplacement[],
 ): string {
-  const unique = [...new Map(
-    replacements.map((replacement) => [
-      `${replacement.start}:${replacement.end}:${replacement.prefix}:${replacement.suffix}`,
-      replacement,
-    ]),
-  ).values()];
+  const unique = [
+    ...new Map(
+      replacements.map((replacement) => [
+        `${replacement.start.toString()}:${replacement.end.toString()}:${replacement.prefix}:${replacement.suffix}`,
+        replacement,
+      ]),
+    ).values(),
+  ];
   const ordered = unique.sort(
-    (left, right) => left.start - right.start || right.end - left.end || left.prefix.localeCompare(right.prefix),
+    (left, right) =>
+      left.start - right.start || right.end - left.end || left.prefix.localeCompare(right.prefix),
   );
   for (let index = 1; index < ordered.length; index += 1) {
-    const previous = ordered[index - 1]!;
-    const current = ordered[index]!;
+    const previous = ordered[index - 1];
+    const current = ordered[index];
+    if (previous === undefined || current === undefined)
+      throw new Error('Missing ordered conditional replacement.');
     if (current.start < previous.end && current.end > previous.end) return sourceText;
   }
   const opens = new Map<number, PreviewReactConditionalReplacement[]>();
   const closes = new Map<number, PreviewReactConditionalReplacement[]>();
   for (const replacement of ordered) {
-    if (replacement.start < 0 || replacement.end < replacement.start || replacement.end > sourceText.length) {
+    if (
+      replacement.start < 0 ||
+      replacement.end < replacement.start ||
+      replacement.end > sourceText.length
+    ) {
       return sourceText;
     }
     const opening = opens.get(replacement.start) ?? [];
@@ -56,7 +65,9 @@ export function applyPreviewReactConditionalReplacements(
     closing.push(replacement);
     closes.set(replacement.end, closing);
   }
-  const boundaries = [...new Set([...opens.keys(), ...closes.keys()])].sort((left, right) => left - right);
+  const boundaries = [...new Set([...opens.keys(), ...closes.keys()])].sort(
+    (left, right) => left - right,
+  );
   let cursor = 0;
   let transformed = '';
   for (const boundary of boundaries) {

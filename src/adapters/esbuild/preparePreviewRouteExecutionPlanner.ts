@@ -224,7 +224,11 @@ export async function preparePreviewRouteExecutionPlanner(
     activeInspectorPlan =
       analysisPlan === undefined
         ? undefined
-        : createPreviewInspectorExecutablePlan(analysisPlan, request.inspectorPageCandidateId);
+        : createPreviewInspectorExecutablePlan(
+            analysisPlan,
+            request.inspectorPageCandidateId,
+            request.inspectorTargetMode,
+          );
     const eligibleCandidates =
       activeInspectorPlan === undefined
         ? []

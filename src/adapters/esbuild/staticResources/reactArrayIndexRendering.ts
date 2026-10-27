@@ -10,6 +10,10 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
+import {
+  createPreviewRuntimeSourceSyntax,
+  type PreviewRuntimeSourceSyntax,
+} from './previewRuntimeSourceSyntax';
 
 const MAX_ARRAY_CHOICES_PER_MODULE = 32;
 const MAX_ARRAY_CHOICE_BRANCHES = 32;
@@ -63,13 +67,15 @@ type ReactArrayRuntimeFunction =
  * @param sourceText Authored JavaScript/TypeScript source.
  * @returns Source with bounded dynamic JSX-array choices instrumented.
  */
-export function instrumentReactArrayIndexRendering(sourcePath: string, sourceText: string): string {
+export function instrumentReactArrayIndexRendering(
+  sourcePath: string,
+  sourceText: string,
+  syntax?: PreviewRuntimeSourceSyntax,
+): string {
   if (!isJavaScriptLikeSource(sourcePath) || !sourceText.includes('[')) return sourceText;
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = (syntax ?? createPreviewRuntimeSourceSyntax()).readSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     selectScriptKind(sourcePath),
   );
   if (hasParseDiagnostics(sourceFile)) return sourceText;

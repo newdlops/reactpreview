@@ -16,13 +16,14 @@ import {
   selectCompatiblePreviewSourceReplacements,
 } from './previewSourceReplacement';
 import { instrumentReactConditionalRendering } from './reactConditionalRendering';
+import { createPreviewRuntimeSourceSyntax } from './previewRuntimeSourceSyntax';
 
 /** Pure probe results only: no ASTs, filesystem state, transformed source, or runtime decisions. */
 const runtimeInstrumentationProbes = new Map<
   string,
   { readonly sourceText: string; readonly required: boolean; readonly bytes: number }
 >();
-const MAX_RUNTIME_INSTRUMENTATION_PROBES = 128;
+const MAX_RUNTIME_INSTRUMENTATION_PROBES = 512;
 const MAX_RUNTIME_INSTRUMENTATION_PROBE_BYTES = 1024 * 1024;
 const MAX_RUNTIME_INSTRUMENTATION_PROBE_SOURCE_LENGTH = 64 * 1024;
 let runtimeInstrumentationProbeBytes = 0;
@@ -37,6 +38,8 @@ export interface PreviewRuntimeSourceInstrumentationOptions {
   readonly renderConditions: boolean;
   /** Components rendered at the selected target's occurrences in this module. */
   readonly selectedTargetNames?: ReadonlySet<string>;
+  /** Imported hook bindings whose query/local-state implementation passed bounded source proof. */
+  readonly selectedTabHookNames?: ReadonlySet<string>;
 }
 
 /** Fully rewritten source plus inert module-scope registrations to append after it. */
@@ -93,29 +96,31 @@ function inspectPreviewRuntimeSourceInstrumentation(
   const scriptKind = selectRuntimeInstrumentationScriptKind(sourcePath);
   if (scriptKind === undefined) return true;
   try {
-    const sourceFile = ts.createSourceFile(
-      sourcePath,
-      sourceText,
-      ts.ScriptTarget.Latest,
-      true,
-      scriptKind,
-    );
+    const syntax = createPreviewRuntimeSourceSyntax();
+    const sourceFile = syntax.readSourceFile(sourcePath, sourceText, scriptKind);
     const parseDiagnostics = (
       sourceFile as ts.SourceFile & { readonly parseDiagnostics?: readonly ts.Diagnostic[] }
     ).parseDiagnostics;
     if ((parseDiagnostics?.length ?? 0) > 0) return true;
 
-    const deferred = instrumentPreviewDeferredUiTriggers(sourcePath, sourceText);
+    const deferred = instrumentPreviewDeferredUiTriggers(sourcePath, sourceText, syntax);
     if (deferred.registrations.length > 0 || deferred.replacements.length > 0) return true;
     const deferredSource = applyPreviewSourceReplacements(
       sourceText,
       selectCompatiblePreviewSourceReplacements(deferred.replacements),
     );
-    const conditionSource = instrumentReactConditionalRendering(sourcePath, deferredSource);
+    const conditionSource = instrumentReactConditionalRendering(
+      sourcePath,
+      deferredSource,
+      undefined,
+      undefined,
+      undefined,
+      syntax,
+    );
     if (conditionSource !== deferredSource) return true;
-    const effectSource = instrumentPreviewReactEffects(sourcePath, conditionSource);
+    const effectSource = instrumentPreviewReactEffects(sourcePath, conditionSource, syntax);
     if (effectSource !== conditionSource) return true;
-    return isolatePreviewAsyncReactComponents(sourcePath, effectSource) !== effectSource;
+    return isolatePreviewAsyncReactComponents(sourcePath, effectSource, syntax) !== effectSource;
   } catch {
     return true;
   }
@@ -135,8 +140,9 @@ export function instrumentPreviewRuntimeSource(
   sourceText: string,
   options: PreviewRuntimeSourceInstrumentationOptions,
 ): PreviewRuntimeSourceInstrumentationResult {
+  const syntax = createPreviewRuntimeSourceSyntax();
   const deferred = options.renderConditions
-    ? instrumentPreviewDeferredUiTriggers(sourcePath, sourceText)
+    ? instrumentPreviewDeferredUiTriggers(sourcePath, sourceText, syntax)
     : { registrations: [], replacements: [] };
   const deferredSource = applyPreviewSourceReplacements(
     sourceText,
@@ -149,15 +155,17 @@ export function instrumentPreviewRuntimeSource(
         deferredSource,
         conditionRegistrations,
         options.selectedTargetNames,
+        options.selectedTabHookNames,
+        syntax,
       )
     : deferredSource;
   const effectSource = options.isolateEffects
-    ? instrumentPreviewReactEffects(sourcePath, conditionSource)
+    ? instrumentPreviewReactEffects(sourcePath, conditionSource, syntax)
     : conditionSource;
   return {
     registrations: [...deferred.registrations, ...(conditionRegistrations ?? [])],
     source: options.renderConditions
-      ? isolatePreviewAsyncReactComponents(sourcePath, effectSource)
+      ? isolatePreviewAsyncReactComponents(sourcePath, effectSource, syntax)
       : effectSource,
   };
 }

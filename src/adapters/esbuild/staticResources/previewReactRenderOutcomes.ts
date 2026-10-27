@@ -8,6 +8,7 @@
  * AST nodes or project runtime values.
  */
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
 import { expandPreviewReactLogicalAndExpression } from './previewReactLogicalAnd';
 import { createPreviewReactLogicalAndEdges } from './previewReactRenderLogicalAnd';
 import type {
@@ -141,11 +142,9 @@ export function analyzePreviewReactRenderOutcomes(
   sourceText: string,
 ): readonly PreviewReactRenderOutcomePlan[] {
   if (!isJavaScriptLikeSource(sourcePath)) return Object.freeze([]);
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = readPreviewAnalysisSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     selectScriptKind(sourcePath),
   );
   if (hasParseDiagnostics(sourceFile)) return Object.freeze([]);

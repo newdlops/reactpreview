@@ -17,33 +17,28 @@ const BASE_REQUEST: PreviewBuildRequest = {
 };
 
 describe('previewCompilerWorkerBudget', () => {
-  /** Native Page Inspector bundling is generous but can never leave Preparing visible forever. */
-  it('bounds Page Inspector native bundling independently from its fast analysis stages', () => {
-    const budget = createPreviewCompilerWorkerBudget(BASE_REQUEST, undefined);
+  /** Analysis depth must not reintroduce a 45-second cutoff for an authored page. */
+  it.each(['fast', 'corridor', 'full'] as const)(
+    'keeps %s Page Inspector stages finite without a 45-second cutoff',
+    (preparationMode) => {
+      const request = { ...BASE_REQUEST, preparationMode };
+      const budget = createPreviewCompilerWorkerBudget(request, undefined);
 
-    expect(budget).toEqual({
-      fixed: false,
-      initialStageTimeoutMs: 45_000,
-    });
-    expect(selectPreviewCompilerStageTimeoutMs(BASE_REQUEST, budget, 'preparing-runtime')).toBe(
-      45_000,
-    );
-    expect(selectPreviewCompilerStageTimeoutMs(BASE_REQUEST, budget, 'bundling-modules')).toBe(
-      120_000,
-    );
-  });
-
-  /** Full page enrichment follows the same finite native-bundling contract. */
-  it('keeps full-page analysis and native bundling on finite stage budgets', () => {
-    const request: PreviewBuildRequest = { ...BASE_REQUEST, preparationMode: 'full' };
-    const budget = createPreviewCompilerWorkerBudget(request, undefined);
-
-    expect(budget).toEqual({
-      fixed: false,
-      initialStageTimeoutMs: 120_000,
-    });
-    expect(selectPreviewCompilerStageTimeoutMs(request, budget, 'bundling-modules')).toBe(120_000);
-  });
+      expect(budget).toEqual({
+        fixed: false,
+        initialStageTimeoutMs: 120_000,
+      });
+      expect(selectPreviewCompilerStageTimeoutMs(request, budget, 'preparing-runtime')).toBe(
+        120_000,
+      );
+      expect(selectPreviewCompilerStageTimeoutMs(request, budget, 'discovering-components')).toBe(
+        120_000,
+      );
+      expect(selectPreviewCompilerStageTimeoutMs(request, budget, 'bundling-modules')).toBe(
+        120_000,
+      );
+    },
+  );
 
   /** Ordinary component previews do not inherit the more expensive authored-page allowance. */
   it('keeps component-only fast previews on the compact budget', () => {

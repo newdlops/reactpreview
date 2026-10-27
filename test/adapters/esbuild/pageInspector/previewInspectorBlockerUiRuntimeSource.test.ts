@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorBlockerUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorBlockerUiRuntimeSource';
 import { createPreviewInspectorConditionUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorConditionUiRuntimeSource';
 import { createPreviewInspectorFailureEvidenceRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorFailureEvidenceRuntimeSource';
+import { createPreviewInspectorSmartPropsRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorSmartPropsRuntimeSource';
 
 /** Data-only node contract needed for blocker ownership assertions. */
 interface BlockerTreeNode {
@@ -17,6 +18,7 @@ interface BlockerTreeNode {
   readonly kind: string;
   readonly name: string;
   readonly props?: Record<string, unknown>;
+  readonly state?: Record<string, unknown>;
 }
 
 /** Generated helper surface exposed only inside the VM fixture. */
@@ -34,6 +36,39 @@ interface BlockerRuntime {
 }
 
 describe('Preview Inspector blocker UI runtime source', () => {
+  it('keeps previous target arrival distinct from current absence in the tree and details', () => {
+    const runtime = evaluateBlockerRuntime('page:Target');
+    const blocker = {
+      applicationPath: ['Page', 'Target'],
+      appliedConditions: [],
+      directTarget: false,
+      id: 'target-reachability:page:Target',
+      key: 'page:Target',
+      pageRootCommitted: true,
+      requiredPaths: [],
+      rootName: 'Page',
+      status: 'page-blocked',
+      targetExportName: 'Target',
+      targetSourcePath: '/workspace/Target.tsx',
+      targetHasOutput: false,
+      targetMounted: false,
+      targetWasMounted: true,
+    };
+    const node = runtime.createReachabilityNode(blocker);
+    expect(node.name).toBe('Target no longer mounted · Target');
+    expect(node.state).toMatchObject({
+      targetMounted: false,
+      targetWasMounted: true,
+      targetHasOutput: false,
+    });
+    const text = collectRenderedText(runtime.renderReachabilityDetail({ node: { blocker } })).join(
+      ' ',
+    );
+    expect(text).toContain('The target was reached earlier on this path');
+    expect(text).toContain('Current file: Target · mounted earlier · not mounted now');
+    expect(text).not.toContain('Current file: Target · not reached');
+  });
+
   /** Joins hook and backend dependencies into the same tree that owns their source expression. */
   it('attaches editable blockers below the nearest mounted component', () => {
     const runtime = evaluateBlockerRuntime();
@@ -129,7 +164,9 @@ describe('Preview Inspector blocker UI runtime source', () => {
 
   /** Keeps manual JSON, minimum Smart fill, and broader Auto inference actions explicit. */
   it('emits manual pass-value, Smart fill, and Auto pass controls', () => {
-    const source = createPreviewInspectorBlockerUiRuntimeSource();
+    const source =
+      createPreviewInspectorBlockerUiRuntimeSource() +
+      createPreviewInspectorSmartPropsRuntimeSource();
 
     expect(source).toContain("'Apply pass value'");
     expect(source).toContain("'Smart fill minimum'");
@@ -143,7 +180,7 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain('setPreviewInspectorRuntimeFallbackOverride');
     expect(source).toContain('smartFillPreviewInspectorRuntimeFallback');
     expect(source).toContain('smartFillPreviewInspectorTargetFailure');
-    expect(source).toContain('if (!enabled) return false;');
+    expect(source).toContain('if (result.changed !== true) return false;');
     expect(source).toContain('createPreviewInspectorSmartPropsDraft');
     expect(source).toContain('applyPreviewInspectorSmartProps');
     expect(source).toContain('autoPassPreviewInspectorRuntimeFallback');
@@ -153,13 +190,13 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain('Possible data needed next (');
     expect(source).toContain('PREVIEW_INSPECTOR_REQUIRED_PATH_SUMMARY_LIMIT = 10');
     expect(source).toContain("'ran · no visible element'");
-    expect(source).toContain('Rendering stops at this point in the component tree.');
-    expect(source).toContain('Why this file is missing is not yet known');
+    expect(source).toContain('A runtime error stops rendering here.');
+    expect(source).toContain('React Preview is still tracing this page path.');
     expect(source).toContain("helpKind = 'flow-outcome'");
     expect(source).toContain('React Preview supplied a local preview value here.');
     expect(source).toContain('This child overlay is explicitly forced OFF.');
-    expect(source).toContain('React Preview is retrying its visible branch');
-    expect(source).toContain('A manual OFF switch keeps the current-file overlay dormant.');
+    expect(source).toContain('React Preview is resolving this render step.');
+    expect(source).toContain('Your choice is needed to continue.');
     expect(source).toContain('readPreviewInspectorActiveBlockerSummary');
   });
 
@@ -176,21 +213,30 @@ describe('Preview Inspector blocker UI runtime source', () => {
     } = { calls };
     vm.runInNewContext(
       `
-        const createPreviewInspectorSmartPropsDraft = () => ({
+        ${createPreviewInspectorSmartPropsRuntimeSource()}
+        createPreviewInspectorSmartPropsDraft = () => ({
           generatedPaths: [],
           generatedValue: {},
           value: {},
         });
-        const hasPreviewInspectorSmartPropsDraft = () => false;
+        hasPreviewInspectorSmartPropsDraft = () => false;
+        const previewInspectorSession = { fallbackValuesEnabled: false, overridesByExport: new Map() };
+        isPreviewInspectorSelectedTargetOwnerName = () => false;
+        const normalizePreviewInspectorReachabilityPath = (value) => value ?? '';
+        const normalizePreviewInspectorRequiredPropertyPaths = (value) => value;
+        readPreviewInspectorTargetPropFailurePaths = () => [];
+        createPreviewInspectorFinitePropChoiceMutation = () => undefined;
+        readPreviewInspectorTargetFailurePropChoices = () => [];
         let fallbackValuesEnabled = false;
         const setPreviewInspectorFallbackValuesEnabled = (enabled) => {
           if (fallbackValuesEnabled === enabled) return false;
           fallbackValuesEnabled = enabled;
+          previewInspectorSession.fallbackValuesEnabled = enabled;
           calls.push('enable');
           return true;
         };
         const recordPreviewInspectorBlockerAutoDecision = () => calls.push('decision');
-        const applyPreviewInspectorSmartProps = () => calls.push('apply');
+        applyPreviewInspectorSmartProps = () => calls.push('apply');
         ${createPreviewInspectorBlockerUiRuntimeSource()}
         globalThis.__smartFill = smartFillPreviewInspectorTargetFailure;
       `,
@@ -199,6 +245,7 @@ describe('Preview Inspector blocker UI runtime source', () => {
 
     const failure = {
       blockedComponentName: 'StaticImage',
+      failureKind: 'component-error',
       exportName: 'default',
       headline: 'TypeError: src.replace is not a function',
       id: 'target-error:default:0',
@@ -262,7 +309,7 @@ describe('Preview Inspector blocker UI runtime source', () => {
       ...blocker,
       targetOutputError: {
         message: 'Error: Unreachable',
-        ownerName: 'FiStaManagementApp',
+        ownerName: 'ApplicationWrapper',
       },
       targetOutputKind: 'fallback-output',
     };
@@ -274,12 +321,12 @@ describe('Preview Inspector blocker UI runtime source', () => {
       name: 'Error fallback shown instead · default',
       props: {
         targetOutputError: 'Error: Unreachable',
-        targetOutputErrorOwner: 'FiStaManagementApp',
+        targetOutputErrorOwner: 'ApplicationWrapper',
       },
     });
     expect(runtime.isBlocking(errorFallbackNode)).toBe(true);
     expect(errorFallbackText).toContain(
-      'Original render error in FiStaManagementApp: Error: Unreachable',
+      'Original render error in ApplicationWrapper: Error: Unreachable',
     );
 
     const candidateNode = runtime.createReachabilityNode({
@@ -350,7 +397,7 @@ describe('Preview Inspector blocker UI runtime source', () => {
 });
 
 /** Evaluates attachment functions with fixed hook/data registries and no React project runtime. */
-function evaluateBlockerRuntime(): BlockerRuntime {
+function evaluateBlockerRuntime(activeTargetReachabilityKey?: string): BlockerRuntime {
   const context: { __blockers?: BlockerRuntime } = {};
   vm.runInNewContext(
     `
@@ -364,14 +411,17 @@ function evaluateBlockerRuntime(): BlockerRuntime {
       const showPreviewInspectorTargetDirectly = () => undefined;
       const smartFillPreviewInspectorTargetApplicationPath = () => undefined;
       const previewInspectorSession = {
+        activeTargetReachabilityKey: ${JSON.stringify(activeTargetReachabilityKey)},
         boundariesByExport: new Map([
           ['Page', new Set([{
+            props: { exportName: 'Page', sourcePath: '/workspace/Page.tsx' },
             state: {
               componentStack: '\\n    at BrokenChild\\n    at Page',
               error: new TypeError("Cannot read properties of undefined (reading 'value')"),
             },
           }])],
           ['RuntimePage', new Set([{
+            props: { exportName: 'RuntimePage', sourcePath: '/workspace/RuntimePage.tsx' },
             state: {
               componentStack: '\\n    at Button\\n    at Header\\n    at RuntimePage',
               error: new ReferenceError('React is not defined'),
@@ -385,6 +435,10 @@ function evaluateBlockerRuntime(): BlockerRuntime {
         } }],
         selectedExportName: 'Page',
       };
+      const findSelectedPreviewInspectorDescriptor = () => undefined;
+      const readSelectedPreviewInspectorPageCandidate = () =>
+        ${JSON.stringify(activeTargetReachabilityKey)} === undefined ? undefined
+          : { id: 'page', target: { sourcePath: '/workspace/Target.tsx', exportName: 'Target' } };
       const readPreviewInspectorRenderConditions = () => [];
       const readPreviewInspectorRenderChoices = () => [];
       const readPreviewInspectorTargetReachabilityBlockers = () => [];

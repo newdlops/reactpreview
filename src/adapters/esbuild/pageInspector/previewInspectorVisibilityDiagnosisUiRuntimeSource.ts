@@ -23,7 +23,14 @@ function readPreviewInspectorVisibilityDiagnosis(state, options = {}) {
   const sameCandidate = typeof state.candidateId !== 'string' || typeof candidate?.id !== 'string' ||
     state.candidateId === candidate.id;
   const currentKey = session.activeTargetReachabilityKey;
-  const current = sameCandidate && (typeof currentKey !== 'string' || currentKey === state.key);
+  const selectedTarget = candidate?.target ?? descriptor?.inspector?.target;
+  const selectedTargetSource = normalizePath(selectedTarget?.sourcePath);
+  const targetIdentityKnown = selectedTargetSource.length > 0 &&
+    typeof selectedTarget?.exportName === 'string';
+  const sameTarget = !targetIdentityKnown || selectedTargetSource === targetSource &&
+    selectedTarget.exportName === state.targetExportName;
+  const current = sameCandidate && sameTarget &&
+    (typeof currentKey !== 'string' || currentKey === state.key);
   const execution = typeof readSelectedPreviewInspectorPageExecutionCandidate === 'function'
     ? readSelectedPreviewInspectorPageExecutionCandidate(descriptor) : undefined;
   const componentOnly = current && (execution?.standaloneTarget === true ||
@@ -106,6 +113,21 @@ function readPreviewInspectorVisibilityDiagnosis(state, options = {}) {
       path: 'Only a component-level context was restored.',
       description: 'This execution uses a component-level fallback, not the authored page. Inspect the page path; there is not enough evidence to blame a code condition.' };
   }
+  if (state.targetWasMounted === true && state.targetMounted !== true &&
+      state.targetHasOutput !== true && targetIdentityKnown &&
+      typeof currentKey === 'string' && currentKey === state.key) {
+    const resolving = typeof isPreviewInspectorTargetReachabilityResolving === 'function' &&
+      isPreviewInspectorTargetReachabilityResolving(state);
+    return { ...base, action: resolving ? undefined : 'details', actionLabel: 'Inspect target evidence',
+      kind: resolving ? 'pending' : 'unmounted-target',
+      title: resolving ? 'Checking the target after an earlier mount'
+        : 'The target was reached earlier on this path',
+      path: 'An earlier target mount was recorded; the current page context is not verified.',
+      logic: resolving ? 'The target mounted earlier; its current render is still being checked.'
+        : 'The target mounted earlier and is not mounted now. The cause of its removal is not verified.',
+      description: resolving ? 'Wait for the current render check before changing a page path or condition.'
+        : 'Inspect the recorded render and observed conditions. An earlier mount does not prove that the current page is ready.' };
+  }
   if (state.targetMounted === true && state.targetHasOutput !== true) {
     const waiting = state.targetDeferredCallbackPending === true;
     return { ...base, action: 'details', actionLabel: waiting ? 'Inspect parent requirement' : 'Inspect target output',
@@ -120,11 +142,21 @@ function readPreviewInspectorVisibilityDiagnosis(state, options = {}) {
   return base;
 }
 
+/** Reads only the active retained observation; it does not start traversal or apply a value. */
+function readPreviewInspectorCurrentVisibilityDiagnosis() {
+  const session = typeof previewInspectorSession === 'object' ? previewInspectorSession : undefined;
+  const key = session?.activeTargetReachabilityKey;
+  const state = typeof key === 'string' ? session?.targetReachabilityByKey?.get?.(key) : undefined;
+  return state === undefined ? undefined : readPreviewInspectorVisibilityDiagnosis(state);
+}
+
 /** Re-reads the selected path before navigation so stale evidence cannot select an unrelated gate. */
 function activatePreviewInspectorVisibilityDiagnosis(diagnosis) {
   if (diagnosis === undefined) return false;
   const key = previewInspectorSession.activeTargetReachabilityKey;
   if (typeof key === 'string' && diagnosis.key !== key) return false;
+  if (diagnosis.kind === 'unmounted-target' &&
+      readPreviewInspectorCurrentVisibilityDiagnosis()?.kind !== 'unmounted-target') return false;
   if (diagnosis.action === 'condition') {
     const current = typeof readPreviewInspectorActiveBlockerSummary === 'function'
       ? readPreviewInspectorActiveBlockerSummary().active.find((node) =>

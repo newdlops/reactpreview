@@ -2,7 +2,7 @@
  * Exercises source-rewrite semantics that are difficult to observe after esbuild minification.
  * Real temporary files keep context filtering and generated imports aligned with production paths.
  */
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -370,7 +370,8 @@ describe('PreviewSourceTransformer', () => {
 
     expect(transformed.contents.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(1);
     expect(transformed.contents).toContain('() => (useContext(AppContext))');
-    expect(transformed.contents).toContain('"user": Object.freeze({ "name": "name" })');
+    expect(transformed.contents).toContain('"user": Object.freeze({})');
+    expect(transformed.contents).toContain('user.name');
     expect(transformed.contents).toContain('registerPreviewContextRequirement');
   });
 
@@ -427,8 +428,11 @@ describe('PreviewSourceTransformer', () => {
     const transformed = await transformer.transform(sourcePath, sourceText);
 
     expect(transformed.contents.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(1);
-    expect(transformed.contents).toContain('"company": Object.freeze({})');
-    expect(transformed.contents).toContain('"refetch": Object.freeze(() => undefined)');
+    expect(transformed.contents).toContain(
+      'const __reactPreviewContextHookFallback0 = Object.freeze({});',
+    );
+    expect(transformed.contents).toContain('getFragmentData(FRAGMENT, companyFragment)');
+    expect(transformed.contents).not.toContain('"refetch": Object.freeze');
   });
 
   /** Uses a supplied optional child prop as structural evidence for a failed hook result. */
@@ -468,7 +472,8 @@ describe('PreviewSourceTransformer', () => {
     expect(transformed.contents).toContain(
       '"state": Object.freeze({ "formikValues": Object.freeze({',
     );
-    expect(transformed.contents).toContain('"step": 0');
+    // Container evidence keeps a numeric leaf absent until the runtime needs a value.
+    expect(transformed.contents).not.toContain('"step": 0');
     expect(transformed.contents).toContain('state.formikValues.step');
     expect(transformed.contents).toContain('state.formikValues.agendaSelection');
   });

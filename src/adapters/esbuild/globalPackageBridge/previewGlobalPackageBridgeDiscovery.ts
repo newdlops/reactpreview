@@ -125,9 +125,7 @@ export async function discoverPreviewGlobalPackageBridges(
   }
   const nodeModulesPaths = (
     await Promise.all(
-      (options.nodeModulesPaths ?? []).map((candidate) =>
-        canonicalizeExistingDirectory(candidate),
-      ),
+      (options.nodeModulesPaths ?? []).map((candidate) => canonicalizeExistingDirectory(candidate)),
     )
   ).filter((candidate): candidate is string => candidate !== undefined);
 
@@ -313,18 +311,10 @@ async function resolveHintWatchPath(
   nodeModulesPaths: readonly string[],
 ): Promise<string | undefined> {
   if (hint.watchPath !== undefined) {
-    return await canonicalizeTrustedExistingFile(
-      hint.watchPath,
-      workspaceRoot,
-      nodeModulesPaths,
-    );
+    return await canonicalizeTrustedExistingFile(hint.watchPath, workspaceRoot, nodeModulesPaths);
   }
   if (path.isAbsolute(moduleSpecifier)) {
-    return await canonicalizeTrustedExistingFile(
-      moduleSpecifier,
-      workspaceRoot,
-      nodeModulesPaths,
-    );
+    return await canonicalizeTrustedExistingFile(moduleSpecifier, workspaceRoot, nodeModulesPaths);
   }
   if (!isSafePackageSpecifier(moduleSpecifier)) {
     return undefined;
@@ -595,7 +585,7 @@ function isIgnorableMetadataError(error: unknown): boolean {
 
 /** Reports containment without accepting a sibling path that merely shares a prefix. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

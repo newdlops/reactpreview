@@ -3,8 +3,15 @@
  * Context options and virtual-module plans are immutable per cache key, while editor snapshots and
  * the compilation-scoped source transformer advance through one explicit mutable state boundary.
  */
-import { context, initialize, type BuildContext, type BuildOptions, type BuildResult } from 'esbuild';
+import {
+  context,
+  initialize,
+  type BuildContext,
+  type BuildOptions,
+  type BuildResult,
+} from 'esbuild';
 import type { PreviewCompilerNativeBuildActivity } from '../../domain/previewCompilerActivity';
+import type { PreviewSassTaskFactory } from './previewSassCompiler';
 import {
   createPreviewSassPlugin,
   type PreviewSassBoundary,
@@ -82,6 +89,8 @@ interface CachedBuildContext {
  * Same-plan requests serialize on one context; unrelated targets may still build concurrently.
  */
 export class PreviewIncrementalBuildCache {
+  /** Optional composition-root transport used only by explicit Sass preparation plans. */
+  public readonly createSassTask: PreviewSassTaskFactory | undefined;
   /** True once shutdown has started; no native context may be created after this boundary. */
   private closed = false;
   /** Detached LRU and one-shot disposals that shutdown must await before stopping esbuild. */
@@ -93,7 +102,9 @@ export class PreviewIncrementalBuildCache {
   private readonly oneShotBuilds = new Set<Promise<PreviewIncrementalBuildResult>>();
   private shutdownPromise: Promise<void> | undefined;
 
-  public constructor() {
+  /** Creates an empty native-context cache and initializes the cancellation observer used by retained builds. */
+  public constructor(createSassTask?: PreviewSassTaskFactory) {
+    this.createSassTask = createSassTask;
     startPreviewEsbuildService();
   }
 
@@ -298,8 +309,12 @@ export class PreviewIncrementalBuildCache {
 async function disposeCachedBuildContext(entryPromise: Promise<CachedBuildContext>): Promise<void> {
   try {
     const entry = await entryPromise;
-    await entry.queue;
-    await entry.buildContext.dispose();
+    try {
+      await entry.queue;
+      await entry.buildContext.dispose();
+    } finally {
+      await entry.sassBoundary?.dispose();
+    }
   } catch {
     // Failed context creation or disposal leaves no reusable native state in the cache.
   }

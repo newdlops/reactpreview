@@ -1,14 +1,15 @@
 /** Executes the private JSX ownership path against the installed ReactDOM client in Chromium. */
+import { build } from 'esbuild';
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { build } from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createPreviewInspectorRuntimePlugin } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRuntimePlugin';
 import { createPreviewInspectorDomOwnershipRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorDomOwnershipRuntimeSource';
+import { createPreviewInspectorRuntimePlugin } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRuntimePlugin';
+import { discoverPreviewChromiumPath } from '../../../../src/adapters/node/previewChromiumPath';
+import { createPreviewManagedChildEnvironment } from '../../../../src/adapters/node/previewManagedChildEnvironment';
 
 const run = promisify(execFile);
 const temporaryDirectories: string[] = [];
@@ -21,7 +22,7 @@ afterEach(async () => {
   );
 });
 
-const chromiumPath = findChromiumPath();
+const chromiumPath = discoverPreviewChromiumPath();
 
 for (const runtime of [
   { label: 'ReactDOM 18', react: 'react-preview-react-18', reactDom: 'react-preview-react-dom-18' },
@@ -29,89 +30,87 @@ for (const runtime of [
 ]) {
   describe(`Preview Inspector DOM ownership with ${runtime.label}`, () => {
     it.skipIf(chromiumPath === undefined)(
-    'keeps only connected inline intrinsic refs for simultaneous targets, ref replacement, portals, errors, and remounts',
-    async () => {
-      const directory = await mkdtemp(path.join(os.tmpdir(), 'react-preview-dom-ownership-'));
-      temporaryDirectories.push(directory);
-      const entry = path.join(directory, 'entry.tsx');
-      const bundle = path.join(directory, 'bundle.js');
-      const page = path.join(directory, 'index.html');
-      await writeFile(
-        entry,
-        browserFixtureSource(
-          createPreviewInspectorDomOwnershipRuntimeSource(),
-          runtime.react,
-          runtime.reactDom,
-        ),
-        'utf8',
-      );
-      await build({
-        bundle: true,
-        entryPoints: [entry],
-        format: 'iife',
-        globalName: 'PreviewOwnershipFixture',
-        jsx: 'automatic',
-        jsxDev: true,
-        ...(runtime.react === 'react'
-          ? {}
-          : { alias: { react: runtime.react, 'react-dom': runtime.reactDom } }),
-        nodePaths: [path.join(process.cwd(), 'node_modules')],
-        outfile: bundle,
-        platform: 'browser',
-        plugins: [createPreviewInspectorRuntimePlugin({ projectRoot: process.cwd() })],
-        write: true,
-      });
-      await writeFile(page, browserFixtureHtml(), 'utf8');
-      const chromium = chromiumPath;
-      if (chromium === undefined)
-        throw new Error('Chromium was unavailable when this proof was registered.');
-      const { stdout } = await run(
-        chromium,
-        [
-          '--headless=new',
-          '--disable-gpu',
-          '--no-sandbox',
-          '--disable-dev-shm-usage',
-          '--allow-file-access-from-files',
-          '--virtual-time-budget=5000',
-          '--dump-dom',
-          '--user-data-dir=' + path.join(directory, 'chromium-profile'),
-          'file://' + page,
-        ],
-        // A hung headless Chromium can ignore SIGTERM; SIGKILL keeps a failed run from leaking it.
-        { killSignal: 'SIGKILL', timeout: 30_000 },
-      );
-      const result = /<output id="result">([^<]+)<\/output>/u.exec(stdout)?.[1];
-      expect(result).toBeDefined();
-      const parsed = JSON.parse(decodeHtml(result ?? '')) as unknown as Record<string, unknown>;
-      expect(parsed.errorRejected).toBe(true);
-      expect(parsed.normalAuthorized).toBe(true);
-      expect(parsed.secondAuthorized).toBe(true);
-      expect(parsed.namedPortalRejected).toBe(true);
-      expect(parsed.namespacePortalRejected).toBe(true);
-      expect(parsed.defaultPortalRejected).toBe(true);
-      expect(parsed.remountAuthorized).toBe(true);
-      expect(parsed.unchangedMarkup).toBe(true);
-      expect(parsed.invalidCapabilityRejected).toBe(true);
-      expect(parsed.invalidSourceRejected).toBe(true);
-      expect(parsed.invalidExportRejected).toBe(true);
-      expect(parsed.crossInstanceRejected).toBe(true);
-      expect(parsed.staleRejected).toBe(true);
-      expect(parsed.callbackAttaches).toBeGreaterThan(0);
-      expect(parsed.callbackCleanups).toBeGreaterThan(0);
-      expect(parsed.callbackCleanups).toBe(parsed.callbackAttaches);
-      expect(parsed.noRefChurn).toBe(true);
-      expect(parsed.noCleanupAttaches).toBeGreaterThan(0);
-      expect(parsed.noCleanupNulls).toBeGreaterThan(0);
-      expect(parsed.noCleanupNulls).toBe(parsed.noCleanupAttaches);
-      expect(parsed.objectRefCleared).toBe(true);
-      expect(parsed.privateAttaches).toBeGreaterThan(0);
-      expect(parsed.privateReleases).toBeGreaterThan(0);
-      expect(parsed.privateReleases).toBe(parsed.privateAttaches);
-      expect(parsed.callbackRefWarning).toBe(false);
-    },
-    // Longer than the bundle step plus Chromium's own 30 s limit, so the kill always runs here.
-    60_000,
+      'keeps only connected inline intrinsic refs for simultaneous targets, ref replacement, portals, errors, and remounts',
+      async () => {
+        const directory = await mkdtemp(path.join(os.tmpdir(), 'react-preview-dom-ownership-'));
+        temporaryDirectories.push(directory);
+        const entry = path.join(directory, 'entry.tsx');
+        const bundle = path.join(directory, 'bundle.js');
+        const page = path.join(directory, 'index.html');
+        await writeFile(
+          entry,
+          browserFixtureSource(createPreviewInspectorDomOwnershipRuntimeSource()),
+          'utf8',
+        );
+        await build({
+          bundle: true,
+          entryPoints: [entry],
+          format: 'iife',
+          globalName: 'PreviewOwnershipFixture',
+          jsx: 'automatic',
+          jsxDev: true,
+          ...(runtime.react === 'react'
+            ? {}
+            : { alias: { react: runtime.react, 'react-dom': runtime.reactDom } }),
+          nodePaths: [path.join(process.cwd(), 'node_modules')],
+          outfile: bundle,
+          platform: 'browser',
+          plugins: [createPreviewInspectorRuntimePlugin({ projectRoot: process.cwd() })],
+          write: true,
+        });
+        await writeFile(page, browserFixtureHtml(), 'utf8');
+        const chromium = chromiumPath;
+        if (chromium === undefined)
+          throw new Error('Chromium was unavailable when this proof was registered.');
+        const { stdout } = await run(
+          chromium,
+          [
+            '--headless=new',
+            '--disable-gpu',
+            '--disable-dev-shm-usage',
+            '--virtual-time-budget=5000',
+            '--dump-dom',
+            '--user-data-dir=' + path.join(directory, 'chromium-profile'),
+            'file://' + page,
+          ],
+          // A hung headless Chromium can ignore SIGTERM; SIGKILL keeps a failed run from leaking it.
+          {
+            env: createPreviewManagedChildEnvironment(process.env),
+            killSignal: 'SIGKILL',
+            timeout: 30_000,
+          },
+        );
+        const result = /<output id="result">([^<]+)<\/output>/u.exec(stdout)?.[1];
+        expect(result).toBeDefined();
+        const parsed = JSON.parse(decodeHtml(result ?? '')) as unknown as Record<string, unknown>;
+        expect(parsed.errorRejected).toBe(true);
+        expect(parsed.normalAuthorized).toBe(true);
+        expect(parsed.secondAuthorized, JSON.stringify(parsed)).toBe(true);
+        expect(parsed.namedPortalRejected, JSON.stringify(parsed)).toBe(true);
+        expect(parsed.namespacePortalRejected).toBe(true);
+        expect(parsed.defaultPortalRejected).toBe(true);
+        expect(parsed.remountAuthorized).toBe(true);
+        expect(parsed.unchangedMarkup).toBe(true);
+        expect(parsed.invalidCapabilityRejected).toBe(true);
+        expect(parsed.invalidSourceRejected).toBe(true);
+        expect(parsed.invalidExportRejected).toBe(true);
+        expect(parsed.crossInstanceRejected).toBe(true);
+        expect(parsed.staleRejected).toBe(true);
+        expect(parsed.callbackAttaches).toBeGreaterThan(0);
+        expect(parsed.callbackCleanups).toBeGreaterThan(0);
+        expect(parsed.callbackCleanups).toBe(parsed.callbackAttaches);
+        expect(parsed.noRefChurn).toBe(true);
+        expect(parsed.noCleanupAttaches).toBeGreaterThan(0);
+        expect(parsed.noCleanupNulls).toBeGreaterThan(0);
+        expect(parsed.noCleanupNulls).toBe(parsed.noCleanupAttaches);
+        expect(parsed.objectRefCleared).toBe(true);
+        expect(parsed.privateAttaches).toBeGreaterThan(0);
+        expect(parsed.privateReleases).toBeGreaterThan(0);
+        expect(parsed.privateReleases).toBe(parsed.privateAttaches);
+        expect(parsed.callbackRefWarning).toBe(false);
+      },
+      // Longer than the bundle step plus Chromium's own 30 s limit, so the kill always runs here.
+      60_000,
     );
   });
 }
@@ -121,35 +120,16 @@ function decodeHtml(value: string): string {
   return value.replaceAll('&quot;', '"').replaceAll('&amp;', '&');
 }
 
-/** Lists conventional local Chromium executable paths in priority order. */
-function chromiumCandidates(): string[] {
-  return [
-    process.env.CHROMIUM_PATH,
-    '/opt/homebrew/bin/chromium',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-  ].filter((candidate): candidate is string => candidate !== undefined && candidate.length > 0);
-}
-
-/** Finds Chromium at registration time so an unavailable proof is visibly skipped. */
-function findChromiumPath(): string | undefined {
-  return chromiumCandidates().find((candidate) => existsSync(candidate));
-}
-
 /** Returns the compiled browser fixture without relying on test-environment DOM shims. */
-function browserFixtureSource(
-  ownershipRuntimeSource: string,
-  reactSpecifier: string,
-  reactDomSpecifier: string,
-): string {
+function browserFixtureSource(ownershipRuntimeSource: string): string {
   return (
     ownershipRuntimeSource +
     String.raw`
-import * as React from ${JSON.stringify(reactSpecifier)};
-import { createRoot } from ${JSON.stringify(`${reactDomSpecifier}/client`)};
-import ReactDOM, * as ReactDOMNamespace from ${JSON.stringify(reactDomSpecifier)};
-import { createPortal } from ${JSON.stringify(reactDomSpecifier)};
-import { jsx as productionJsx } from ${JSON.stringify(`${reactSpecifier}/jsx-runtime`)};
+import * as React from 'react';
+import { createRoot } from 'react-dom/client';
+import ReactDOM, * as ReactDOMNamespace from 'react-dom';
+import { createPortal } from 'react-dom';
+import { jsx as productionJsx } from 'react/jsx-runtime';
 const apiKey = Symbol.for('newdlops.react-file-preview.page-inspector');
 const consoleErrors = []; const originalConsoleError = console.error; console.error = (...values) => { consoleErrors.push(values.map((value) => String(value)).join(' ')); originalConsoleError(...values); };
 const OwnershipContext = globalThis[apiKey].readJsxOwnershipContext();

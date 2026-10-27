@@ -66,14 +66,14 @@ describe('Preview Inspector GraphQL fragment runtime fallback', () => {
     expect(fixture.api.read()).toEqual([
       expect.objectContaining({
         hookName: 'getFragmentData',
-        requiredPaths: expect.arrayContaining(['warnings.some()']),
+        requiredPaths: expect.arrayContaining(['warnings.some()']) as unknown,
       }),
     ]);
   });
 
   it('preserves authored and compiler-proven fragment lists outside the named-root repair', () => {
     const contextList = Object.freeze([Object.freeze({ id: 'context-company' })]);
-    const document = () => ({
+    const document = (): object => ({
       definitions: [{ kind: 'FragmentDefinition', name: { value: 'CompanyRow' } }],
     });
     const autoOff = createRuntimeFallbackFixture(false);

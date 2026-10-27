@@ -1,7 +1,9 @@
-import type { PreviewHeadlessResult } from './previewHeadlessRenderer';
-import type { PreviewHeadlessOwnershipEvent } from './previewHeadlessRenderer';
 import type { PreviewCompilerActivity } from '../../domain/previewCompilerActivity';
 import type { PreviewProgressStage } from '../../domain/previewProgress';
+import type {
+  PreviewHeadlessOwnershipEvent,
+  PreviewHeadlessResult,
+} from './previewHeadlessRenderer';
 
 export const PREVIEW_TSX_CORPUS_ARCHITECTURE_ID = 'tsx-corpus-serial-throughput-measurement-v10';
 export const PREVIEW_TSX_CORPUS_CLASSIFIER_VERSION = 2;
@@ -32,7 +34,11 @@ export interface PreviewTsxCorpusFrozenPolicy {
   readonly protocolVersion: 3;
   readonly reuseMode: 'persistent-compiler-fresh-browser';
   readonly selectedAt: string;
-  readonly sentinels: readonly { readonly digest: string; readonly fidelity: string; readonly index: number }[];
+  readonly sentinels: readonly {
+    readonly digest: string;
+    readonly fidelity: string;
+    readonly index: number;
+  }[];
   readonly version: 2;
 }
 
@@ -82,7 +88,14 @@ export interface PreviewTsxCorpusAttemptSpec {
 /** Versioned durable-credit lane transport. Commands and acknowledgements are JSONL. */
 export type PreviewTsxCorpusLaneCommand =
   | { readonly index: number; readonly kind: 'ack'; readonly version: 3 }
-  | { readonly commandId: string; readonly generationId: string; readonly kind: 'row'; readonly laneId: number; readonly row: PreviewTsxCorpusAttemptSpec; readonly version: 3 }
+  | {
+      readonly commandId: string;
+      readonly generationId: string;
+      readonly kind: 'row';
+      readonly laneId: number;
+      readonly row: PreviewTsxCorpusAttemptSpec;
+      readonly version: 3;
+    }
   | { readonly kind: 'drain'; readonly version: 3 }
   | { readonly kind: 'shutdown'; readonly version: 3 };
 
@@ -230,6 +243,8 @@ export interface PreviewTsxCorpusCleanupProof {
   readonly profilePathAbsent?: boolean;
   readonly profileRoot?: string;
   readonly rendererCleanupConfirmed?: boolean;
+  /** Actual recorded loopback host; checking another address cannot prove listener cleanup. */
+  readonly serverLoopbackHost?: string;
   readonly serverLoopbackPort?: number;
   readonly serverPortClosed?: boolean;
   readonly streamsTerminal: boolean;

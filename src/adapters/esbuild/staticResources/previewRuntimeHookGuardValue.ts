@@ -8,6 +8,12 @@
  */
 import ts from 'typescript';
 import { createPreviewComparisonFalseExpression } from './previewRuntimeHookComparison';
+import { reusePreviewRuntimeHookReferenceTraversal } from './previewRuntimeHookReferenceTraversal';
+import {
+  createPreviewRuntimeSemanticString,
+  inferPreviewRuntimeSemanticFallback,
+  type PreviewRuntimeSemanticFallback,
+} from './previewRuntimeHookSemantics';
 import {
   findNearestPreviewRuntimeFunction,
   isPreviewRuntimeFunction,
@@ -15,11 +21,6 @@ import {
   unwrapPreviewRuntimeExpression,
   type PreviewRuntimeFunction,
 } from './previewRuntimeHookSyntax';
-import {
-  createPreviewRuntimeSemanticString,
-  inferPreviewRuntimeSemanticFallback,
-  type PreviewRuntimeSemanticFallback,
-} from './previewRuntimeHookSemantics';
 import { isPreviewSelectedTargetExit } from './previewSelectedTargetExit';
 
 /**
@@ -55,6 +56,10 @@ export function inferPreviewRuntimeHookTargetExitFallback(
 ): (PreviewRuntimeSemanticFallback & { readonly targetExit: true }) | undefined {
   const owner = findNearestPreviewRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
+  const visitReferencedChildren = reusePreviewRuntimeHookReferenceTraversal(
+    owner,
+    new Set([identifier.text]),
+  );
   const matches = (expression: ts.Expression): boolean =>
     ts.isIdentifier(expression) && expression.text === identifier.text;
   const demandedValues = new Set<boolean>();
@@ -70,7 +75,7 @@ export function inferPreviewRuntimeHookTargetExitFallback(
         if (value !== undefined) demandedValues.add(value);
       }
     }
-    ts.forEachChild(node, visit);
+    visitReferencedChildren(node, visit);
   };
   visit(owner);
   if (demandedValues.size !== 1) return undefined;
@@ -190,7 +195,7 @@ function readPreviewRuntimeCollectionLengthConstAlias(
   owner: PreviewRuntimeFunction,
 ): string | undefined {
   let current: ts.Expression = expression;
-  while (true) {
+  for (;;) {
     const parent = current.parent;
     if (
       (ts.isParenthesizedExpression(parent) ||
@@ -270,7 +275,7 @@ export function inferPreviewRuntimeHookAssignmentGuardPassFallback(
     return undefined;
   }
   let assignmentCount = 0;
-  let invalidWrite = false;
+  const writeEvidence = { invalid: false };
   const visit = (node: ts.Node): void => {
     if (node !== owner && isPreviewRuntimeFunction(node)) {
       if (!isNestedScopeOnTargetRoute(node, target)) return;
@@ -278,15 +283,14 @@ export function inferPreviewRuntimeHookAssignmentGuardPassFallback(
     if (ts.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind)) {
       const written = readStaticAssignmentTarget(node.left);
       if (
-        written !== undefined &&
-        written.root === tracked.root &&
+        written?.root === tracked.root &&
         isOwnerBindingReachable(node.left, tracked.root, owner)
       ) {
         if (
           node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
           !sameStaticPath(written.path, tracked.path)
         ) {
-          invalidWrite = true;
+          writeEvidence.invalid = true;
         } else {
           assignmentCount += 1;
         }
@@ -295,12 +299,11 @@ export function inferPreviewRuntimeHookAssignmentGuardPassFallback(
     ts.forEachChild(node, visit);
   };
   visit(owner);
-  if (invalidWrite || assignmentCount !== 1) return undefined;
+  if (writeEvidence.invalid || assignmentCount !== 1) return undefined;
   const passValue = inferGuardPassBoolean(owner, (expression) => {
     const candidate = readStaticAssignmentTarget(expression);
     return (
-      candidate !== undefined &&
-      candidate.root === tracked.root &&
+      candidate?.root === tracked.root &&
       sameStaticPath(candidate.path, tracked.path) &&
       isOwnerBindingReachable(expression, tracked.root, owner)
     );
@@ -352,18 +355,18 @@ function isOwnerBindingReachable(
       ) {
         return false;
       }
-      let shadowed = false;
+      const shadowEvidence = { found: false };
       visitOwnerDirectNodes(current, (candidate) => {
         if (
           ts.isVariableDeclaration(candidate) &&
           previewRuntimeBindingContainsName(candidate.name, root)
         ) {
-          shadowed = true;
+          shadowEvidence.found = true;
         }
       });
-      if (shadowed) return false;
+      if (shadowEvidence.found) return false;
     }
-    current = current.parent;
+    current = ts.isSourceFile(current) ? undefined : current.parent;
   }
   return current === owner;
 }
@@ -386,15 +389,17 @@ function isNestedScopeOnTargetRoute(scope: PreviewRuntimeFunction, target: ts.No
   let current: ts.Node | undefined = target;
   while (current !== undefined) {
     if (current === scope) return true;
-    current = current.parent;
+    current = ts.isSourceFile(current) ? undefined : current.parent;
   }
   return false;
 }
 
+/** Recognizes assignment operator tokens before treating a receiver path as a write. */
 function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
   return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
 }
 
+/** Compares static receiver segments exactly so unrelated paths cannot share a guard constraint. */
 function sameStaticPath(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((segment, index) => segment === right[index]);
 }

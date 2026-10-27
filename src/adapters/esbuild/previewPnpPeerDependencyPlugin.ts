@@ -450,7 +450,7 @@ function doesPackageProvideDirectDependency(
 
 /** Checks path containment without accepting sibling directories sharing a textual prefix. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

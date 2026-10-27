@@ -53,6 +53,8 @@ export interface PreviewInspectorAncestorEdge {
   readonly localOwnerNames: readonly string[];
   /** Source offset of the selected imported child JSX occurrence. */
   readonly occurrenceStart: number;
+  /** Exact authored JSX site required above the target in one committed Fiber corridor. */
+  readonly occurrenceId?: string;
   /** Nearest importable authored owner containing the child occurrence. */
   readonly owner: PreviewInspectorComponentReference;
 }
@@ -93,6 +95,8 @@ export interface PreviewInspectorPageCandidate {
   readonly rootInference?: PreviewInferredExportProps;
   /** Implicit Next App Router wrappers, ordered exactly as root layout through leaf layout. */
   readonly nextAppLayoutChain?: readonly PreviewInspectorNextAppLayoutReference[];
+  /** Unconditional literal Next redirect; this route has no authored render output of its own. */
+  readonly nextAppRedirectDestination?: string;
   /** Implicit Next Pages Router `_app` wrapper supplied through the framework Component prop. */
   readonly nextPagesShell?: PreviewInspectorNextPagesShell;
   /** Whether this independently mounted root's target-facing branch creates its own Router. */

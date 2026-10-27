@@ -4,18 +4,35 @@
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { resolvePreviewTypeLibDirectory } from '../../../../src/adapters/esbuild/typeOracle/previewTypeProgram';
-import { createPreviewTypedValueExpression } from '../../../../src/adapters/esbuild/typeOracle/previewTypedValueExpression';
 import { createPreviewSampleDateApiExpression } from '../../../../src/adapters/esbuild/previewSampleDateRuntimeSource';
+import { resolvePreviewTypeLibDirectory } from '../../../../src/adapters/esbuild/typeOracle/previewTypeProgram';
 import { PREVIEW_TYPED_VALUE_TAG } from '../../../../src/adapters/esbuild/typeOracle/previewTypeValueSynthesizer';
+import { createPreviewTypedValueExpression } from '../../../../src/adapters/esbuild/typeOracle/previewTypedValueExpression';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 
 describe('createPreviewTypedValueExpression', () => {
+  it('emits a writable generated React ref inside an immutable descriptor result', () => {
+    const expression = createPreviewTypedValueExpression({
+      ref: { [PREVIEW_TYPED_VALUE_TAG]: 'ref', value: null },
+      data: { current: null },
+    });
+    const value = runInNewContext(`(${expression})`) as {
+      ref: { current: unknown };
+      data: { current: unknown };
+    };
+    expect(Object.isFrozen(value)).toBe(true);
+    expect(Object.isFrozen(value.data)).toBe(true);
+    value.ref.current = 42;
+    expect(value.ref.current).toBe(42);
+    value.ref.current = null;
+    expect(value.ref.current).toBeNull();
+  });
+
   /** Tagged descriptors become real runtime values inside a frozen object graph. */
   it('emits frozen objects, callables, dates, and collections', () => {
     const expression = createPreviewTypedValueExpression({
@@ -38,6 +55,33 @@ describe('createPreviewTypedValueExpression', () => {
     expect(value.refetch()).toBe(3);
     expect(Object.isFrozen(value)).toBe(true);
     expect(Object.keys(value)).not.toContain('__proto__');
+  });
+
+  /** Bigint descriptors preserve exact digits when a typed server function resolves its result. */
+  it('emits bigint values in asynchronous typed results without losing precision', async () => {
+    const expression = createPreviewTypedValueExpression({
+      [PREVIEW_TYPED_VALUE_TAG]: 'function',
+      returns: {
+        [PREVIEW_TYPED_VALUE_TAG]: 'promise',
+        value: {
+          costMicros: { [PREVIEW_TYPED_VALUE_TAG]: 'bigint', value: '1' },
+          debt: { [PREVIEW_TYPED_VALUE_TAG]: 'bigint', value: '-3' },
+          large: { [PREVIEW_TYPED_VALUE_TAG]: 'bigint', value: '9007199254740993' },
+        },
+      },
+    });
+    const query = runInNewContext(`(${expression})`) as () => Promise<{
+      readonly costMicros: bigint;
+      readonly debt: bigint;
+      readonly large: bigint;
+    }>;
+    const value = await query();
+
+    expect(value.costMicros).toBe(1n);
+    expect(value.debt).toBe(-3n);
+    expect(value.large).toBe(9007199254740993n);
+    expect(Number.isFinite(Number(value.costMicros) / 1_000_000)).toBe(true);
+    expect(Object.isFrozen(value)).toBe(true);
   });
 
   /** Once the page installs its sample-date API, the canonical day lands on the current day. */

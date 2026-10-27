@@ -5,12 +5,15 @@
  * module that calls `createRoot(...).render(<App />)`. Page Inspector mounts the page root without
  * executing that entry, so its stylesheets were never loaded and Tailwind pages rendered unstyled.
  * This module reads candidate entries as inert text: the `index.html` module script first, then
- * conventional `src/main.*` and `src/index.*` files. A candidate is accepted only when it imports
- * the mounted page root directly, so an unrelated entry in a multi-app repository is ignored.
+ * conventional `src/main.*` and `src/index.*` files. A candidate is accepted only when a bounded
+ * runtime-import corridor reaches the selected page root; unrelated applications are ignored.
  */
 import path from 'node:path';
-import ts from 'typescript';
 import type { ReadPreviewProjectSourceOptions } from './previewProjectFileAnalysisCache';
+import {
+  createPreviewApplicationEntryCorridor,
+  type PreviewApplicationStyleOwner,
+} from './previewApplicationEntryCorridor';
 
 const MAXIMUM_ENTRY_BYTES = 1024 * 1024;
 const HTML_DOCUMENTS = ['index.html', 'public/index.html', 'src/index.html'] as const;
@@ -35,10 +38,12 @@ export interface SelectPreviewApplicationEntryOptions {
 export interface PreviewApplicationEntry {
   readonly sourcePath: string;
   readonly sourceText: string;
+  /** Runtime-import owners connecting this entry to one already-proven page root. */
+  readonly styleOwners: readonly PreviewApplicationStyleOwner[];
 }
 
 /**
- * Returns the first candidate entry that directly imports one of the page-root modules.
+ * Returns the first candidate entry with a proven runtime-import path to a page-root module.
  *
  * @param options Project root, cached reader, resolver, and page-root modules.
  * @returns Accepted entry, or `undefined` when no candidate proves it owns the page root.
@@ -55,18 +60,15 @@ export async function selectPreviewApplicationEntry(
     ),
   ];
   const seen = new Set<string>();
+  const proveCorridor = createPreviewApplicationEntryCorridor(options);
   for (const candidate of candidates) {
     const sourcePath = path.normalize(candidate);
     if (seen.has(sourcePath) || roots.has(sourcePath)) continue;
     seen.add(sourcePath);
     const sourceText = await options.readSource({ maximumBytes: MAXIMUM_ENTRY_BYTES, sourcePath });
     if (sourceText === undefined) continue;
-    const imports = ts.preProcessFile(sourceText, true, false).importedFiles;
-    const importsRoot = imports.some((reference) => {
-      const resolved = options.resolveModule(reference.fileName, sourcePath);
-      return resolved !== undefined && roots.has(path.normalize(resolved));
-    });
-    if (importsRoot) return { sourcePath, sourceText };
+    const styleOwners = await proveCorridor(sourcePath, sourceText);
+    if (styleOwners !== undefined) return { sourcePath, sourceText, styleOwners };
   }
   return undefined;
 }

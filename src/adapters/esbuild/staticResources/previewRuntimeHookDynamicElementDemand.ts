@@ -7,6 +7,7 @@
  */
 import ts from 'typescript';
 import { isPreviewRuntimeHookArrayUsageProperty } from './previewRuntimeHookPropertyUsage';
+import { createPreviewRuntimeHookReferenceTraversal } from './previewRuntimeHookReferenceTraversal';
 import {
   isPreviewRuntimeFunction,
   previewRuntimeFunctionShadowsName,
@@ -33,6 +34,10 @@ export function inferPreviewRuntimeHookDynamicElementFallback(
 ): PreviewRuntimeHookDynamicElementFallback | undefined {
   const owner = findNearestRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
+  const visitReferencedChildren = createPreviewRuntimeHookReferenceTraversal(
+    owner,
+    new Set([identifier.text]),
+  );
   const entries = new Map<string, { readonly collection: boolean; readonly expression: string }>();
   const visit = (node: ts.Node): void => {
     if (entries.size >= MAXIMUM_DYNAMIC_KEYS) return;
@@ -58,7 +63,7 @@ export function inferPreviewRuntimeHookDynamicElementFallback(
         }
       }
     }
-    ts.forEachChild(node, visit);
+    visitReferencedChildren(node, visit);
   };
   visit(owner);
   if (entries.size === 0) return undefined;

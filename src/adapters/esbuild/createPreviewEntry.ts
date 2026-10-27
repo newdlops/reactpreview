@@ -641,7 +641,10 @@ async function preparePreviewElement() {
 
   enterRuntimePhase('load preview setup module');
   const setupBridge = await import(${encodedSetupSpecifier});
-  const styledComponentsSetup = readSetupDataMember(setupBridge, 'styledComponentsPreview');
+  // The empty compiler bridge may use esbuild namespace getters; no project setup exists to read.
+  const styledComponentsSetup = ${encodedSetupKind} === 'none'
+    ? { status: 'absent' }
+    : readSetupDataMember(setupBridge, 'styledComponentsPreview');
   const setupModule = setupBridge.default ?? {};
   const setupContext = {
     documentName: ${encodedDocumentName},
@@ -689,6 +692,7 @@ async function preparePreviewElement() {
       import(${encodedTargetSpecifier}),
       'load and evaluate target module graph',
     ),
+    tagPreviewRuntimePhase(previewLazyStyleLoader?.ready, 'prepare cached module stylesheets'),
   ]);
   activePreviewRouterBridge = routerBridge;
   activePreviewRouterConfiguration = readSetupMember(setupModule, 'routerPreview');
@@ -832,6 +836,12 @@ async function preparePreviewElement() {
 /** Atomically mounts one fully prepared element and resolves only after React's commit sentinel. */
 async function activatePreparedPreview(preparedPreview) {
   previewActivationStarted = true;
+  previewLazyStyleLoader?.activate?.();
+  if (previewLazyStyleLoader?.requiresDocumentReload === true) {
+    preparedPreview.styleSheetBoundary.dispose();
+    previewLazyStyleLoader.dispose?.();
+    return 'failed';
+  }
   enterRuntimePhase('commit React root');
   preparedPreview.styleSheetBoundary.activate();
   const previewRoot = createPreviewRoot(mountNode, {
@@ -883,7 +893,7 @@ function completePreviewCommit(outcome = 'ready', error) {
   completePreviewProgress(previewEntryRevision);
   try {
     previewHotRuntime.activeStyleSheetBoundary?.commit?.();
-    globalThis[Symbol.for(${JSON.stringify(PREVIEW_LAZY_STYLE_LOADER_SYMBOL)})]?.commit?.();
+    previewLazyStyleLoader?.commit?.();
   } catch (error) {
     console.warn('React Preview could not retire stale lazy stylesheets.', error);
   }
@@ -913,6 +923,7 @@ function completePreviewCommit(outcome = 'ready', error) {
   }
 }
 
+const previewLazyStyleLoader = globalThis[Symbol.for(${JSON.stringify(PREVIEW_LAZY_STYLE_LOADER_SYMBOL)})];
 const previewPreparationPromise = preparePreviewElement();
 let previewActivationPromise;
 const preparedPreviewEntry = {
@@ -924,6 +935,7 @@ const preparedPreviewEntry = {
   preparationPromise: previewPreparationPromise,
   revision: previewEntryRevision,
   async dispose() {
+    previewLazyStyleLoader?.dispose?.();
     try {
       const preparedPreview = await previewPreparationPromise;
       if (!previewActivationStarted) preparedPreview.styleSheetBoundary.dispose();

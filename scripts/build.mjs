@@ -36,15 +36,40 @@ const REACT_18_RUNTIME_PACKAGES = Object.freeze([
   }),
 ]);
 
+/**
+ * Rejects generated JavaScript that exceeds the same physical-line limit as maintained code.
+ *
+ * @returns {import('esbuild').Plugin} Build and watch validation for each emitted runtime entry.
+ */
+function createRuntimeLineLimitPlugin() {
+  return {
+    name: 'runtime-line-limit',
+    setup(build) {
+      build.onEnd(async (result) => {
+        const outfile = build.initialOptions.outfile;
+        if (result.errors.length > 0 || outfile === undefined) return;
+        const source = await readFile(outfile, 'utf8');
+        const lines = (source.match(/\n/gu)?.length ?? 0) + (source.endsWith('\n') ? 0 : 1);
+        return lines <= 1000
+          ? undefined
+          : { errors: [{ text: `${outfile}: ${lines} lines exceeds the 1000-line limit.` }] };
+      });
+    },
+  };
+}
+
 const sharedBuildOptions = {
   bundle: true,
   external: ['esbuild', 'vscode'],
   legalComments: 'none',
   logLevel: 'info',
   minify: isProduction,
+  // Escape multiline generated templates; source maps retain development debugging locations.
+  minifyWhitespace: true,
   platform: 'node',
-  plugins: [createPreviewTypeScriptInteropPlugin()],
+  plugins: [createPreviewTypeScriptInteropPlugin(), createRuntimeLineLimitPlugin()],
   sourcemap: isProduction ? false : 'external',
+  supported: { 'template-literal': false },
   target: 'node20',
 };
 
@@ -74,7 +99,16 @@ const compilerWorkerBuildOptions = {
 };
 
 /** Independent host and compiler build plans with distinct module formats. */
-const buildPlans = [extensionBuildOptions, compilerWorkerBuildOptions];
+const buildPlans = [
+  extensionBuildOptions,
+  compilerWorkerBuildOptions,
+  {
+    ...sharedBuildOptions,
+    entryPoints: ['src/previewSassWorker.ts'],
+    format: 'cjs',
+    outfile: 'dist/previewSassWorker.js',
+  },
+];
 
 /**
  * Removes the former CommonJS host artifacts so VSIX packaging cannot retain an obsolete entry.

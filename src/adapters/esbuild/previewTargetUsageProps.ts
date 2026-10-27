@@ -4,6 +4,7 @@
  * restores structural components and styles without executing the complete parent or its siblings.
  */
 import { open, readdir } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import type {
   PreviewInspectorRouteSelectionStep,
@@ -33,6 +34,9 @@ import {
 
 const MAX_SCANNED_SOURCE_FILES = 16_384;
 const MAX_CONCURRENT_SOURCE_READS = 64;
+const MAX_CONCURRENT_INVENTORY_DIRECTORY_READS = 4;
+const MAX_RETAINED_INVENTORY_DIRECTORY_READS = 64;
+const INVENTORY_DIRECTORY_LOOKAHEAD = 16;
 const MAX_INDIVIDUAL_SOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_SOURCE_BYTES = 128 * 1024 * 1024;
 const SOURCE_EXTENSION_PATTERN = /\.(?:[cm]?[jt]sx?)$/iu;
@@ -505,39 +509,78 @@ async function collectProjectSourcePaths(
     (left, right) => (left < right ? -1 : left > right ? 1 : 0),
   );
   const sourcePaths: string[] = [];
+  const readAhead = new Map<string, Promise<Dirent[] | undefined>>();
+  const inFlight = new Set<Promise<Dirent[] | undefined>>();
 
-  while (pendingDirectories.size > 0 && sourcePaths.length < MAX_SCANNED_SOURCE_FILES) {
+  /** Starts only trusted discovered directories; errors retain the original skip behavior. */
+  const startRead = (directoryPath: string): Promise<Dirent[] | undefined> => {
+    const pending = readdir(directoryPath, { withFileTypes: true })
+      .catch(() => undefined)
+      .finally(() => inFlight.delete(pending));
+    inFlight.add(pending);
+    readAhead.set(directoryPath, pending);
+    return pending;
+  };
+
+  /** Reserves a bounded I/O slot for the exact next lexical directory, including new descendants. */
+  const readNext = async (directoryPath: string): Promise<Dirent[] | undefined> => {
+    const retained = readAhead.get(directoryPath);
+    if (retained !== undefined) return retained;
+    while (inFlight.size >= MAX_CONCURRENT_INVENTORY_DIRECTORY_READS) {
+      await Promise.race(inFlight);
+      throwIfPreviewBuildCancelled(signal);
+    }
     throwIfPreviewBuildCancelled(signal);
-    const directoryPath = pendingDirectories.popMinimum();
-    if (directoryPath === undefined) {
-      break;
+    return startRead(directoryPath);
+  };
+
+  /** Warms a short queue prefix without consuming it or changing cap-sensitive traversal order. */
+  const prefetch = (): void => {
+    const upcoming: string[] = [];
+    while (pendingDirectories.size > 0 && upcoming.length < INVENTORY_DIRECTORY_LOOKAHEAD) {
+      const directoryPath = pendingDirectories.popMinimum();
+      if (directoryPath !== undefined) upcoming.push(directoryPath);
     }
-    let entries;
-    try {
-      entries = await readdir(directoryPath, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    throwIfPreviewBuildCancelled(signal);
-    entries.sort((left, right) => left.name.localeCompare(right.name));
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) {
-        continue;
-      }
-      const entryPath = path.join(directoryPath, entry.name);
-      if (entry.isDirectory()) {
-        if (!IGNORED_DIRECTORY_NAMES.has(entry.name)) {
-          pendingDirectories.push(entryPath);
-        }
-      } else if (entry.isFile() && SOURCE_EXTENSION_PATTERN.test(entry.name)) {
-        sourcePaths.push(entryPath);
-        if (sourcePaths.length >= MAX_SCANNED_SOURCE_FILES) {
-          break;
-        }
+    for (const directoryPath of upcoming) {
+      pendingDirectories.push(directoryPath);
+      if (
+        inFlight.size < MAX_CONCURRENT_INVENTORY_DIRECTORY_READS &&
+        readAhead.size < MAX_RETAINED_INVENTORY_DIRECTORY_READS &&
+        !readAhead.has(directoryPath)
+      ) {
+        void startRead(directoryPath);
       }
     }
+  };
+
+  try {
+    while (pendingDirectories.size > 0 && sourcePaths.length < MAX_SCANNED_SOURCE_FILES) {
+      throwIfPreviewBuildCancelled(signal);
+      const directoryPath = pendingDirectories.popMinimum();
+      if (directoryPath === undefined) break;
+      const next = readNext(directoryPath);
+      prefetch();
+      const entries = await next;
+      readAhead.delete(directoryPath);
+      throwIfPreviewBuildCancelled(signal);
+      if (entries === undefined) continue;
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        if (entry.isSymbolicLink()) continue;
+        const entryPath = path.join(directoryPath, entry.name);
+        if (entry.isDirectory()) {
+          if (!IGNORED_DIRECTORY_NAMES.has(entry.name)) pendingDirectories.push(entryPath);
+        } else if (entry.isFile() && SOURCE_EXTENSION_PATTERN.test(entry.name)) {
+          sourcePaths.push(entryPath);
+          if (sourcePaths.length >= MAX_SCANNED_SOURCE_FILES) break;
+        }
+      }
+    }
+    return sourcePaths.sort();
+  } finally {
+    await Promise.allSettled(inFlight);
+    readAhead.clear();
   }
-  return sourcePaths.sort();
 }
 
 /**

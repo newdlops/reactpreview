@@ -182,6 +182,26 @@ export function createRoot(mountNode) {
 `;
 
 describe('preview progress runtime execution', () => {
+  it('rejects malformed duration messages before they can hide or supersede current progress', () => {
+    const fixture = createProgressProtocolFixture();
+    fixture.listener({ data: createPreviewProgressMessage('loading-preview', 4) });
+    fixture.listener({
+      data: {
+        ...createPreviewProgressMessage('ready', 5),
+        timing: { elapsedMs: 12, stages: [{ stage: 'loading-preview', elapsedMs: 1000 }] },
+      },
+    });
+    expect(fixture.progressHost.hidden).toBe(false);
+    expect(fixture.hotRuntime.progressRevision).toBe(4);
+    fixture.listener({
+      data: createPreviewProgressMessage('ready', 4, {
+        elapsedMs: 1200,
+        stages: [{ stage: 'loading-preview', elapsedMs: 1200 }],
+      }),
+    });
+    expect(fixture.progressHost.hidden).toBe(true);
+  });
+
   /**
    * Makes completion terminal for one revision while still allowing the next build revision to
    * reopen the retained overlay. This executes the actual generated message listener and helper.
@@ -311,6 +331,38 @@ describe('preview progress runtime execution', () => {
         type: 'react-preview-runtime-ready',
       }),
     );
+  });
+
+  /** A failed speculative import must preserve the mounted document and its host correlation. */
+  it('returns failed before React rendering when stylesheet activation requests document replacement', async () => {
+    const javascript = await buildControlledPreviewEntry(
+      'export function HotTarget() { return <main>UNSAFE_STYLE_TARGET</main>; }',
+      'UnsafeStyleTarget.tsx',
+    );
+    const runtime = createControlledBrowserRuntime(1);
+    const hotRuntime = installControlledHotRuntime(runtime, 2);
+    let disposed = false;
+    const loader = {
+      ready: Promise.resolve(),
+      requiresDocumentReload: false,
+      activate(): void {
+        this.requiresDocumentReload = true;
+      },
+      dispose(): void {
+        disposed = true;
+      },
+    };
+    Reflect.set(runtime.sandbox, Symbol.for('newdlops.react-preview.lazy-styles.v1'), loader);
+    runtime.mountNode.innerHTML = 'PREVIOUS_COMMITTED_MARKER';
+    runInContext(javascript, createContext(runtime.sandbox), { timeout: 10_000 });
+    const prepared = hotRuntime.preparedEntry;
+    if (prepared === undefined) throw new Error('Hot entry preparation is missing.');
+    await prepared.preparationPromise;
+    await expect(prepared.activate()).resolves.toBe('failed');
+    expect(disposed).toBe(true);
+    expect(runtime.sandbox.__previewRenderScheduled).toBeUndefined();
+    expect(runtime.mountNode.innerHTML).toBe('PREVIOUS_COMMITTED_MARKER');
+    expect(runtime.messages).toEqual([]);
   });
 
   /** A failed speculative import must preserve the mounted document and its host correlation. */

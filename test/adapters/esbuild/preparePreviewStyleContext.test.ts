@@ -172,6 +172,42 @@ describe('preparePreviewStyleContext', () => {
   });
 
   /** Avoids allocating a replacement context when the final frontier adds no authored source. */
+  it('retains final authored style evidence when the early graph already occupies 128 files', async () => {
+    const request: PreviewBuildRequest = {
+      dependencySnapshots: [],
+      documentPath: TARGET_PATH,
+      language: 'tsx',
+      renderMode: 'page-inspector',
+      sourceText: '<main />',
+      workspaceRoot: WORKSPACE_ROOT,
+    };
+    const context = await preparePreviewStyleContext({
+      inspectorDependencyPaths: [],
+      portalHostDependencyPaths: [],
+      projectRoot: WORKSPACE_ROOT,
+      readSource: () => Promise.resolve(undefined),
+      request,
+      staticModuleResolver: createEmptyStaticModuleResolver(),
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+    const early = Array.from({ length: 128 }, (_, index) => ({
+      documentPath: path.join(WORKSPACE_ROOT, `Early${index.toString()}.tsx`),
+      language: 'tsx' as const,
+      sourceText: '<div />',
+    }));
+    const final = Array.from({ length: 512 }, (_, index) =>
+      path.join(WORKSPACE_ROOT, `Final${index.toString()}.tsx`),
+    );
+    const completed = await completePreviewStyleContextTailwindCandidates({
+      context: { ...context, tailwindCandidateSnapshots: early },
+      readSource: () => Promise.resolve('<a className="underline-offset-4" />'),
+      sourcePaths: final,
+    });
+    expect(completed.tailwindCandidateSnapshots).toHaveLength(640);
+    expect(completed.tailwindCandidateSnapshots.at(-1)?.documentPath).toBe(final.at(-1));
+  });
+
+  /** Avoids allocating a replacement context when the final frontier adds no authored source. */
   it('preserves style context identity when final-frontier candidates are already present', async () => {
     const targetSource = 'export const Target = () => <main>Target</main>;';
     const request: PreviewBuildRequest = {

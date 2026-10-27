@@ -320,7 +320,7 @@ function findCommonRenderSourceDirectory(
 
 /** Checks lexical containment without accepting sibling-prefix lookalikes. */
 function isRenderPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

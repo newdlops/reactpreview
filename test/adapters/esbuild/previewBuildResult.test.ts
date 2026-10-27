@@ -1,10 +1,11 @@
-/** Exercises the final aggregate byte guard without allocating large buffers in the test process. */
+/** Exercises raw and post-processing byte guards plus exact compiler dependency recovery. */
 import path from 'node:path';
-import type { Metafile, OutputFile } from 'esbuild';
+import type { BuildResult, Metafile, OutputFile } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import type { PreviewBuildRequest } from '../../../src/domain/preview';
 import {
   assertOutputSize,
+  createPreviewBundle,
   collectPreviewBuildDependencies,
   decodePreviewMetafileFileDependency,
 } from '../../../src/adapters/esbuild/previewBuildResult';
@@ -50,6 +51,56 @@ describe('assertOutputSize', () => {
     expect(() => {
       assertOutputSize(createOutputFiles(513), 4096);
     }).toThrow('configured 512 MiB limit');
+  });
+
+  it('counts generated runtime bytes when raw split output is just below the limit', async () => {
+    const request = {
+      ...createRequest('/workspace', '/workspace/src/App.tsx'),
+      maxOutputMebibytes: 32,
+    };
+    const contents = new Uint8Array(32 * MEBIBYTE - 128).fill(32);
+    contents.set(new TextEncoder().encode('import "./chunks/child.js";\n'));
+    const child = new TextEncoder().encode('export {};');
+    const directory = '/workspace/react-preview-output/';
+    const result: BuildResult<{ metafile: true; write: false }> = {
+      errors: [],
+      warnings: [],
+      mangleCache: {},
+      outputFiles: [
+        { path: directory + 'entry.js', hash: 'entry', contents, text: '' },
+        { path: directory + 'chunks/child.js', hash: 'child', contents: child, text: 'export {};' },
+      ],
+      metafile: {
+        inputs: {},
+        outputs: {
+          'react-preview-output/entry.js': {
+            bytes: contents.byteLength,
+            exports: [],
+            inputs: {},
+            entryPoint: PREVIEW_STDIN_ENTRY_NAME,
+            imports: [
+              {
+                kind: 'import-statement',
+                external: false,
+                path: 'react-preview-output/chunks/child.js',
+              },
+            ],
+          },
+          'react-preview-output/chunks/child.js': {
+            bytes: child.byteLength,
+            exports: [],
+            inputs: {},
+            imports: [],
+          },
+        },
+      },
+    };
+    expect(() => {
+      assertOutputSize(result.outputFiles, 32);
+    }).not.toThrow();
+    await expect(createPreviewBundle(request, result, [])).rejects.toThrow(
+      'configured 32 MiB limit',
+    );
   });
 });
 
@@ -121,6 +172,7 @@ function createOutputFiles(...sizesInMebibytes: readonly number[]): readonly Out
   })) as unknown as readonly OutputFile[];
 }
 
+/** Creates a minimal compiler request with an exact lexical target and workspace root. */
 function createRequest(workspaceRoot: string, documentPath: string): PreviewBuildRequest {
   return {
     dependencySnapshots: [],
@@ -131,6 +183,7 @@ function createRequest(workspaceRoot: string, documentPath: string): PreviewBuil
   };
 }
 
+/** Supplies only the metadata input identities needed by dependency recovery assertions. */
 function createMetafile(inputIdentities: readonly string[]): Metafile {
   return {
     inputs: Object.fromEntries(

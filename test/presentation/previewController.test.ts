@@ -1,18 +1,26 @@
-/** Verifies multiple pinned panels, independent revisions, dependency routing, and lease transfer. */
+/** Verifies pinned preview lifecycle and route inventory ownership invariants. */
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import type { BuildPreview } from '../../src/application/buildPreview';
-import type { PreviewBuildRequest, PreparedPreview } from '../../src/domain/preview';
+import type { PreparedPreview, PreviewBuildRequest } from '../../src/domain/preview';
 import type { ResolvedPreviewTarget } from '../../src/presentation/activePreviewTarget';
 import { PreviewController } from '../../src/presentation/previewController';
-import { createPreviewControllerTestWorkspaceState } from './previewControllerTestWorkspaceState';
+import {
+  createDeferred,
+  createPreparedPreview,
+  createPreviewControllerTestLog,
+  createTarget,
+  flushMicrotasks,
+  type TestWatcher,
+} from './previewControllerFixtures';
 import {
   createAcknowledgement,
   type HotReloadMessageIdentity,
   readMessageIdentity,
   type TestPreviewPanel as TestPanel,
 } from './previewControllerTestProtocol';
+import { createPreviewControllerTestWorkspaceState } from './previewControllerTestWorkspaceState';
 
 const targetResolvers = vi.hoisted(() => ({
   active: vi.fn(),
@@ -314,6 +322,7 @@ afterEach(() => {
   vscodeState.warnings.length = 0;
   vscodeState.watchers.length = 0;
 });
+
 describe('PreviewController', () => {
   /** Keeps profile learning shared without waking retained hidden webviews into a render cascade. */
   it('delivers neural snapshots to the source immediately and a sibling only when focused', async () => {
@@ -335,7 +344,7 @@ describe('PreviewController', () => {
     const controller = new PreviewController(
       { execute, releaseArtifact: vi.fn(() => Promise.resolve()) } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
-      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestLog(),
       createPreviewControllerTestWorkspaceState(),
     );
     const openTarget = (
@@ -406,7 +415,7 @@ describe('PreviewController', () => {
     const controller = new PreviewController(
       { execute, releaseArtifact: vi.fn(() => Promise.resolve()) } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
-      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestLog(),
       createPreviewControllerTestWorkspaceState(),
     );
     await controller.open('component');
@@ -581,7 +590,7 @@ describe('PreviewController', () => {
     const controller = new PreviewController(
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
-      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestLog(),
       createPreviewControllerTestWorkspaceState(),
     );
     await controller.open();
@@ -633,7 +642,7 @@ describe('PreviewController', () => {
     const controller = new PreviewController(
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
-      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestLog(),
       createPreviewControllerTestWorkspaceState(),
     );
     await controller.open();
@@ -676,7 +685,7 @@ describe('PreviewController', () => {
     const controller = new PreviewController(
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
-      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestLog(),
       createPreviewControllerTestWorkspaceState(),
     );
     await controller.open();
@@ -724,7 +733,7 @@ describe('PreviewController', () => {
     const controller = new PreviewController(
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
-      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestLog(),
       createPreviewControllerTestWorkspaceState(),
     );
     await controller.open();
@@ -766,7 +775,7 @@ describe('PreviewController', () => {
     const controller = new PreviewController(
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
-      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestLog(),
       createPreviewControllerTestWorkspaceState(),
     );
     await controller.open();
@@ -809,7 +818,7 @@ describe('PreviewController', () => {
     const controller = new PreviewController(
       { execute, releaseArtifact: vi.fn(() => Promise.resolve()) } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
-      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestLog(),
       createPreviewControllerTestWorkspaceState(),
     );
     await controller.open();
@@ -909,7 +918,7 @@ describe('PreviewController', () => {
     const controller = new PreviewController(
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
-      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestLog(),
       createPreviewControllerTestWorkspaceState(),
     );
     await controller.open();
@@ -947,7 +956,7 @@ describe('PreviewController', () => {
     const controller = new PreviewController(
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
-      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestLog(),
       createPreviewControllerTestWorkspaceState(),
     );
     await controller.open();
@@ -968,7 +977,6 @@ describe('PreviewController', () => {
     expect(releaseArtifact).toHaveBeenCalledWith('newer-artifact');
   });
 
-  /** Returns an artifact that arrives after its panel was disposed during compilation. */
   it('returns an in-flight artifact after panel disposal', async () => {
     const target = createTarget('/workspace/src/Closing.tsx');
     targetResolvers.active.mockReturnValue(target);
@@ -978,7 +986,7 @@ describe('PreviewController', () => {
     const controller = new PreviewController(
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
-      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestLog(),
       createPreviewControllerTestWorkspaceState(),
     );
     await controller.open();
@@ -990,86 +998,3 @@ describe('PreviewController', () => {
     });
   });
 });
-/** Test-only subset exposed by each fake filesystem watcher. */
-interface TestWatcher {
-  /** Absolute relative-pattern base used to select a session watcher. */
-  readonly basePath: string;
-  /** Whether the owning session disposed this watcher. */
-  readonly disposed: boolean;
-  /** Emits one created file URI. */
-  fireCreate(filePath: string): void;
-}
-
-/**
- * Creates one resolved target with a distinct immutable URI and build request.
- *
- * @param documentPath Absolute source path pinned to the new panel.
- * @returns Presentation target accepted by the controller.
- */
-function createTarget(documentPath: string): ResolvedPreviewTarget {
-  return {
-    documentName: path.relative('/workspace', documentPath),
-    documentUri: vscode.Uri.file(documentPath),
-    request: {
-      dependencySnapshots: [],
-      documentPath,
-      language: 'tsx',
-      sourceText: `export default function Preview() { return ${JSON.stringify(documentPath)}; }`,
-      workspaceRoot: '/workspace',
-    },
-  };
-}
-
-/**
- * Creates one successful prepared result for lifecycle race tests.
- *
- * @param target Pinned source whose dependency graph owns the result.
- * @param contentHash Distinct artifact identity used by release assertions.
- * @returns Successful application result suitable for resolving a deferred build.
- */
-function createPreparedPreview(
-  target: ResolvedPreviewTarget,
-  contentHash: string,
-): PreparedPreview {
-  return {
-    artifact: {
-      contentHash,
-      scriptLocation: `file:///artifacts/${contentHash}/entry.js`,
-    },
-    dependencies: [target.request.documentPath],
-    diagnostics: [],
-    watchDirectories: [],
-  };
-}
-
-/** Mutable promise controls used to force a deterministic asynchronous completion order. */
-interface Deferred<Value> {
-  /** Promise supplied to production code. */
-  readonly promise: Promise<Value>;
-  /** Resolves the promise from the test body. */
-  readonly resolve: (value: Value) => void;
-}
-
-/**
- * Creates a promise whose completion is controlled explicitly by a lifecycle test.
- *
- * @returns Deferred promise and its externally callable resolver.
- */
-function createDeferred<Value>(): Deferred<Value> {
-  let resolvePromise: ((value: Value) => void) | undefined;
-  const promise = new Promise<Value>((resolve) => {
-    resolvePromise = resolve;
-  });
-  return {
-    promise,
-    resolve: (value: Value): void => {
-      resolvePromise?.(value);
-    },
-  };
-}
-
-/** Flushes queued fake webview acknowledgements before resetting release assertions. */
-async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-}

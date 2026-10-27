@@ -8,6 +8,7 @@ import {
 
 /** Browser scheduler methods exported only by the isolated VM fixture. */
 interface RefreshRuntimeHarness {
+  readonly cancel: () => void;
   readonly commit: () => void;
   readonly session: Record<string, unknown>;
   readonly tree: () => void;
@@ -42,6 +43,7 @@ describe('Preview Inspector refresh runtime source', () => {
         frameCallbacks.push(callback);
         return frameCallbacks.length;
       },
+      cancelAnimationFrame: vi.fn(),
       restorePreviewInspectorOutline: vi.fn(),
       setTimeout: (callback: () => void, delay: number) => {
         timerCallbacks.push({ callback, delay });
@@ -52,6 +54,7 @@ describe('Preview Inspector refresh runtime source', () => {
     vm.runInNewContext(
       `${createPreviewInspectorRefreshRuntimeSource()}
        globalThis.__runtime = {
+         cancel: cancelPreviewInspectorRefreshScheduling,
          commit: schedulePreviewInspectorCommitRefresh,
          session: previewInspectorSession,
          tree: schedulePreviewInspectorTreeRefresh,
@@ -81,6 +84,72 @@ describe('Preview Inspector refresh runtime source', () => {
     runtime.tree();
     expect(timerCallbacks.at(-1)?.delay).toBe(PREVIEW_INSPECTOR_TREE_REFRESH_INTERVAL_MS - 1);
   });
+
+  /** Equal animation/timer IDs must never let Inspector disposal cancel another owner's work. */
+  it.each([true, false])(
+    'cancels only its own highlight handle (animation frame: %s)',
+    (useFrame) => {
+      const frames = new Map<number, () => void>();
+      const timers = new Map<number, () => void>();
+      const unrelated = vi.fn();
+      const cancelTimer = vi.fn((handle: number) => timers.delete(handle));
+      timers.set(1, unrelated);
+      let nextTimer = 2;
+      const highlight = vi.fn();
+      const context: Record<string, unknown> & { __runtime?: RefreshRuntimeHarness } = {
+        Date,
+        clearTimeout: cancelTimer,
+        document: createTestDocument(),
+        notifyPreviewInspectorTreeSubscribers: vi.fn(),
+        performance: { now: () => 1_000 },
+        previewInspectorSession: { treeListeners: new Set(), treeDirty: false },
+        reconcilePreviewInspectorHiddenElements: vi.fn(),
+        refreshPreviewInspectorHighlight: highlight,
+        ...(useFrame
+          ? {
+              requestAnimationFrame: (callback: () => void) => {
+                frames.set(1, callback);
+                return 1;
+              },
+              cancelAnimationFrame: (handle: number) => frames.delete(handle),
+            }
+          : {}),
+        setTimeout: (callback: () => void) => {
+          const handle = nextTimer++;
+          timers.set(handle, callback);
+          return handle;
+        },
+      };
+      vm.runInNewContext(
+        `${createPreviewInspectorRefreshRuntimeSource()}
+       globalThis.__runtime = {
+         cancel: cancelPreviewInspectorRefreshScheduling,
+         commit: schedulePreviewInspectorCommitRefresh,
+         session: previewInspectorSession,
+         tree: schedulePreviewInspectorTreeRefresh,
+       };`,
+        context,
+      );
+      const runtime = context.__runtime;
+      if (runtime === undefined) throw new Error('Refresh runtime fixture did not initialize.');
+
+      runtime.commit();
+      expect(runtime.session.highlightFrame).toBe(useFrame ? 1 : 2);
+      runtime.cancel();
+      runtime.cancel();
+
+      expect(frames.size).toBe(0);
+      expect(timers.size).toBe(1);
+      expect(timers.get(1)).toBe(unrelated);
+      timers.get(1)?.();
+      expect(unrelated).toHaveBeenCalledOnce();
+      expect(highlight).not.toHaveBeenCalled();
+      expect(runtime.session.highlightFrame).toBeUndefined();
+      expect(runtime.session.cancelHighlightFrame).toBeUndefined();
+      if (!useFrame)
+        expect(cancelTimer.mock.contexts[0]).toHaveProperty('setTimeout', context.setTimeout);
+    },
+  );
 
   /** Watches only structural DOM changes and removes legacy polling, scroll, and resize work. */
   it('does not observe attribute/text churn or install recurring polling', () => {

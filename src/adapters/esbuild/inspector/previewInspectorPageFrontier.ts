@@ -3,13 +3,13 @@
 import { createHash } from 'node:crypto';
 import type { PreviewInspectorTargetMode } from '../../../domain/preview';
 import type { PreviewCompilerFrontierPolicy } from '../../../domain/previewCompilerFrontier';
-import {
-  preparePreviewInspectorBundleFrontier,
-  type PreviewInspectorBundleSourceInventoryMemo,
-  type PreparedPreviewInspectorBundleFrontier,
-} from './previewInspectorBundleFrontier';
 import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
 import type { PreviewInspectorBundleDiagnosticsCollector } from './previewInspectorBundleDiagnostics';
+import {
+  preparePreviewInspectorBundleFrontier,
+  type PreparedPreviewInspectorBundleFrontier,
+  type PreviewInspectorBundleSourceInventoryMemo,
+} from './previewInspectorBundleFrontier';
 import { createPreviewInspectorPageExecutionCandidates } from './previewInspectorPageExecutionCandidates';
 import type {
   PreviewInspectorPageExecutionCandidate,
@@ -75,7 +75,7 @@ export function createEligiblePreviewInspectorPageExecutionCandidates(
   return requested.length === 0 ? candidates : requested;
 }
 
-/** Probes the ordered candidate list; filesystem timing never affects the tie-break. */
+/** Probes complete fidelity groups until the winner is proven; timing never breaks a tie. */
 export async function preparePreviewInspectorPageExecutionSelection(
   options: PreparePreviewInspectorPageExecutionSelectionOptions,
 ): Promise<PreviewInspectorPageExecutionSelection | undefined> {
@@ -90,21 +90,38 @@ export async function preparePreviewInspectorPageExecutionSelection(
     sourceTextByPath.set(sourcePath, read);
     return read;
   };
-  type Probe = {
+  interface Probe {
     candidate: PreviewInspectorPageExecutionCandidate;
     disposition: PreviewInspectorPageFrontierDisposition;
     prepared: PreparedPreviewInspectorBundleFrontier;
-  };
-  const probes: Probe[] = Array(options.candidates.length);
+  }
+  const probes = new Map<string, Probe>();
+  const hasConnectedCandidate = options.candidates.some(
+    (candidate) => candidate.fidelity !== 'target-only',
+  );
+  const isEligibleAcceptedProbe = (probe: Probe): boolean =>
+    probe.disposition !== 'rejected-structural' &&
+    (!hasConnectedCandidate ||
+      probe.candidate.fidelity !== 'target-only' ||
+      probe.candidate.standaloneTarget === true);
   const probeSchedule = options.candidates
     .map((candidate, originalIndex) => ({ candidate, originalIndex }))
     .sort(
       (left, right) =>
-        preparationPriority(left.candidate) - preparationPriority(right.candidate) ||
         fidelityPriority(left.candidate.fidelity) - fidelityPriority(right.candidate.fidelity) ||
         left.originalIndex - right.originalIndex,
     );
-  for (const { candidate, originalIndex } of probeSchedule) {
+  for (const { candidate } of probeSchedule) {
+    // Every remaining candidate has strictly lower fidelity once this complete group succeeded.
+    // Retain those inert choices; a later explicit request must still prepare its exact frontier.
+    if (
+      [...probes.values()].some(
+        (probe) =>
+          isEligibleAcceptedProbe(probe) &&
+          fidelityPriority(probe.candidate.fidelity) < fidelityPriority(candidate.fidelity),
+      )
+    )
+      break;
     const prepared = await preparePreviewInspectorBundleFrontier({
       ...(options.runtimeCompanionSourcePaths === undefined
         ? {}
@@ -126,7 +143,7 @@ export async function preparePreviewInspectorPageExecutionSelection(
         : { sourceInventoryMemo: options.sourceInventoryMemo }),
       workspaceRoot: options.workspaceRoot,
     });
-    probes[originalIndex] = {
+    probes.set(candidate.id, {
       candidate,
       disposition: prepared.rejected
         ? 'rejected-structural'
@@ -134,25 +151,17 @@ export async function preparePreviewInspectorPageExecutionSelection(
           ? 'accepted-bounded'
           : 'accepted-unbounded',
       prepared,
-    };
+    });
   }
-  const hasConnectedCandidate = probes.some(
-    (probe) => probe.candidate.fidelity !== 'target-only',
-  );
-  const isEligibleAcceptedProbe = (probe: Probe): boolean =>
-    probe.disposition !== 'rejected-structural' &&
-    (!hasConnectedCandidate ||
-      probe.candidate.fidelity !== 'target-only' ||
-      probe.candidate.standaloneTarget === true);
   const selectAccepted = (): Probe | undefined =>
-    probes.filter(isEligibleAcceptedProbe).sort(compareProbe)[0];
+    [...probes.values()].filter(isEligibleAcceptedProbe).sort(compareProbe)[0];
   const selected =
     options.bundleDiagnostics === undefined
       ? selectAccepted()
       : options.bundleDiagnostics.measureCandidateSelection(selectAccepted);
   if (selected === undefined) {
     const selectRejected = (): Probe | undefined =>
-      [...probes]
+      [...probes.values()]
         .filter(
           (probe) =>
             !hasConnectedCandidate ||
@@ -172,13 +181,20 @@ export async function preparePreviewInspectorPageExecutionSelection(
       prepared: rejected.prepared,
     });
   }
-  const alternatives = probes.map((probe) => ({
-    candidateId: probe.candidate.id,
-    fidelity: probe.candidate.fidelity,
-    ...(probe.disposition === 'rejected-structural'
-      ? { reason: probe.prepared.frontier.summary.truncationReasons[0] ?? 'rejected-structural' }
-      : {}),
-  }));
+  const alternatives = options.candidates.map((candidate) => {
+    const probe = probes.get(candidate.id);
+    return {
+      candidateId: candidate.id,
+      fidelity: candidate.fidelity,
+      ...(probe === undefined
+        ? { reason: 'deferred-until-selected' }
+        : probe.disposition === 'rejected-structural'
+          ? {
+              reason: probe.prepared.frontier.summary.truncationReasons[0] ?? 'rejected-structural',
+            }
+          : {}),
+    };
+  });
   const executionPlan: PreviewInspectorPageExecutionPlan = Object.freeze({
     alternatives: Object.freeze(alternatives),
     browserCandidateId: selected.candidate.browserCandidate.id,
@@ -241,10 +257,6 @@ function compareRejectedProbe(
     fidelityPriority(left.candidate.fidelity) - fidelityPriority(right.candidate.fidelity) ||
     left.candidate.id.localeCompare(right.candidate.id)
   );
-}
-
-function preparationPriority(candidate: PreviewInspectorPageExecutionCandidate): number {
-  return candidate.fidelity === 'target-contextual' ? 0 : 1;
 }
 
 function fidelityPriority(value: PreviewInspectorPageFidelity): number {

@@ -1,18 +1,38 @@
 /** Applies compiler-validated neural dependency hints without weakening ordinary module resolution. */
+import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
-import { collectPreviewRenderModuleFacts } from './renderGraph/previewRenderModuleFacts';
+import type { PreviewLearnedServerContractExample } from './previewAdjacentTestContractEvidence';
+import type { PreviewDependencyResolutionNeuralScore } from './previewDependencyResolutionNeuralModel';
+import {
+  PREVIEW_LIFECYCLE_END_TIMESTAMP_PATTERN,
+  PREVIEW_TIMESTAMP_NAME_PATTERN,
+} from './previewLifecycleTimestamp';
 import { PREVIEW_COMPILER_PRIVATE_NAMESPACES } from './previewOwnedNamespaceRegistry';
 import { PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
-import type { PreviewDependencyResolutionNeuralScore } from './previewDependencyResolutionNeuralModel';
-import type { PreviewLearnedServerContractExample } from './previewAdjacentTestContractEvidence';
+import { PREVIEW_PRISMA_QUERY_METHOD_PATTERN } from './previewPrismaQueryMethods';
+import {
+  createPreviewSampleDateRebaseExpression,
+  PREVIEW_CANONICAL_SAMPLE_DATE_TIME,
+} from './previewSampleDateRuntimeSource';
+import { createPreviewSampleLabel } from './previewSampleLabel';
+import { collectPreviewRenderModuleFacts } from './renderGraph/previewRenderModuleFacts';
 
 const SOURCE_FILTER = /\.[cm]?[jt]sx?$/;
 const STYLE_MODULE_PATTERN = /\.(?:css|less|sass|scss|styl)$/i;
+/** Facade-scope expression of the neutral contract value, for slots without a known type. */
+export const PREVIEW_SERVER_CONTRACT_NEUTRAL_VALUE_EXPRESSION = 'contract';
 const SERVER_ONLY_IMPORT_PATTERN = /(?:^|\n)\s*import\s*["']server-only["']\s*;?/u;
 const USE_SERVER_DIRECTIVE_PATTERN = /(?:^|\n)\s*["']use server["']\s*;?/u;
+
+/** One server export's declared-type function and whether its result may be nullish. */
+export interface PreviewTypedServerExport {
+  /** Side-effect-free function expression; `contract` stands for slots of unresolved types. */
+  readonly expression: string;
+  /** A mock returning nothing is still a valid result of the declared type. */
+  readonly nullableResult: boolean;
+}
 
 /** Exact, retry-scoped source and package identities selected by the dependency recovery advisor. */
 export interface PreviewDependencyResolutionHintPluginOptions {
@@ -30,6 +50,16 @@ export interface PreviewDependencyResolutionHintPluginOptions {
     readonly sourcePath: string;
   }[];
   readonly readSource?: (sourcePath: string) => Promise<string | undefined> | string | undefined;
+  /**
+   * Returns a function built from one server-module export's declared callable type, or
+   * `undefined` when no type is known. It replaces the neutral proxy, and replaces a bare mock
+   * (`vi.fn()`, which returns nothing) only when the declared result cannot be nullish. Learned
+   * example values always win.
+   */
+  readonly readTypedExportExpression?: (
+    sourcePath: string,
+    exportName: string,
+  ) => PreviewTypedServerExport | undefined;
   readonly styleHints?: readonly {
     readonly moduleSpecifier: string;
     readonly score?: PreviewDependencyResolutionNeuralScore;
@@ -202,14 +232,25 @@ export function createPreviewDependencyResolutionHintPlugin(
           ),
         ].sort();
         recordAppliedHint(`facade:${sourcePath}`, facadeHint?.score);
+        const exportNames = collectPreviewRenderModuleFacts(sourcePath, sourceText).exports.flatMap(
+          (item) => (item.wildcard ? [] : [item.exportName]),
+        );
+        const typedExportExpressions = new Map<string, string>();
+        for (const exportName of exportNames) {
+          const learned = contractExamples.find((example) => example.exportName === exportName);
+          if (learned !== undefined && learned.mode !== 'returned-undefined') continue;
+          const typed = options.readTypedExportExpression?.(sourcePath, exportName);
+          // A bare mock's `undefined` stays when the declared result admits it (`string | null`).
+          if (typed === undefined || (learned !== undefined && typed.nullableResult)) continue;
+          typedExportExpressions.set(exportName, typed.expression);
+        }
         return {
           contents: createPreviewServerContractFacadeSource(
             sourcePath,
             workspaceRoot,
-            collectPreviewRenderModuleFacts(sourcePath, sourceText).exports.flatMap((item) =>
-              item.wildcard ? [] : [item.exportName],
-            ),
+            exportNames,
             contractExamples,
+            typedExportExpressions,
           ),
           loader: 'js',
           resolveDir: path.dirname(sourcePath),
@@ -257,12 +298,17 @@ export function hasExplicitPreviewServerBoundary(sourceText: string): boolean {
  * Creates a CommonJS proxy so esbuild can satisfy arbitrary named ESM imports from the contract.
  * Calls and property chains remain inert and non-thenable; runtime blocker inference can then
  * recommend the concrete values required by the consuming page instead of loading server code.
+ * Timestamp-named properties are the exception: an ending-state timestamp (`deletedAt`) reads as
+ * `null`, so tombstone and deletion notices stay closed, and others read as today's `Date`. Prisma
+ * query methods (`findUnique`, `groupBy`, `$transaction`, …) return a promise of the neutral value,
+ * so `.then(…)` chains work as they do on a real `PrismaPromise`.
  */
 export function createPreviewServerContractFacadeSource(
   sourcePath: string,
   workspaceRoot: string,
   exportNames: readonly string[] = [],
   contractExamples: readonly PreviewLearnedServerContractExample[] = [],
+  typedExportExpressions: ReadonlyMap<string, string> = new Map(),
 ): string {
   const label = formatWorkspacePath(sourcePath, workspaceRoot);
   return createPreviewNeutralExecutionContractSource(
@@ -271,6 +317,7 @@ export function createPreviewServerContractFacadeSource(
     `[React Preview] Server execution contract ${label} is using a neural dependency hint.`,
     exportNames,
     contractExamples,
+    typedExportExpressions,
   );
 }
 
@@ -290,6 +337,7 @@ function createPreviewNeutralExecutionContractSource(
   warning: string,
   exportNames?: readonly string[],
   contractExamples: readonly PreviewLearnedServerContractExample[] = [],
+  typedExportExpressions: ReadonlyMap<string, string> = new Map(),
 ): string {
   const namedExports = [
     ...new Set(
@@ -308,6 +356,23 @@ function createPreviewNeutralExecutionContractSource(
     `/** Render-only execution contract for ${contractKind}: ${label.replaceAll('*/', '* /')} */`,
     'const maximumDepth = 10;',
     'const values = [];',
+    '// Ending-state timestamps read as absent; other timestamp names read as today.',
+    `const lifecycleEndTimestamp = ${String(PREVIEW_LIFECYCLE_END_TIMESTAMP_PATTERN)};`,
+    `const ordinaryTimestamp = ${String(PREVIEW_TIMESTAMP_NAME_PATTERN)};`,
+    'const accessorName = /^(?:get|set|to)[A-Z]/u;',
+    `const readSampleInstant = () => new Date(${createPreviewSampleDateRebaseExpression(PREVIEW_CANONICAL_SAMPLE_DATE_TIME)});`,
+    '// Prisma query methods return promises (PrismaPromise); here they settle to the neutral value.',
+    `const queryMethodName = ${String(PREVIEW_PRISMA_QUERY_METHOD_PATTERN)};`,
+    'const queryMethods = [];',
+    'const readQueryMethod = (depth) => {',
+    '  if (queryMethods[depth] !== undefined) return queryMethods[depth];',
+    '  const method = new Proxy(function ReactPreviewServerQuery() {}, {',
+    '    apply() { return Promise.resolve(readValue(depth)); },',
+    "    get(target, property) { return property === 'name' ? 'Query' : readValue(depth)[property]; },",
+    '  });',
+    '  queryMethods[depth] = method;',
+    '  return method;',
+    '};',
     'const readValue = (depth) => {',
     '  if (values[depth] !== undefined) return values[depth];',
     '  const next = () => depth < maximumDepth ? readValue(depth + 1) : undefined;',
@@ -323,7 +388,12 @@ function createPreviewNeutralExecutionContractSource(
     "      if (property === 'map' || property === 'flatMap') return () => [];",
     "      if (property === 'filter' || property === 'slice') return () => [];",
     "      if (property === Symbol.toPrimitive) return (hint) => hint === 'number' ? 0 : 'Preview value';",
+    "      // The callable target's own `name` is internal; data reads get the sample label.",
+    `      if (property === 'name') return ${JSON.stringify(createPreviewSampleLabel('name'))};`,
     '      if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);',
+    "      if (typeof property === 'string' && lifecycleEndTimestamp.test(property)) return null;",
+    "      if (typeof property === 'string' && ordinaryTimestamp.test(property) && !accessorName.test(property)) return readSampleInstant();",
+    "      if (typeof property === 'string' && queryMethodName.test(property)) return readQueryMethod(Math.min(depth + 1, maximumDepth));",
     '      return next();',
     '    },',
     '    has(target, property) { return Reflect.has(target, property); },',
@@ -341,6 +411,7 @@ function createPreviewNeutralExecutionContractSource(
             ? [
                 `export default ${createLearnedContractFunctionSource(
                   learnedExampleByExport.get('default'),
+                  typedExportExpressions.get('default'),
                 )};`,
               ]
             : []),
@@ -348,17 +419,28 @@ function createPreviewNeutralExecutionContractSource(
             (exportName) =>
               `export const ${exportName} = ${createLearnedContractFunctionSource(
                 learnedExampleByExport.get(exportName),
+                typedExportExpressions.get(exportName),
               )};`,
           ),
         ]),
   ].join('\n');
 }
 
-/** Emits a callable learned mock contract, falling back to the property-chain-safe neutral proxy. */
+/**
+ * Emits one export's contract: a learned mock value first, then a function built from the
+ * export's declared type, then a bare mock's `undefined`, then the property-chain-safe proxy.
+ */
 function createLearnedContractFunctionSource(
   example: PreviewLearnedServerContractExample | undefined,
+  typedExpression?: string,
 ): string {
-  if (example === undefined) return 'contract';
+  if (
+    typedExpression !== undefined &&
+    (example === undefined || example.mode === 'returned-undefined')
+  ) {
+    return typedExpression;
+  }
+  if (example === undefined) return PREVIEW_SERVER_CONTRACT_NEUTRAL_VALUE_EXPRESSION;
   if (example.mode === 'returned-undefined') return '() => undefined';
   const serializedValue = JSON.stringify(example.value);
   return example.mode === 'resolved'

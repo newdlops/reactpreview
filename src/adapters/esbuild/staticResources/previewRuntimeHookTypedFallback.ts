@@ -16,7 +16,39 @@ export type PreviewRuntimeHookTypedCallResolver = (
   call: ts.CallExpression,
   sourceFile: ts.SourceFile,
   requiredPaths: readonly string[],
+  occurrence?: number,
 ) => PreviewTypedCallValue | undefined;
+
+/** Maximum distinct call texts retained by one existing source-order walk. */
+const MAX_CALL_OCCURRENCE_ENTRIES = 4096;
+const MAX_CALL_OCCURRENCE_CHARACTERS = 512 * 1024;
+
+/**
+ * Counts exact call text as an existing walker visits matching calls in pre-order.
+ * Exhausted or oversized keys return undefined so callers retain the ordinary exact AST scan.
+ * Already tracked keys keep their full count; no call or type query is excluded by this memo.
+ */
+export function createPreviewRuntimeCallOccurrenceCounter(): (
+  callText: string,
+) => number | undefined {
+  const counts = new Map<string, number>();
+  let characters = 0;
+  return (callText) => {
+    const count = counts.get(callText);
+    if (count !== undefined) {
+      counts.set(callText, count + 1);
+      return count;
+    }
+    if (
+      counts.size >= MAX_CALL_OCCURRENCE_ENTRIES ||
+      characters + callText.length > MAX_CALL_OCCURRENCE_CHARACTERS
+    )
+      return undefined;
+    counts.set(callText, 1);
+    characters += callText.length;
+    return 0;
+  };
+}
 
 /** Metadata fields carried to `resolveRuntimeHook`; all are optional and JSON-safe. */
 export interface PreviewRuntimeHookTypedMetadata {
@@ -118,10 +150,10 @@ export function createPreviewRuntimeHookTypedCallResolver(
   sourcePath: string,
 ): PreviewRuntimeHookTypedCallResolver | undefined {
   if (oracle === undefined) return undefined;
-  return (call, sourceFile, requiredPaths) =>
+  return (call, sourceFile, requiredPaths, occurrence) =>
     oracle.readTypedCallValue({
       callText: call.getText(sourceFile),
-      occurrence: readPreviewRuntimeHookCallOccurrence(sourceFile, call),
+      occurrence: occurrence ?? readPreviewRuntimeHookCallOccurrence(sourceFile, call),
       requiredPaths,
       sourcePath,
     });

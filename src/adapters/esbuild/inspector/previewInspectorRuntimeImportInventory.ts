@@ -1,5 +1,6 @@
 /** Collects literal runtime ESM/CommonJS edges without evaluating authored application code. */
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
 import type { PreviewInspectorRuntimeImportEdge } from './previewInspectorBundleFrontierTypes';
 
 /** Returns stable source-ordered runtime imports; type-only and computed requests are excluded. */
@@ -7,13 +8,23 @@ export function collectPreviewInspectorRuntimeImportInventory(
   sourcePath: string,
   sourceText: string,
 ): readonly PreviewInspectorRuntimeImportEdge[] {
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = readPreviewAnalysisSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     sourcePath.toLowerCase().endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
+  return collectPreviewInspectorRuntimeImportInventoryFromSourceFile(sourceFile);
+}
+
+/**
+ * Collects the same runtime edges from an existing inert parser tree without reparsing its text.
+ *
+ * @param sourceFile Authored tree whose source identity, grammar and parent pointers the caller selected.
+ * @returns Frozen source-ordered edges; the tree is neither mutated nor retained.
+ */
+export function collectPreviewInspectorRuntimeImportInventoryFromSourceFile(
+  sourceFile: ts.SourceFile,
+): readonly PreviewInspectorRuntimeImportEdge[] {
   const edges: PreviewInspectorRuntimeImportEdge[] = [];
   const add = (
     kind: PreviewInspectorRuntimeImportEdge['kind'],

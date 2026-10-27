@@ -1,23 +1,24 @@
 /** Builds browser-runnable, code-split vendor facades for package imports externalized per preview. */
-import { createHash } from 'node:crypto';
-import path from 'node:path';
-import { build, type Metafile, type OutputFile } from 'esbuild';
 import { ImportType, init, parse } from 'es-module-lexer';
+import { build, type Metafile, type OutputFile } from 'esbuild';
+import { createHash } from 'node:crypto';
+import { readFile, stat } from 'node:fs/promises';
+import path from 'node:path';
 import type {
   PreviewBundle,
   PreviewBundleChunk,
   PreviewBundleModuleImport,
 } from '../../domain/preview';
-import { isPreviewBareModuleSpecifier } from './previewInstalledPackageExternalizationPlugin';
 import {
   createPreviewGlobalPackageBridgePlugin,
   type PreviewGlobalPackageBridgePlan,
 } from './globalPackageBridge';
+import { PREVIEW_BROWSER_OUTPUT_OPTIONS } from './previewBrowserOutputOptions';
+import { isPreviewBareModuleSpecifier } from './previewInstalledPackageExternalizationPlugin';
 import {
   createPreviewNodeBuiltinPlugin,
   PREVIEW_NODE_PATH_GLOBAL_DEFINES,
 } from './previewNodeBuiltinPlugin';
-import { PREVIEW_BROWSER_OUTPUT_OPTIONS } from './previewBrowserOutputOptions';
 
 interface PreviewVendorDemand {
   readonly namedExports: readonly string[];
@@ -72,8 +73,10 @@ export class PreviewVendorModuleBuilder {
   private readonly outputByIdentity = new Map<string, Promise<PreviewVendorBuildOutput>>();
   private readonly records: PreviewVendorCacheRecord[] = [];
 
+  /** Creates a compiler-scoped vendor cache, optionally backed by an independently verified shared cache. */
   public constructor(private readonly sharedCache?: PreviewVendorModuleCacheBackend) {}
 
+  /** Returns the browser bundle after satisfying its external package demands through vendor facades. */
   public async prepare(options: PreparePreviewVendorModulesOptions): Promise<PreviewBundle> {
     return (await this.prepareWithEvidence(options)).bundle;
   }
@@ -87,6 +90,7 @@ export class PreviewVendorModuleBuilder {
       options.metafile,
       options.projectRoot,
       options.workspaceRoot,
+      options.nodePaths,
     );
     if (demands.length === 0) {
       return { bundle: options.bundle, dependencyPaths: Object.freeze([]) };
@@ -154,6 +158,7 @@ export class PreviewVendorModuleBuilder {
     };
   }
 
+  /** Drops retained vendor identities and in-flight references when the owning compiler is released. */
   public clear(): void {
     this.outputByIdentity.clear();
     this.records.length = 0;
@@ -208,22 +213,29 @@ function collectExternalModuleDemands(
   );
 }
 
+/** Reads external imports from emitted browser modules and correlates them with their admitted package resolution directories. */
 async function collectVendorDemands(
   bundle: PreviewBundle,
   metafile: Metafile,
   projectRoot: string,
   workspaceRoot: string,
+  nodePaths: readonly string[],
 ): Promise<readonly PreviewVendorDemand[]> {
+  const absentOptionalPeers = await collectAbsentOptionalPeerSpecifiers(
+    metafile,
+    workspaceRoot,
+    nodePaths,
+  );
   const demandBySpecifier = new Map<
     string,
     { namedExports: Set<string>; resolveDir: string; wildcard: boolean }
   >(
-    [...collectExternalModuleDemands(metafile, projectRoot, workspaceRoot)].map(
-      ([specifier, resolveDir]) => [
+    [...collectExternalModuleDemands(metafile, projectRoot, workspaceRoot)]
+      .filter(([specifier]) => !absentOptionalPeers.has(specifier))
+      .map(([specifier, resolveDir]) => [
         specifier,
         { namedExports: new Set<string>(), resolveDir, wildcard: false },
-      ],
-    ),
+      ]),
   );
   const javascriptFiles = [
     bundle.javascript,
@@ -233,7 +245,12 @@ async function collectVendorDemands(
   ];
   await init;
   for (const bytes of javascriptFiles) {
-    collectSourceDemands(new TextDecoder().decode(bytes), demandBySpecifier, projectRoot);
+    collectSourceDemands(
+      new TextDecoder().decode(bytes),
+      demandBySpecifier,
+      projectRoot,
+      absentOptionalPeers,
+    );
   }
   return [...demandBySpecifier]
     .map(([specifier, demand]) => ({
@@ -249,10 +266,12 @@ async function collectVendorDemands(
     );
 }
 
+/** Collects static named and wildcard package import demands from one emitted JavaScript module. */
 function collectSourceDemands(
   source: string,
   demands: Map<string, { namedExports: Set<string>; resolveDir: string; wildcard: boolean }>,
   defaultResolveDir: string,
+  absentOptionalPeers: ReadonlySet<string>,
 ): void {
   const namespaceBindings = new Map<string, string>();
   const [imports] = parse(source);
@@ -260,7 +279,8 @@ function collectSourceDemands(
     if (imported.n === undefined) continue;
     let demand = demands.get(imported.n);
     if (demand === undefined) {
-      if (!isPreviewBareModuleSpecifier(imported.n)) continue;
+      if (!isPreviewBareModuleSpecifier(imported.n) || absentOptionalPeers.has(imported.n))
+        continue;
       demand = {
         namedExports: new Set<string>(),
         resolveDir: defaultResolveDir,
@@ -303,19 +323,18 @@ function collectSourceDemands(
   }
 }
 
+/** Bundles only demanded package facades into browser chunks and retains local input evidence for store admission. */
 async function buildVendorOutput(
   options: PreparePreviewVendorModulesOptions & {
     readonly demands: readonly PreviewVendorDemand[];
   },
 ): Promise<PreviewVendorBuildOutput> {
-  const virtualBySpecifier = new Map(
-    options.demands.map((demand) => [
-      demand.specifier,
-      `vendor-entry:${Buffer.from(demand.specifier).toString('base64url')}`,
-    ]),
-  );
+  const virtualDemands = options.demands.map((demand) => ({
+    demand,
+    virtualSpecifier: `vendor-entry:${Buffer.from(demand.specifier).toString('base64url')}`,
+  }));
   const demandByVirtual = new Map(
-    options.demands.map((demand) => [virtualBySpecifier.get(demand.specifier)!, demand]),
+    virtualDemands.map(({ demand, virtualSpecifier }) => [virtualSpecifier, demand]),
   );
   const outdir = path.resolve(options.workspaceRoot, 'react-preview-vendor-output');
   const result = await build({
@@ -326,9 +345,9 @@ async function buildVendorOutput(
     define: { ...PREVIEW_NODE_PATH_GLOBAL_DEFINES, 'process.env.NODE_ENV': '"development"' },
     entryNames: 'chunks/vendor/entries/[name]-[hash]',
     entryPoints: Object.fromEntries(
-      options.demands.map((demand, index) => [
+      virtualDemands.map(({ virtualSpecifier }, index) => [
         `module-${index.toString().padStart(4, '0')}`,
-        virtualBySpecifier.get(demand.specifier)!,
+        virtualSpecifier,
       ]),
     ),
     format: 'esm',
@@ -370,6 +389,7 @@ async function buildVendorOutput(
   );
 }
 
+/** Supplies compiler-owned facade modules for the exact vendor demands in this build. */
 function createVendorEntryPlugin(
   demandByVirtual: ReadonlyMap<string, PreviewVendorDemand>,
 ): import('esbuild').Plugin {
@@ -393,6 +413,7 @@ function createVendorEntryPlugin(
   };
 }
 
+/** Generates exports for the demanded package surface, preserving wildcard demands when required. */
 function createVendorFacadeSource(demand: PreviewVendorDemand): string {
   if (demand.specifier === 'react-dom') return createReactDomVendorFacadeSource(demand);
   const exports = demand.namedExports
@@ -430,6 +451,7 @@ function createReactDomVendorFacadeSource(demand: PreviewVendorDemand): string {
     .join('\n');
 }
 
+/** Converts native vendor outputs into validated relative chunks, imports, stylesheet bytes, and private dependency evidence. */
 function createVendorBuildOutput(
   outputFiles: readonly OutputFile[],
   metafile: Metafile,
@@ -513,6 +535,7 @@ function validateVendorBuildOutput(
   return output;
 }
 
+/** Combines verified vendor chunks and import mappings with the authored preview bundle. */
 function attachVendorOutput(
   bundle: PreviewBundle,
   vendor: PreviewVendorBuildOutput,
@@ -532,6 +555,7 @@ function attachVendorOutput(
   };
 }
 
+/** Copies transferable chunk and stylesheet buffers so one worker transfer cannot detach cached bytes. */
 function cloneVendorOutput(output: PreviewVendorBuildOutput): PreviewVendorBuildOutput {
   return {
     chunks: output.chunks.map((chunk) => ({ ...chunk, contents: chunk.contents.slice() })),
@@ -613,6 +637,7 @@ function resolvePreviewVendorMetafileInputPath(
   return path.normalize(path.resolve(workspaceRoot, inputPath));
 }
 
+/** Hashes package demands together with their resolution environment to identify one reusable vendor build. */
 function createVendorIdentity(
   projectRoot: string,
   workspaceRoot: string,
@@ -634,6 +659,7 @@ function createVendorIdentity(
     .digest('hex');
 }
 
+/** Hashes the project, workspace, package search paths, and global bridge plan without retaining generated source. */
 function createVendorEnvironmentIdentity(
   projectRoot: string,
   workspaceRoot: string,
@@ -668,6 +694,7 @@ function createGlobalPackageBridgeIdentity(plan: PreviewGlobalPackageBridgePlan)
   );
 }
 
+/** Checks that a retained vendor surface satisfies every requested specifier, named export, and wildcard requirement. */
 function vendorDemandsCover(
   available: readonly PreviewVendorDemand[],
   requested: readonly PreviewVendorDemand[],
@@ -684,10 +711,135 @@ function vendorDemandsCover(
 }
 
 /** Restores a file-backed metafile input to the directory that owns its package resolution. */
+/**
+ * Finds bare specifiers that installed packages import only dynamically as optional peers that are
+ * not installed, such as Resend's guarded `await import('@react-email/render')`. Esbuild keeps such
+ * a guarded import external; in Node it rejects and the package's own `catch` handles it. Leaving
+ * these specifiers out of the import map rejects them the same way in the browser instead of
+ * failing the whole vendor build. Project-owned imports keep the normal (acquisition) path.
+ */
+async function collectAbsentOptionalPeerSpecifiers(
+  metafile: Metafile,
+  workspaceRoot: string,
+  nodePaths: readonly string[],
+): Promise<ReadonlySet<string>> {
+  const candidates = new Set<string>();
+  const disqualified = new Set<string>();
+  const manifestByDirectory = new Map<string, Promise<PreviewVendorPackageManifest | undefined>>();
+  for (const [inputPath, input] of Object.entries(metafile.inputs)) {
+    for (const imported of input.imports) {
+      if (
+        !imported.external ||
+        (imported.kind !== 'import-statement' && imported.kind !== 'dynamic-import') ||
+        !isPreviewBareModuleSpecifier(imported.path)
+      ) {
+        continue;
+      }
+      const importerPath = readVendorImporterPath(inputPath, workspaceRoot);
+      const absent =
+        imported.kind === 'dynamic-import' &&
+        importerPath !== undefined &&
+        path.normalize(importerPath).split(path.sep).includes('node_modules') &&
+        (await isAbsentOptionalPeer(imported.path, importerPath, nodePaths, manifestByDirectory));
+      (absent ? candidates : disqualified).add(imported.path);
+    }
+  }
+  return new Set([...candidates].filter((specifier) => !disqualified.has(specifier)));
+}
+
+/** Package metadata read to recognize optional peer declarations. */
+interface PreviewVendorPackageManifest {
+  readonly name?: unknown;
+  readonly peerDependencies?: unknown;
+  readonly peerDependenciesMeta?: unknown;
+}
+
+/** Reports an optional peer of the importer's own package that no searched path installs. */
+async function isAbsentOptionalPeer(
+  specifier: string,
+  importerPath: string,
+  nodePaths: readonly string[],
+  manifestByDirectory: Map<string, Promise<PreviewVendorPackageManifest | undefined>>,
+): Promise<boolean> {
+  const segments = specifier.split('/');
+  const packageName = specifier.startsWith('@') ? segments.slice(0, 2).join('/') : segments[0];
+  if (packageName === undefined || (specifier.startsWith('@') && segments.length < 2)) return false;
+  const manifest = await readOwningPackageManifest(path.dirname(importerPath), manifestByDirectory);
+  const peers = manifest?.peerDependencies;
+  const peerMeta = manifest?.peerDependenciesMeta;
+  if (
+    typeof peers !== 'object' ||
+    peers === null ||
+    !Object.hasOwn(peers, packageName) ||
+    typeof peerMeta !== 'object' ||
+    peerMeta === null ||
+    (peerMeta as Record<string, { optional?: unknown } | undefined>)[packageName]?.optional !== true
+  ) {
+    return false;
+  }
+  const searchDirectories = [...nodePaths];
+  for (let directory = path.dirname(importerPath); ; directory = path.dirname(directory)) {
+    searchDirectories.push(path.join(directory, 'node_modules'));
+    if (path.dirname(directory) === directory) break;
+  }
+  for (const directory of searchDirectories) {
+    if (await isFile(path.join(directory, packageName, 'package.json'))) return false;
+  }
+  return true;
+}
+
+/** Reads the nearest named package manifest without leaving the importer's package. */
+function readOwningPackageManifest(
+  directory: string,
+  manifestByDirectory: Map<string, Promise<PreviewVendorPackageManifest | undefined>>,
+): Promise<PreviewVendorPackageManifest | undefined> {
+  let pending = manifestByDirectory.get(directory);
+  if (pending === undefined) {
+    pending = (async () => {
+      try {
+        const parsed: unknown = JSON.parse(
+          await readFile(path.join(directory, 'package.json'), 'utf8'),
+        );
+        if (
+          typeof parsed === 'object' &&
+          parsed !== null &&
+          typeof (parsed as PreviewVendorPackageManifest).name === 'string'
+        ) {
+          return parsed;
+        }
+      } catch {
+        // No manifest here; a nested `{ "type": "module" }` file also continues upward.
+      }
+      const parent = path.dirname(directory);
+      return parent === directory || path.basename(directory) === 'node_modules'
+        ? undefined
+        : readOwningPackageManifest(parent, manifestByDirectory);
+    })();
+    manifestByDirectory.set(directory, pending);
+  }
+  return pending;
+}
+
+/** Reports an existing regular file. */
+async function isFile(filePath: string): Promise<boolean> {
+  try {
+    return (await stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Maps a metafile input to the directory its imports resolve from. */
 function readVendorImporterResolveDirectory(
   inputPath: string,
   workspaceRoot: string,
 ): string | undefined {
+  const sourcePath = readVendorImporterPath(inputPath, workspaceRoot);
+  return sourcePath === undefined ? undefined : path.dirname(sourcePath);
+}
+
+/** Maps a metafile input to its file path inside the workspace. */
+function readVendorImporterPath(inputPath: string, workspaceRoot: string): string | undefined {
   if (inputPath.startsWith('<')) return undefined;
   const sourcePath = path.isAbsolute(inputPath)
     ? path.normalize(inputPath)
@@ -699,21 +851,25 @@ function readVendorImporterResolveDirectory(
   if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     return undefined;
   }
-  return path.dirname(sourcePath);
+  return sourcePath;
 }
 
+/** Allocates one contiguous byte buffer from the ordered stylesheet fragments. */
 function concatenateBytes(parts: readonly Uint8Array[]): Uint8Array {
   return new Uint8Array(Buffer.concat(parts.map((part) => Buffer.from(part))));
 }
 
+/** Normalizes a native output filename to its portable path beneath the configured output directory. */
 function toOutputRelativePath(outputPath: string, outdir: string): string {
   return path.relative(outdir, outputPath).split(path.sep).join('/');
 }
 
+/** Checks whether a name can appear as a direct JavaScript export identifier. */
 function isJavaScriptIdentifier(value: string): boolean {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(value) && value !== 'default';
 }
 
+/** Provides deterministic lexical ordering independent of the host locale. */
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }

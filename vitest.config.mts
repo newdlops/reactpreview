@@ -1,5 +1,5 @@
 /**
- * Vitest configuration for pure domain, application, compiler, and HTML tests.
+ * Explicit ESM Vitest configuration for domain, application, compiler, and HTML tests.
  * VS Code-host integration tests are intentionally kept out of this fast unit-test suite.
  */
 import { defineConfig } from 'vitest/config';
@@ -12,6 +12,8 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     mockReset: true,
     restoreMocks: true,
+    /** Bounds simultaneous native compiler workspaces and their temporary disk footprint. */
+    maxWorkers: 2,
     /**
      * Compiler integration cases intentionally construct broad module graphs.
      * File-level workers can contend for CPU during the full suite even when an isolated compile

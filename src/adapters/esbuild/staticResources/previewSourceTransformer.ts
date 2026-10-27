@@ -1,62 +1,47 @@
-/**
- * Rewrites finite framework resource syntax into explicit ESM imports that esbuild can bundle.
- * Supported forms are Vite `import.meta.glob`, relative template dynamic imports, Webpack
- * `require.context`, and `new URL(..., import.meta.url)`; every filesystem expansion is bounded.
- */
+/** Coordinates bounded authored-source analysis for previewSourceTransformer. */
 import path from 'node:path';
-import {
-  isStaticImportMetaUrl,
-  parseDynamicPathSegments,
-  parseStaticObject,
-  parseStaticString,
-  parseStaticStringList,
-  StaticSourceAnalysis,
-  type StaticCallExpression,
-} from './staticCallParser';
-import { createReactContextFallbackReplacements } from './reactContextFallback';
-import { createReactContextHookFallbackTransform } from './reactContextHookFallback';
-import { collectReactContextIdentityPairs } from './reactContextIdentity';
-import { createContextRegistrationStatements } from './reactContextRegistration';
-import { createReactExportPropFallbackReplacements } from './reactExportPropFallback';
-import {
-  collectPreviewRouterRequirement,
-  type PreviewRouterRequirement,
-} from '../previewRouterRequirement';
-import { collectPreviewFormikRequirement } from '../previewFormikRequirement';
-import { collectPreviewYarnLibuiRequirement } from '../previewYarnLibuiRequirement';
 import { collectPreviewDragDropRequirement } from '../previewDragDropRequirement';
+import { collectPreviewFormikRequirement } from '../previewFormikRequirement';
 import {
   PREVIEW_DRAG_DROP_SPECIFIER,
   PREVIEW_FORMIK_SPECIFIER,
   PREVIEW_REDUX_SPECIFIER,
   PREVIEW_YARN_LIBUI_SPECIFIER,
 } from '../previewPluginProtocol';
-import { createPreviewThemeSourceInstrumentation } from './previewThemeSourceInstrumentation';
 import {
-  expandStaticPatterns,
-  StaticPatternError,
-  type StaticPatternExpansion,
-  type StaticScanBudget,
-} from './staticPattern';
-import { collectPreviewReduxStateContainerPaths } from './reduxStateContainerPaths';
-import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGlobals';
+  collectPreviewRouterRequirement,
+  type PreviewRouterRequirement,
+} from '../previewRouterRequirement';
+import { collectPreviewYarnLibuiRequirement } from '../previewYarnLibuiRequirement';
+import { createPreviewAgGridModuleRegistration } from './previewAgGridModuleRegistration';
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
-import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
-import { createPreviewRuntimeHookTypedCallResolver } from './previewRuntimeHookTypedFallback';
-import { createPreviewTypedResponseShapeResolver } from './previewTypedResponseShape';
-import { createPreviewTypedModuleRegistrations } from './previewTypedModuleRegistrations';
-import { createPreviewTypedGuardReplacements } from './previewTypedGuardReplacements';
-import { PreviewRuntimeHookChildPropDemandCatalogBuilder } from './previewRuntimeHookChildPropDemand';
+import { canPassThroughPreviewDependency } from './previewDependencyPassThroughPolicy';
+import { deferPreviewDormantOverlayImports } from './previewDormantOverlayDeferral';
+import {
+  createDynamicTemplateDiscoveryPatterns,
+  createDynamicTemplateLoaderProperties,
+  createDynamicTemplatePlan,
+  matchesDynamicTemplateCandidate,
+} from './previewDynamicModuleResolution';
+import * as framework from './previewFrameworkReplacements';
+import { PreviewGraphqlDocumentInstrumentation } from './previewGraphqlDocumentInstrumentation';
+import { createPreviewGraphqlFragmentValueReplacements } from './previewGraphqlFragmentValueInstrumentation';
 import {
   createPreviewGraphqlRenderPropUsageReplacements,
   mayContainPreviewGraphqlRenderPropUsage,
 } from './previewGraphqlRenderPropUsageInstrumentation';
-import * as framework from './previewFrameworkReplacements';
-import { instrumentPreviewRuntimeSource } from './previewRuntimeSourceInstrumentation';
-import { readPreviewSelectedTargetNamesForSource } from './previewSelectedTargetExit';
+import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGlobals';
 import { instrumentPreviewLocalTargetExportBindings } from './previewLocalTargetExportInstrumentation';
-import { createPreviewGraphqlFragmentValueReplacements } from './previewGraphqlFragmentValueInstrumentation';
-import { PreviewGraphqlDocumentInstrumentation } from './previewGraphqlDocumentInstrumentation';
+import { createPreviewReactDomPortalContainerReplacements } from './previewReactDomPortalInstrumentation';
+import { createPreviewReactJsxNamespaceCompatibilityImport } from './previewReactJsxNamespaceCompatibility';
+import { PreviewRuntimeHookChildPropDemandCatalogBuilder } from './previewRuntimeHookChildPropDemand';
+import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
+import { createPreviewRuntimeHookTypedCallResolver } from './previewRuntimeHookTypedFallback';
+import { instrumentPreviewRuntimeSource } from './previewRuntimeSourceInstrumentation';
+import { createPreviewSelectedJsxOccurrences } from './previewSelectedJsxOccurrences';
+import { readPreviewSelectedPageTabHookNames } from './previewSelectedPageTabHookProof';
+import { typePreviewServerQueries } from './previewServerQueryTyping';
+import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
 import {
   appendPreviewSourceImports,
   applyPreviewSourceReplacements,
@@ -64,54 +49,59 @@ import {
   selectCompatiblePreviewSourceReplacements,
   type PreviewSourceReplacement,
 } from './previewSourceReplacement';
-import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
-import { canPassThroughPreviewDependency } from './previewDependencyPassThroughPolicy';
-import { createPreviewReactJsxNamespaceCompatibilityImport } from './previewReactJsxNamespaceCompatibility';
-import { createPreviewReactDomPortalContainerReplacements } from './previewReactDomPortalInstrumentation';
-import { createPreviewAgGridModuleRegistration } from './previewAgGridModuleRegistration';
-import { deferPreviewDormantOverlayImports } from './previewDormantOverlayDeferral';
-import { createPreviewStaticRenderAssetTransform } from './previewStaticRenderAssets';
-import {
-  createDynamicTemplateDiscoveryPatterns,
-  createDynamicTemplateLoaderProperties,
-  createDynamicTemplatePlan,
-  matchesDynamicTemplateCandidate,
-} from './previewDynamicModuleResolution';
 import type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
-import { PREVIEW_IMPORT_META_GLOB_MAX_MATCH_REFERENCES } from './previewImportMetaGlobInventory';
-export { PreviewSourceTransformError } from './previewSourceReplacement';
-export type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
-const MAX_BUILD_EXPANSIONS = 128;
-const MAX_BUILD_MATCH_REFERENCES = PREVIEW_IMPORT_META_GLOB_MAX_MATCH_REFERENCES;
-const MAX_BUILD_SCANNED_ENTRIES = 16_384;
-const MAX_BUILD_WATCH_DIRECTORIES = 128;
-const INSTALLED_DEPENDENCY_DIRECTORY_NAMES = new Set(['.pnpm', '.yarn', 'node_modules']);
-/** Transformed module source and directories that can gain future matching files. */
-export interface PreviewSourceTransformResult {
-  /** JavaScript or TypeScript source containing only explicit bundle-visible imports. */
-  readonly contents: string;
-  /** Glob roots used to route newly created or saved files back to the preview session. */
-  readonly watchDirectories: readonly string[];
-}
-/** Parsed Vite glob behavior accepted by the safe compatibility layer. */
-interface GlobOptions {
-  /** Whether modules are imported synchronously at module evaluation time. */
-  readonly eager: boolean;
-  /** Namespace, default, or named export returned for each key. */
-  readonly importName?: string;
-  /** Optional asset query appended only to generated import specifiers. */
-  readonly query?: string;
-}
+import {
+  appendImportQuery,
+  createBoundedLoaderExpression,
+  createEagerImport,
+  createLazyImport,
+  createRelativeKey,
+  createUrlImportSpecifier,
+  isPreviewOwnedSourcePath,
+} from './previewSourceTransformImports';
+import {
+  MAX_BUILD_EXPANSIONS,
+  MAX_BUILD_MATCH_REFERENCES,
+  MAX_BUILD_SCANNED_ENTRIES,
+  MAX_BUILD_WATCH_DIRECTORIES,
+  type PreviewSourceTransformResult,
+} from './previewSourceTransformModel';
+import {
+  assertArgumentCount,
+  parseGlobOptions,
+  parseRequireContext,
+} from './previewSourceTransformOptions';
+import { createPreviewStaticRenderAssetTransform } from './previewStaticRenderAssets';
+import { createPreviewThemeSourceInstrumentation } from './previewThemeSourceInstrumentation';
+import { createPreviewTypedGuardReplacements } from './previewTypedGuardReplacements';
+import { createPreviewTypedModuleRegistrations } from './previewTypedModuleRegistrations';
+import { createPreviewTypedResponseShapeResolver } from './previewTypedResponseShape';
+import { createReactContextFallbackReplacements } from './reactContextFallback';
+import { createReactContextHookFallbackTransform } from './reactContextHookFallback';
+import { collectReactContextIdentityPairs } from './reactContextIdentity';
+import { createContextRegistrationStatements } from './reactContextRegistration';
+import { createReactExportPropFallbackReplacements } from './reactExportPropFallback';
+import { instrumentReactConditionalRendering } from './reactConditionalRendering';
+import { collectPreviewReduxStateContainerPaths } from './reduxStateContainerPaths';
+import {
+  isStaticImportMetaUrl,
+  parseDynamicPathSegments,
+  parseStaticString,
+  parseStaticStringList,
+  StaticSourceAnalysis,
+  type StaticCallExpression,
+} from './staticCallParser';
+import {
+  expandStaticPatterns,
+  StaticPatternError,
+  type StaticPatternExpansion,
+  type StaticScanBudget,
+} from './staticPattern';
 
-/** Static Webpack context parameters after non-evaluating parsing. */
-interface RequireContextOptions {
-  /** Relative directory exposed as the context key root. */
-  readonly directory: string;
-  /** Regular expression applied to `./`-prefixed context keys. */
-  readonly matcher: RegExp;
-  /** Whether files below nested directories are considered. */
-  readonly recursive: boolean;
-}
+export { PreviewSourceTransformError } from './previewSourceReplacement';
+
+export type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
+export type { PreviewSourceTransformResult } from './previewSourceTransformModel';
 
 /** Stateful per-build transformer that also accumulates watched glob directories. */
 export class PreviewSourceTransformer {
@@ -153,6 +143,14 @@ export class PreviewSourceTransformer {
         : undefined;
   }
 
+  /**
+   * Declared-type oracle of the build this transformer serves. Persistent esbuild contexts keep
+   * their plugins but swap transformers per rebuild, so plugins read the oracle through here.
+   */
+  public get typeOracle(): PreviewSourceTransformerOptions['typeOracle'] {
+    return this.options.typeOracle;
+  }
+
   /** Reports whether this transformer can cheaply pass through ordinary corridor dependencies. */
   public get usesSelectiveDependencyPassThrough(): boolean {
     return this.options.selectiveDependencyPassThrough === true;
@@ -170,18 +168,45 @@ export class PreviewSourceTransformer {
     sourceText: string,
   ): Promise<PreviewSourceTransformResult> {
     // Read before framework rewrites move the compiler-measured target occurrence offsets.
-    const selectedTargetNames = readPreviewSelectedTargetNamesForSource(
+    const selectedOccurrences = createPreviewSelectedJsxOccurrences(
       this.options.selectedTargetOccurrences,
       sourcePath,
       sourceText,
+      this.options.trackSelectedJsxOccurrences !== false,
     );
+    const selectedTargetNames = selectedOccurrences.names;
     const previewOwnedSource = isPreviewOwnedSourcePath(
       this.options.workspaceRoot,
       this.options.documentPath,
       sourcePath,
     );
+    const selectedTabHookNames =
+      previewOwnedSource &&
+      this.options.instrumentRenderConditions === true &&
+      (selectedTargetNames?.size ?? 0) > 0
+        ? await readPreviewSelectedPageTabHookNames(
+            sourcePath,
+            sourceText,
+            this.options.admitSelectedPageTabHook,
+          )
+        : undefined;
     if (previewOwnedSource)
       sourceText = framework.prepareFrameworkSource(sourcePath, sourceText, this.options);
+    if (
+      previewOwnedSource &&
+      this.options.typeOracle !== undefined &&
+      this.options.graphqlModuleResolver !== undefined &&
+      (this.options.serverContractSourcePaths?.length ?? 0) > 0
+    ) {
+      sourceText = typePreviewServerQueries(sourcePath, sourceText, {
+        contractSourcePaths: new Set(this.options.serverContractSourcePaths),
+        oracle: this.options.typeOracle,
+        ...(this.options.prismaColumnDefaults === undefined
+          ? {}
+          : { prismaColumnDefaults: this.options.prismaColumnDefaults }),
+        resolveModule: this.options.graphqlModuleResolver.resolve,
+      });
+    }
     if (
       this.options.deferDormantOverlayImports === true &&
       this.options.implicitPackageGlobalResolver !== undefined
@@ -204,8 +229,20 @@ export class PreviewSourceTransformer {
       const typedRegistrations = previewOwnedSource
         ? createPreviewTypedModuleRegistrations(this.options.typeOracle, sourcePath, sourceText)
         : [];
+      const selectedSource =
+        previewOwnedSource &&
+        this.options.instrumentRenderConditions === true &&
+        (selectedTargetNames?.size ?? 0) > 0
+          ? instrumentReactConditionalRendering(
+              sourcePath,
+              selectedOccurrences.apply(sourceText),
+              undefined,
+              selectedTargetNames,
+              selectedTabHookNames,
+            )
+          : sourceText;
       return {
-        contents: appendPreviewSourceImports(sourceText, typedRegistrations),
+        contents: appendPreviewSourceImports(selectedSource, typedRegistrations),
         watchDirectories: [],
       };
     }
@@ -358,7 +395,9 @@ export class PreviewSourceTransformer {
           ...createPreviewRuntimeHookReplacements(
             sourcePath,
             sourceText,
-            typeDemand?.collect(sourcePath, sourceText, { includeOptionalTypes: true }),
+            typeDemand === undefined
+              ? undefined
+              : () => typeDemand.collect(sourcePath, sourceText, { includeOptionalTypes: true }),
             typeDemand === undefined
               ? undefined
               : (typeNode) => typeDemand.inferLocalTypeFallback(sourcePath, sourceText, typeNode),
@@ -379,6 +418,7 @@ export class PreviewSourceTransformer {
             ),
             createPreviewRuntimeHookTypedCallResolver(this.options.typeOracle, sourcePath),
             selectedTargetNames,
+            analysis,
           ),
         );
       }
@@ -499,6 +539,7 @@ export class PreviewSourceTransformer {
         this.options.typeOracle,
         allocate,
         replacements,
+        analysis,
       );
       replacements.push(...typedGuards.replacements);
       generatedImports.push(
@@ -523,15 +564,21 @@ export class PreviewSourceTransformer {
       dataBoundarySource,
       this.options.localTargetExportInstrumentation,
     );
-    const runtimeSource = instrumentPreviewRuntimeSource(sourcePath, localTargetSource, {
-      isolateEffects: previewOwnedSource && this.options.instrumentRuntimeEffectIsolation === true,
-      registerConditionDefinitions:
-        previewOwnedSource &&
-        (this.options.documentPath === undefined ||
-          path.normalize(sourcePath) === path.normalize(this.options.documentPath)),
-      renderConditions: previewOwnedSource && this.options.instrumentRenderConditions === true,
-      ...(selectedTargetNames === undefined ? {} : { selectedTargetNames }),
-    });
+    const runtimeSource = instrumentPreviewRuntimeSource(
+      sourcePath,
+      selectedOccurrences.apply(localTargetSource),
+      {
+        isolateEffects:
+          previewOwnedSource && this.options.instrumentRuntimeEffectIsolation === true,
+        registerConditionDefinitions:
+          previewOwnedSource &&
+          (this.options.documentPath === undefined ||
+            path.normalize(sourcePath) === path.normalize(this.options.documentPath)),
+        renderConditions: previewOwnedSource && this.options.instrumentRenderConditions === true,
+        ...(selectedTargetNames === undefined ? {} : { selectedTargetNames }),
+        ...(selectedTabHookNames === undefined ? {} : { selectedTabHookNames }),
+      },
+    );
     generatedImports.push(...runtimeSource.registrations);
     return {
       contents: appendPreviewSourceImports(runtimeSource.source, generatedImports),
@@ -539,6 +586,16 @@ export class PreviewSourceTransformer {
         .filter((directoryPath) => !initialWatchDirectories.has(directoryPath))
         .sort(),
     };
+  }
+
+  /** Annotates original JSX before a virtual export slice moves the authored offsets. */
+  public prepareSelectedTargetOccurrences(sourcePath: string, sourceText: string): string {
+    return createPreviewSelectedJsxOccurrences(
+      this.options.selectedTargetOccurrences,
+      sourcePath,
+      sourceText,
+      this.options.trackSelectedJsxOccurrences !== false,
+    ).apply(sourceText);
   }
 
   /** Returns every glob directory discovered across modules in this compilation request. */
@@ -816,369 +873,4 @@ export class PreviewSourceTransformer {
       throw error;
     }
   }
-}
-
-/** Parses the bounded Vite glob option subset used by the generated object. */
-function parseGlobOptions(
-  rawOptions: string | undefined,
-  eagerByCallee: boolean,
-  sourcePath: string,
-): GlobOptions {
-  const options = parseStaticObject(rawOptions);
-  if (options === undefined) {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: import.meta.glob options must be a simple object literal without spreads or computed properties.`,
-    );
-  }
-  const supportedOptionNames = new Set(['as', 'eager', 'import', 'query']);
-  const unsupportedOptionName = [...options.keys()].find(
-    (optionName) => !supportedOptionNames.has(optionName),
-  );
-  if (unsupportedOptionName !== undefined) {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: import.meta.glob option ${JSON.stringify(unsupportedOptionName)} is not supported by React Preview.`,
-    );
-  }
-  const rawEager = options.get('eager');
-  if (rawEager !== undefined && rawEager !== 'true' && rawEager !== 'false') {
-    throw new PreviewSourceTransformError(`${sourcePath}: import.meta.glob eager must be boolean.`);
-  }
-
-  const rawImportName = options.get('import');
-  let importName = rawImportName === undefined ? undefined : parseStaticString(rawImportName);
-  if (rawImportName !== undefined && importName === undefined) {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: import.meta.glob import must be a string literal.`,
-    );
-  }
-
-  const hasLegacyAs = options.has('as');
-  if (hasLegacyAs && (options.has('query') || options.has('import'))) {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: import.meta.glob legacy as cannot be combined with query or import.`,
-    );
-  }
-  const rawQuery = options.get('query') ?? options.get('as');
-  const parsedQuery = rawQuery === undefined ? undefined : parseStaticString(rawQuery);
-  if (rawQuery !== undefined && parsedQuery === undefined) {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: import.meta.glob query must be a string literal.`,
-    );
-  }
-  if (hasLegacyAs && parsedQuery !== 'raw' && parsedQuery !== 'url') {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: import.meta.glob legacy as supports only "raw" or "url".`,
-    );
-  }
-  const query = hasLegacyAs && parsedQuery !== undefined ? `?${parsedQuery}` : parsedQuery;
-  if (hasLegacyAs) {
-    importName = 'default';
-  }
-
-  return {
-    eager: eagerByCallee || rawEager === 'true',
-    ...(importName === undefined ? {} : { importName }),
-    ...(query === undefined ? {} : { query }),
-  };
-}
-
-/** Parses the static directory, recursion flag, and regular expression of `require.context`. */
-function parseRequireContext(
-  arguments_: readonly string[],
-  sourcePath: string,
-): RequireContextOptions {
-  assertArgumentCount(arguments_, 1, 3, 'require.context', sourcePath);
-  const directory = parseStaticString(arguments_[0] ?? '');
-  if (
-    directory === undefined ||
-    (!directory.startsWith('./') && !directory.startsWith('../')) ||
-    /[*?{}\0]/u.test(directory)
-  ) {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: require.context directory must be a relative literal without glob metacharacters.`,
-    );
-  }
-
-  const rawRecursive = arguments_[1] ?? 'true';
-  if (rawRecursive !== 'true' && rawRecursive !== 'false') {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: require.context recursion must be boolean.`,
-    );
-  }
-
-  const matcher = parseRegularExpression(arguments_[2] ?? '/^\\.\\//', sourcePath);
-  return { directory, matcher, recursive: rawRecursive === 'true' };
-}
-
-/**
- * Rejects macro overloads whose additional expressions would be dropped by a compatibility rewrite.
- *
- * @param arguments_ Top-level call arguments preserved as raw source segments.
- * @param minimum Smallest arity supported by the preview compatibility layer.
- * @param maximum Largest arity supported without losing runtime behavior.
- * @param callee User-facing macro name included in the diagnostic.
- * @param sourcePath Source module path included in the diagnostic.
- */
-function assertArgumentCount(
-  arguments_: readonly string[],
-  minimum: number,
-  maximum: number,
-  callee: string,
-  sourcePath: string,
-): void {
-  if (arguments_.length < minimum || arguments_.length > maximum) {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: ${callee} requires ${
-        minimum === maximum
-          ? `exactly ${minimum.toString()}`
-          : `${minimum.toString()} to ${maximum.toString()}`
-      } static arguments in React Preview.`,
-    );
-  }
-}
-
-/** Parses a bounded regular-expression literal without accepting executable constructor syntax. */
-function parseRegularExpression(source: string, sourcePath: string): RegExp {
-  const match = /^\/((?:\\.|[^/])*)\/([imu]*)$/u.exec(source.trim());
-  if (match === null || (match[1]?.length ?? 0) > 200) {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: require.context filter must be a regular-expression literal under 200 characters.`,
-    );
-  }
-  const pattern = match[1] ?? '';
-  assertSafeContextRegularExpression(pattern, sourcePath);
-  try {
-    return new RegExp(pattern, match[2] ?? '');
-  } catch {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: require.context filter is not a valid regular-expression literal.`,
-    );
-  }
-}
-
-/**
- * Rejects regex features and nested quantifiers that can cause pathological backtracking while
- * filtering thousands of discovered keys. Common extension/alternation filters remain supported.
- */
-function assertSafeContextRegularExpression(pattern: string, sourcePath: string): void {
-  if (/\\(?:[1-9]|k<)|\(\?(?!:)/u.test(pattern)) {
-    throwUnsafeContextRegularExpression(sourcePath);
-  }
-
-  const groups: { containsAlternation: boolean; containsQuantifier: boolean }[] = [];
-  let insideCharacterClass = false;
-  let quantifierCount = 0;
-  let rangedBraceQuantifierCount = 0;
-  let unboundedQuantifierCount = 0;
-  for (let index = 0; index < pattern.length; index += 1) {
-    const character = pattern[index];
-    if (character === '\\') {
-      index += 1;
-      continue;
-    }
-    if (character === '[') {
-      insideCharacterClass = true;
-      continue;
-    }
-    if (character === ']' && insideCharacterClass) {
-      insideCharacterClass = false;
-      continue;
-    }
-    if (insideCharacterClass) {
-      continue;
-    }
-    if (character === '(') {
-      groups.push({ containsAlternation: false, containsQuantifier: false });
-      continue;
-    }
-    if (character === '|') {
-      const group = groups.at(-1);
-      if (group !== undefined) {
-        group.containsAlternation = true;
-      }
-      continue;
-    }
-    if (character === ')') {
-      const group = groups.pop();
-      const nextCharacter = pattern[index + 1] ?? '';
-      const groupIsQuantified = /[*+?{]/u.test(nextCharacter);
-      if (
-        groupIsQuantified &&
-        group !== undefined &&
-        (group.containsAlternation || group.containsQuantifier)
-      ) {
-        throwUnsafeContextRegularExpression(sourcePath);
-      }
-      if (groupIsQuantified) {
-        const parent = groups.at(-1);
-        if (parent !== undefined) {
-          parent.containsQuantifier = true;
-        }
-      }
-      const parent = groups.at(-1);
-      if (parent !== undefined && group !== undefined) {
-        parent.containsAlternation ||= group.containsAlternation;
-        parent.containsQuantifier ||= group.containsQuantifier;
-      }
-      continue;
-    }
-    const isQuestionQuantifier = character === '?' && pattern[index - 1] !== '(';
-    const braceQuantifier =
-      character === '{' ? /^\{(\d+)(?:,(\d*))?\}/u.exec(pattern.slice(index)) : null;
-    const isBraceQuantifier = braceQuantifier !== null;
-    const lowerBraceBound = Number(braceQuantifier?.[1] ?? 0);
-    const rawUpperBraceBound = braceQuantifier?.[2];
-    const upperBraceBound =
-      rawUpperBraceBound === undefined || rawUpperBraceBound.length === 0
-        ? lowerBraceBound
-        : Number(rawUpperBraceBound);
-    if (isBraceQuantifier && (lowerBraceBound > 256 || upperBraceBound > 256)) {
-      throwUnsafeContextRegularExpression(sourcePath);
-    }
-    const isRangedBraceQuantifier = rawUpperBraceBound !== undefined;
-    rangedBraceQuantifierCount += isRangedBraceQuantifier ? 1 : 0;
-    const isUnboundedQuantifier =
-      character === '*' || character === '+' || rawUpperBraceBound === '';
-    if (isQuestionQuantifier || isBraceQuantifier || isUnboundedQuantifier) {
-      quantifierCount += 1;
-      unboundedQuantifierCount += isUnboundedQuantifier ? 1 : 0;
-      if (quantifierCount > 8 || rangedBraceQuantifierCount > 1 || unboundedQuantifierCount > 1) {
-        throwUnsafeContextRegularExpression(sourcePath);
-      }
-      const group = groups.at(-1);
-      if (group !== undefined) {
-        group.containsQuantifier = true;
-      }
-    }
-  }
-}
-
-/** Raises the shared actionable diagnostic for a potentially pathological context filter. */
-function throwUnsafeContextRegularExpression(sourcePath: string): never {
-  throw new PreviewSourceTransformError(
-    `${sourcePath}: require.context filter must avoid lookarounds, backreferences, large or repeated range quantifiers, repeated unbounded quantifiers, and nested quantified groups.`,
-  );
-}
-
-/** Generates a static import matching Vite namespace, default, or named-export selection. */
-function createEagerImport(
-  binding: string,
-  specifier: string,
-  importName: string | undefined,
-): string {
-  if (importName === undefined || importName === '*') {
-    return `import * as ${binding} from ${JSON.stringify(specifier)};`;
-  }
-  return `import { ${JSON.stringify(importName)} as ${binding} } from ${JSON.stringify(specifier)};`;
-}
-
-/** Generates a lazy import and optional export-selection promise. */
-function createLazyImport(specifier: string, importName: string | undefined): string {
-  const baseImport = `() => import(${JSON.stringify(specifier)})`;
-  return importName === undefined || importName === '*'
-    ? baseImport
-    : `() => import(${JSON.stringify(specifier)}).then((module) => module[${JSON.stringify(importName)}])`;
-}
-
-/** Appends one transform query before an optional URL fragment. */
-function appendImportQuery(specifier: string, query: string | undefined): string {
-  if (query === undefined || query.length === 0) {
-    return specifier;
-  }
-  const normalizedQuery = query.startsWith('?') ? query : `?${query}`;
-  const fragmentIndex = specifier.indexOf('#');
-  return fragmentIndex < 0
-    ? `${specifier}${normalizedQuery}`
-    : `${specifier.slice(0, fragmentIndex)}${normalizedQuery}${specifier.slice(fragmentIndex)}`;
-}
-
-/**
- * Generates one evaluation, path normalization, and finite loader lookup for dynamic module paths.
- * Normalization aligns `./a/../b` and duplicate-slash runtime values with filesystem match keys.
- *
- * @param argumentExpression Original dynamic argument evaluated exactly once.
- * @param loaders Finite object literal mapping normalized keys to module thunks.
- * @param callee User-facing operation name included in a missing-key error.
- * @param asynchronous Whether a miss rejects a promise instead of throwing synchronously.
- * @returns Browser JavaScript expression preserving import or require timing semantics.
- */
-function createBoundedLoaderExpression(
-  argumentExpression: string,
-  loaders: string,
-  callee: string,
-  asynchronous: boolean,
-): string {
-  const message = JSON.stringify(`React Preview could not resolve ${callee}: `);
-  const missingResult = asynchronous
-    ? `return Promise.reject(new Error(${message} + value));`
-    : `throw new Error(${message} + value);`;
-  return `((specifier) => { const value = String(specifier); const suffixIndex = [value.indexOf("?"), value.indexOf("#")].filter((index) => index >= 0).reduce((lowest, index) => Math.min(lowest, index), value.length); const sourcePath = value.slice(0, suffixIndex); const suffix = value.slice(suffixIndex); const parts = []; for (const part of sourcePath.split("/")) { if (part === "" || part === ".") continue; if (part === ".." && parts.length > 0 && parts[parts.length - 1] !== "..") parts.pop(); else if (part !== ".." || parts.length === 0 || parts[parts.length - 1] === "..") parts.push(part); } const normalized = (parts[0] === ".." ? "" : "./") + parts.join("/") + suffix; const loader = ${loaders}[normalized]; if (loader === undefined) { ${missingResult} } return loader(); })(${argumentExpression})`;
-}
-
-/** Separates a dynamic import transform query or fragment from its filesystem match pattern. */
-function splitImportSuffix(pattern: string): {
-  readonly pathPattern: string;
-  readonly suffix: string;
-} {
-  const queryIndex = pattern.indexOf('?');
-  const fragmentIndex = pattern.indexOf('#');
-  const suffixIndex = [queryIndex, fragmentIndex]
-    .filter((index) => index >= 0)
-    .reduce((lowest, index) => Math.min(lowest, index), pattern.length);
-  return { pathPattern: pattern.slice(0, suffixIndex), suffix: pattern.slice(suffixIndex) };
-}
-
-/** Converts an absolute match into a Webpack-style key relative to its context directory. */
-function createRelativeKey(contextDirectory: string, filePath: string): string {
-  const relativePath = path.relative(contextDirectory, filePath).replaceAll(path.sep, '/');
-  return relativePath.startsWith('.') ? relativePath : `./${relativePath}`;
-}
-
-/** Creates a `?url` import, mapping root URLs to the conventional workspace public directory. */
-function createUrlImportSpecifier(assetPath: string, workspaceRoot: string): string {
-  const { pathPattern, suffix } = splitImportSuffix(assetPath);
-  const publicDirectory = path.resolve(workspaceRoot, 'public');
-  const sourcePath = pathPattern.startsWith('/')
-    ? path.resolve(publicDirectory, pathPattern.slice(1))
-    : pathPattern.startsWith('.')
-      ? pathPattern
-      : `./${pathPattern}`;
-  if (pathPattern.startsWith('/') && !isPathInside(publicDirectory, sourcePath)) {
-    throw new PreviewSourceTransformError(
-      `Preview public asset paths must stay inside ${publicDirectory}: ${assetPath}`,
-    );
-  }
-  const fragmentIndex = suffix.indexOf('#');
-  const fragment = fragmentIndex < 0 ? '' : suffix.slice(fragmentIndex);
-  return `${sourcePath}?url${fragment}`;
-}
-/** Reports whether one absolute asset path is equal to or contained by a trusted directory. */
-function isPathInside(directoryPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(directoryPath, candidatePath);
-  return (
-    relativePath.length === 0 || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
-  );
-}
-
-/**
- * Keeps semantic preview instrumentation on authored source instead of installed package internals.
- *
- * Package code must preserve its own provider invariants. In particular, synthesizing a local
- * `useInRouterContext()` result inside React Router can turn its defensive nested-Router check into
- * an unconditional failure. An explicitly selected document remains eligible so opening a package
- * source file directly still behaves like any other preview target.
- */
-function isPreviewOwnedSourcePath(
-  workspaceRoot: string,
-  documentPath: string | undefined,
-  sourcePath: string,
-): boolean {
-  if (!isPathInside(workspaceRoot, sourcePath)) return false;
-  if (documentPath !== undefined && path.normalize(sourcePath) === path.normalize(documentPath)) {
-    return true;
-  }
-  return !path
-    .relative(workspaceRoot, sourcePath)
-    .split(path.sep)
-    .some((segment) => INSTALLED_DEPENDENCY_DIRECTORY_NAMES.has(segment));
 }

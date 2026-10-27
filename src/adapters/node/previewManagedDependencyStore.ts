@@ -918,7 +918,7 @@ function isString(value: string | undefined): value is string {
 
 /** Checks strict containment so managed storage cannot claim its own root or textual siblings. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length > 0 &&
     relativePath !== '..' &&

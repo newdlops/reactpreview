@@ -71,11 +71,13 @@ function selectPreviewInspectorPageCandidate(candidateId, options = {}) {
   if (!readPreviewInspectorPageCandidates(descriptor).some((candidate) => candidate?.id === candidateId)) {
     return false;
   }
-  const neuralSelection = options?.origin === 'neural-page-context';
+  const neuralSelection = options?.origin === 'neural-page-context' ||
+    options?.origin === 'framework-navigation';
   const userSelection = !neuralSelection;
   const preferenceChanged = userSelection &&
     previewInspectorSession.userSelectedPageCandidateId !== candidateId;
   if (userSelection) {
+    previewInspectorSession.nextAppNavigationTrail = undefined;
     previewInspectorSession.userSelectedPageCandidateId = candidateId;
     if (typeof recordPreviewInspectorUserPageContextSelection === 'function') {
       recordPreviewInspectorUserPageContextSelection(candidateId);
@@ -122,11 +124,12 @@ function selectPreviewInspectorPageCandidate(candidateId, options = {}) {
     previewInspectorSession.pendingPageCandidateInteractionId =
       'page:' + String(readPreviewInspectorHostRuntimeRevision()) + ':' +
       String(++previewInspectorSession.interactionSequence);
-    previewInspectorSession.pendingPageCandidateOrigin = neuralSelection
+    previewInspectorSession.pendingPageCandidateOrigin = options?.origin === 'framework-navigation'
+      ? 'framework-navigation' : neuralSelection
       ? 'neural-page-context'
       : 'user';
     previewInspectorSession.pendingPageCandidateRevision = previewEntryRevision;
-    if (preferenceChanged) persistPreviewInspectorState();
+    persistPreviewInspectorState();
     notifyPreviewInspector();
     schedulePreviewInspectorPageCandidateSelectionTimeout(
       candidateId,

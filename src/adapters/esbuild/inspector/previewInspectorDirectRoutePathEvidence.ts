@@ -65,9 +65,7 @@ export function createPreviewInspectorDirectRoutePathEvidence(options: {
 /** Reads one static registry member through inert outer one-argument wrappers. */
 export function readPreviewInspectorDirectRouteCatalogMemberReference(options: {
   readonly expression: ts.Expression | undefined;
-  readonly resolveRegistryBinding: (
-    expression: ts.Expression,
-  ) =>
+  readonly resolveRegistryBinding: (expression: ts.Expression) =>
     | {
         readonly exportName: string;
         readonly sourcePath: string;
@@ -107,9 +105,7 @@ export function readPreviewInspectorDirectRouteCatalogMemberReference(options: {
 /** Reads an imported catalog helper through inert outer one-argument normalizers. */
 export function readPreviewInspectorDirectRouteCatalogHelperReference(options: {
   readonly expression: ts.Expression | undefined;
-  readonly resolveHelperBinding: (
-    expression: ts.Expression,
-  ) =>
+  readonly resolveHelperBinding: (expression: ts.Expression) =>
     | {
         readonly exportName: string;
         readonly sourcePath: string;

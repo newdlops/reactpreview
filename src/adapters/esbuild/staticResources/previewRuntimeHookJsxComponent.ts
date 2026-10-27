@@ -5,6 +5,7 @@
  * nested function does not shadow the binding. It never invokes project code while analyzing.
  */
 import ts from 'typescript';
+import { createPreviewRuntimeHookReferenceTraversal } from './previewRuntimeHookReferenceTraversal';
 import {
   findNearestPreviewRuntimeFunction,
   isPreviewRuntimeFunction,
@@ -49,6 +50,10 @@ export function inferPreviewRuntimeHookJsxComponentFallback(
 ): PreviewRuntimeHookJsxComponentFallback | undefined {
   const owner = findNearestPreviewRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
+  const visitReferencedChildren = createPreviewRuntimeHookReferenceTraversal(
+    owner,
+    new Set([identifier.text]),
+  );
   const payloads: JsxComponentPayloadCandidate[] = [];
   let directTagUses = 0;
   const visit = (node: ts.Node): void => {
@@ -69,20 +74,16 @@ export function inferPreviewRuntimeHookJsxComponentFallback(
         createBindingFallback,
       );
       if (payload !== undefined) payloads.push(payload);
-    } else if (
-      ts.isJsxSelfClosingElement(node) &&
-      isDirectTag(node.tagName, identifier.text)
-    ) {
+    } else if (ts.isJsxSelfClosingElement(node) && isDirectTag(node.tagName, identifier.text)) {
       directTagUses += 1;
     }
-    ts.forEachChild(node, visit);
+    visitReferencedChildren(node, visit);
   };
   visit(owner);
   if (directTagUses === 0) return undefined;
   const payload = [...payloads].sort(
     (left, right) =>
-      (right.fallback.requiredPaths?.length ?? 0) -
-      (left.fallback.requiredPaths?.length ?? 0),
+      (right.fallback.requiredPaths?.length ?? 0) - (left.fallback.requiredPaths?.length ?? 0),
   )[0];
   return {
     expression: createJsxComponentExpression(payload),
@@ -166,10 +167,7 @@ function runtimeFunctionShadowsBinding(
       shadowed = true;
       return;
     }
-    if (
-      ts.isClassDeclaration(node) &&
-      node.name?.text === identifierName
-    ) {
+    if (ts.isClassDeclaration(node) && node.name?.text === identifierName) {
       shadowed = true;
       return;
     }
@@ -188,9 +186,7 @@ function runtimeFunctionShadowsBinding(
 }
 
 /** Serializes a component that invokes only the statically admitted function-child position. */
-function createJsxComponentExpression(
-  payload: JsxComponentPayloadCandidate | undefined,
-): string {
+function createJsxComponentExpression(payload: JsxComponentPayloadCandidate | undefined): string {
   const renderFunctionChild =
     payload === undefined
       ? 'null'

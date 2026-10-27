@@ -1,7 +1,11 @@
 /* eslint-disable jsdoc/require-jsdoc, @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-non-null-assertion */
 /** Formats bounded compiler activity for logs without leaking source text or paths. */
+import {
+  isPreviewBuildStall,
+  isPreviewFrontierMismatchEvidence,
+  type PreviewFrontierMismatchEvidence,
+} from '../domain/previewBuildExecution';
 import type { PreviewCompilerActivity } from '../domain/previewCompilerActivity';
-import type { PreviewFrontierMismatchEvidence } from '../domain/previewBuildExecution';
 const FRONTIER_PREFIX = 'React Preview frontier mismatch evidence: ';
 const FRONTIER_MAX = 2048;
 export function formatPreviewFrontierMismatchEvidence(
@@ -68,4 +72,13 @@ export function formatPreviewCompilerActivity(activity: PreviewCompilerActivity)
   return activity.kind === 'graph-plan'
     ? `Preview compiler graph plan: ${summary}.`
     : `Preview compiler native build (${activity.contextAction}/${activity.phase}, pass ${activity.pass.toString()}): ${summary}.`;
+}
+
+/** Adds validated frontier evidence to a build failure log; unrelated failures add no suffix. */
+export function formatPreviewFrontierMismatchEvidenceSuffix(error: unknown): string {
+  return isPreviewBuildStall(error) &&
+    error.reason === 'frontier-mismatch' &&
+    isPreviewFrontierMismatchEvidence(error.frontierMismatchEvidence)
+    ? `\n${formatPreviewFrontierMismatchEvidence(error.frontierMismatchEvidence)}`
+    : '';
 }

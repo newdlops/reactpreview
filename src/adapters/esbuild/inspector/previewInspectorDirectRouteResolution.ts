@@ -1,11 +1,11 @@
 /** Resolves direct route syntax through evidence bound to each exact authored occurrence. */
 import path from 'node:path';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
+import { resolvePreviewInspectorDirectRouteCatalogHelper } from './previewInspectorDirectRouteCatalogHelper';
 import type {
   PreviewInspectorDirectRouteChoice,
   PreviewInspectorDirectRouteComponentReference,
 } from './previewInspectorDirectRouteChoiceTypes';
-import { resolvePreviewInspectorDirectRouteCatalogHelper } from './previewInspectorDirectRouteCatalogHelper';
 import { collectPreviewInspectorRouteFactoryCatalog } from './previewInspectorRouteFactoryCatalog';
 import type { PreviewInspectorFactoryRouteAvailability } from './previewInspectorRouteFactoryManifestTypes';
 import { materializePreviewInspectorRouteBasePath } from './previewInspectorRoutePathMetadata';
@@ -24,8 +24,7 @@ export interface PreviewInspectorResolvedDirectRouteEvidence {
 }
 
 /** A repeated occurrence with exactly the same public selection and provenance. */
-export interface PreviewInspectorDuplicateDirectRouteEvidence
-  extends PreviewInspectorResolvedDirectRouteEvidence {
+export interface PreviewInspectorDuplicateDirectRouteEvidence extends PreviewInspectorResolvedDirectRouteEvidence {
   readonly choice: PreviewInspectorDirectRouteChoice & {
     readonly reference: PreviewInspectorDirectRouteComponentReference;
   };
@@ -68,7 +67,10 @@ export async function resolvePreviewInspectorDirectRouteChoices(
         choice.sourcePath,
         'route-jsx',
         identityOrder,
-        [choice.sourcePath, ...(choice.reference === undefined ? [] : [choice.reference.sourcePath])],
+        [
+          choice.sourcePath,
+          ...(choice.reference === undefined ? [] : [choice.reference.sourcePath]),
+        ],
       );
       if (item === undefined) unresolved.push({ availability: 'catalog-unresolved', choice });
       else resolved.push(item);
@@ -156,8 +158,7 @@ export async function resolvePreviewInspectorDirectRouteChoices(
       ];
       if (patterns.length !== 1) {
         unresolved.push({
-          availability:
-            patterns.length > 1 ? 'route-provenance-ambiguous' : 'catalog-unresolved',
+          availability: patterns.length > 1 ? 'route-provenance-ambiguous' : 'catalog-unresolved',
           choice,
         });
         continue;

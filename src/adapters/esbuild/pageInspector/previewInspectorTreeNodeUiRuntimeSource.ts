@@ -290,7 +290,9 @@ function PreviewInspectorComponentTreeNode({
               ? 'A runtime error stops rendering here. Select it for the exact failure and retry.'
               : 'Your choice is needed here. Select this row to continue.'
           : isFlowOutcome
-            ? 'This authored flow rendered without the current file. Select it to compare paths or inspect path evidence.'
+            ? node.blocker?.targetWasMounted === true && node.blocker?.targetMounted !== true
+              ? 'The target was reached earlier and is no longer mounted. Select it to inspect target evidence.'
+              : 'This authored flow rendered without the current file. Select it to compare paths or inspect path evidence.'
           : isDeferredUiTrigger
             ? node.trigger?.available === true
               ? 'This authored event can reveal deferred UI. Activate it explicitly or inspect its source.'

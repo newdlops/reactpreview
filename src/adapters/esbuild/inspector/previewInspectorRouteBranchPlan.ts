@@ -8,22 +8,27 @@
  */
 import path from 'node:path';
 import type { PreviewInspectorRouteSelectionStep } from '../../../domain/preview';
-import type { PreviewRenderChainPlan, ResolvePreviewRenderGraphModule } from '../renderGraph';
+import type {
+  PreviewRenderChainCandidate,
+  PreviewRenderChainPlan,
+  ResolvePreviewRenderGraphModule,
+} from '../renderGraph';
+import {
+  createPreviewInspectorRouteBranchId,
+  createPreviewInspectorRouteOccurrenceBranchId,
+} from './previewInspectorRouteBranchIdentity';
 import {
   collectPreviewInspectorRouteLocationInventory,
   type CollectPreviewInspectorRouteLocationOptions,
   type PreviewInspectorRouteLocation,
   type PreviewInspectorRouteLocationInventory,
 } from './previewInspectorRouteLocation';
+import { normalizeComponentIdentity } from './previewInspectorRouteLocationEvidence';
 import {
   composePreviewInspectorNestedRoutePattern,
   materializePreviewInspectorRoutePattern,
   normalizePreviewInspectorRoutePattern,
 } from './previewInspectorRoutePattern';
-import {
-  createPreviewInspectorRouteBranchId,
-  createPreviewInspectorRouteOccurrenceBranchId,
-} from './previewInspectorRouteBranchIdentity';
 import {
   createPreviewInspectorRouteSelectionPrefixProvider,
   type PreviewInspectorRouteSelectionPrefixProvider,
@@ -98,6 +103,8 @@ export interface CollectPreviewInspectorRouteBranchPlanOptions {
   readonly resolveModule?: ResolvePreviewRenderGraphModule;
   /** Target-to-entry evidence used to rank routes and materialize dynamic parameters. */
   readonly renderChain: PreviewRenderChainPlan;
+  /** Ranked consuming path for contextual automatic choices; owned router defaults keep priority. */
+  readonly preferredRenderPath?: PreviewRenderChainCandidate;
   /** User-selected nested route chain; stale/unproven steps are ignored safely. */
   readonly selection?: readonly PreviewInspectorRouteSelectionStep[];
   /** Existing bounded source inventory shared with ordinary route analysis. */
@@ -228,6 +235,12 @@ export async function collectPreviewInspectorRouteBranchPlan(
       }
     | undefined;
   const rootOwner = Object.freeze({ exportName: options.exportName, sourcePath: ownerPath });
+  let preferredRenderPath =
+    (options.selection?.length ?? 0) === 0 &&
+    options.preferredRenderPath !== undefined &&
+    options.renderChain.paths.includes(options.preferredRenderPath)
+      ? options.preferredRenderPath
+      : undefined;
 
   for (let depth = 0; ; depth += 1) {
     const desiredPrefix =
@@ -386,7 +399,26 @@ export async function collectPreviewInspectorRouteBranchPlan(
             (choice) =>
               choice.componentName === desired.componentName && choice.pattern === desired.pattern,
           );
-    const selected = requested ?? selectDefaultRouteChoice(levelChoices, inventory.primary);
+    // Composition preserves choice order but adds inherited mounts to every child. Read original
+    // factory ownership so contextual parent/self routes cannot hide this owner's authored pages.
+    const ownedChoices = levelChoices.filter((_choice, index) =>
+      inventory.choices[index]?.routeMounts?.some(
+        (mount) =>
+          mount.contextOrigin === 'virtual-page-owner' &&
+          path.normalize(mount.sourcePath) === ownerPath &&
+          mount.exportName === ownerExportName,
+      ),
+    );
+    // Once an authored router selects its own page, its lazy/barrel modules must not jump back
+    // to an ancestor from the original Provider path. Descend with the existing owner defaults.
+    if (ownedChoices.length > 0) preferredRenderPath = undefined;
+    const selected =
+      requested ??
+      selectDefaultRouteChoice(
+        ownedChoices.length > 0 ? ownedChoices : levelChoices,
+        inventory.primary,
+        preferredRenderPath,
+      );
     if (selected === undefined) break;
     if (selectionResolution === undefined) {
       selectionResolution =
@@ -442,12 +474,7 @@ export async function collectPreviewInspectorRouteBranchPlan(
     dependencies.add(selectedSourcePath);
     ownerPath = selectedSourcePath;
     ownerExportName = selected.componentExportName ?? 'default';
-    if (
-      desiredPrefix !== undefined &&
-      requested !== undefined &&
-      selectionResolution === 'exact' &&
-      parentBranch !== undefined
-    ) {
+    if (desiredPrefix !== undefined && requested !== undefined && selectionResolution === 'exact') {
       pendingRetention = {
         prefix: desiredPrefix,
         state: {
@@ -677,21 +704,63 @@ function collectRouteMetadataDependencies(
   }
 }
 
-/** Prefers an exact owner/index pathname, then the structurally shortest authored route. */
+/** Keeps the proven page identity when its index URL is also owned by a containing router. */
 function selectDefaultRouteChoice(
   choices: readonly PreviewInspectorRouteLocation[],
   primary: PreviewInspectorRouteLocation | undefined,
+  preferredRenderPath?: PreviewRenderChainCandidate,
 ): PreviewInspectorRouteLocation | undefined {
-  return [...choices].sort((left, right) => {
-    const leftPrimary = left.pathname === primary?.pathname ? 0 : 1;
-    const rightPrimary = right.pathname === primary?.pathname ? 0 : 1;
-    return (
-      leftPrimary - rightPrimary ||
-      countRouteSegments(left.pattern) - countRouteSegments(right.pattern) ||
-      left.pattern.localeCompare(right.pattern) ||
-      left.componentName.localeCompare(right.componentName)
-    );
-  })[0];
+  return choices
+    .map((choice) => ({
+      choice,
+      pathScore: scoreRouteChoiceRenderPath(choice, preferredRenderPath),
+    }))
+    .sort((leftEntry, rightEntry) => {
+      const left = leftEntry.choice;
+      const right = rightEntry.choice;
+      const leftPrimary =
+        left.pathname === primary?.pathname
+          ? left.componentName === primary.componentName
+            ? 0
+            : 1
+          : 2;
+      const rightPrimary =
+        right.pathname === primary?.pathname
+          ? right.componentName === primary.componentName
+            ? 0
+            : 1
+          : 2;
+      return (
+        leftEntry.pathScore - rightEntry.pathScore ||
+        leftPrimary - rightPrimary ||
+        countRouteSegments(left.pattern) - countRouteSegments(right.pattern) ||
+        left.pattern.localeCompare(right.pattern) ||
+        left.componentName.localeCompare(right.componentName)
+      );
+    })[0]?.choice;
+}
+
+/** Prefers the nearest exact source/export on the ranked path, keeping unproven choices tied. */
+function scoreRouteChoiceRenderPath(
+  choice: PreviewInspectorRouteLocation,
+  renderPath: PreviewRenderChainCandidate | undefined,
+): number {
+  if (renderPath === undefined) return 0;
+  const identities = new Set(
+    [choice.componentName, choice.componentExportName]
+      .map(normalizeComponentIdentity)
+      .filter((identity): identity is string => identity !== undefined),
+  );
+  const componentPath =
+    choice.componentSourcePath === undefined
+      ? undefined
+      : path.normalize(choice.componentSourcePath);
+  const index = renderPath.steps.findIndex(
+    (step) =>
+      componentPath === path.normalize(step.sourcePath) &&
+      identities.has(normalizeComponentIdentity(step.label) ?? ''),
+  );
+  return index < 0 ? renderPath.steps.length : index;
 }
 
 /** Counts only non-empty route segments for an index/default preference independent of string size. */

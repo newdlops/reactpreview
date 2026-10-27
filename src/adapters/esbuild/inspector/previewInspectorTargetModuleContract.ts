@@ -128,13 +128,15 @@ function hasTransparentOrdinaryChildrenOutput(
   return (
     returns.length !== 0 &&
     returns.some((statement) => isNonEmptyReturn(statement.expression)) &&
-    returns.every((statement) =>
-      isEmptyInitializationReturn(statement.expression) ||
-      forwardsChildrenThroughHostlessComposition(statement.expression, childrenName),
+    returns.every(
+      (statement) =>
+        isEmptyInitializationReturn(statement.expression) ||
+        forwardsChildrenThroughHostlessComposition(statement.expression, childrenName),
     )
   );
 }
 
+/** Finds a direct function or function-valued variable behind an export, following local named export aliases only. */
 function findDirectExportFunction(
   sourceFile: ts.SourceFile,
   exportName: string,
@@ -166,8 +168,10 @@ function findDirectExportFunction(
     for (const declaration of statement.declarationList.declarations) {
       if (!ts.isIdentifier(declaration.name) || declaration.name.text !== resolvedName) continue;
       const initializer = declaration.initializer;
-      if (initializer !== undefined &&
-        (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
+      if (
+        initializer !== undefined &&
+        (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))
+      ) {
         return initializer;
       }
     }
@@ -175,6 +179,7 @@ function findDirectExportFunction(
   return undefined;
 }
 
+/** Accepts only an ordinary destructured children binding, excluding rest parameters and renamed bindings. */
 function readOrdinaryChildrenBinding(parameter: ts.ParameterDeclaration): string | undefined {
   if (parameter.dotDotDotToken !== undefined || !ts.isObjectBindingPattern(parameter.name)) {
     return undefined;
@@ -190,21 +195,31 @@ function readOrdinaryChildrenBinding(parameter: ts.ParameterDeclaration): string
   return children.length === 1 ? 'children' : undefined;
 }
 
+/** Collects returns from the current function body without entering nested function scopes. */
 function collectOwnReturns(node: ts.Node, returns: ts.ReturnStatement[]): void {
   if (ts.isFunctionLike(node)) return;
   if (ts.isReturnStatement(node)) returns.push(node);
-  ts.forEachChild(node, (child) => collectOwnReturns(child, returns));
+  ts.forEachChild(node, (child) => {
+    collectOwnReturns(child, returns);
+  });
 }
 
+/** Recognizes an absent or empty initialization return without evaluating its expression. */
 function isEmptyInitializationReturn(expression: ts.Expression | undefined): boolean {
   const value = unwrap(expression);
-  return value === undefined || value.kind === ts.SyntaxKind.NullKeyword || value.kind === ts.SyntaxKind.FalseKeyword;
+  return (
+    value === undefined ||
+    value.kind === ts.SyntaxKind.NullKeyword ||
+    value.kind === ts.SyntaxKind.FalseKeyword
+  );
 }
 
+/** Distinguishes a value-bearing return from the accepted empty initialization forms. */
 function isNonEmptyReturn(expression: ts.Expression | undefined): boolean {
   return !isEmptyInitializationReturn(expression);
 }
 
+/** Proves that a return forwards the same children binding through composition without adding a host element. */
 function forwardsChildrenThroughHostlessComposition(
   expression: ts.Expression | undefined,
   childrenName: string,
@@ -212,51 +227,81 @@ function forwardsChildrenThroughHostlessComposition(
   const value = unwrap(expression);
   if (value === undefined) return false;
   if (ts.isJsxElement(value)) {
-    return isHostlessJsxTag(value.openingElement.tagName) && jsxChildrenForwardOnly(value.children, childrenName);
+    return (
+      isHostlessJsxTag(value.openingElement.tagName) &&
+      jsxChildrenForwardOnly(value.children, childrenName)
+    );
   }
   if (ts.isJsxFragment(value)) return jsxChildrenForwardOnly(value.children, childrenName);
   return false;
 }
 
-function jsxChildrenForwardOnly(children: ts.NodeArray<ts.JsxChild>, childrenName: string): boolean {
-  const meaningful = children.filter((child) => !ts.isJsxText(child) || child.getText().trim().length !== 0);
+/** Checks every meaningful JSX child for exact forwarding through a hostless wrapper. */
+function jsxChildrenForwardOnly(
+  children: ts.NodeArray<ts.JsxChild>,
+  childrenName: string,
+): boolean {
+  const meaningful = children.filter(
+    (child) => !ts.isJsxText(child) || child.getText().trim().length !== 0,
+  );
   const child = meaningful[0];
-  return meaningful.length === 1 && child !== undefined &&
-    isDirectChildrenExpression(child, childrenName);
+  return (
+    meaningful.length === 1 &&
+    child !== undefined &&
+    isDirectChildrenExpression(child, childrenName)
+  );
 }
 
+/** Recognizes a JSX expression that forwards the exact children identifier without changing its value. */
 function isDirectChildrenExpression(child: ts.JsxChild, childrenName: string): boolean {
   if (ts.isJsxExpression(child)) {
     const expression = unwrap(child.expression);
-    return expression !== undefined && ts.isIdentifier(expression) && expression.text === childrenName;
+    return (
+      expression !== undefined && ts.isIdentifier(expression) && expression.text === childrenName
+    );
   }
   return ts.isJsxElement(child)
-    ? isHostlessJsxTag(child.openingElement.tagName) && jsxChildrenForwardOnly(child.children, childrenName)
+    ? isHostlessJsxTag(child.openingElement.tagName) &&
+        jsxChildrenForwardOnly(child.children, childrenName)
     : ts.isJsxFragment(child)
       ? jsxChildrenForwardOnly(child.children, childrenName)
       : false;
 }
 
+/** Accepts composition tags whose names do not describe an intrinsic browser host element. */
 function isHostlessJsxTag(tagName: ts.JsxTagNameExpression): boolean {
   return !ts.isIdentifier(tagName) || !/^[a-z]/u.test(tagName.text);
 }
 
+/** Removes syntactic expression wrappers while preserving the underlying authored node. */
 function unwrap(expression: ts.Expression | undefined): ts.Expression | undefined {
   let value = expression;
   while (
     value !== undefined &&
-    (ts.isParenthesizedExpression(value) || ts.isAsExpression(value) || ts.isTypeAssertionExpression(value) || ts.isSatisfiesExpression(value))
+    (ts.isParenthesizedExpression(value) ||
+      ts.isAsExpression(value) ||
+      ts.isTypeAssertionExpression(value) ||
+      ts.isSatisfiesExpression(value))
   ) {
     value = value.expression;
   }
   return value;
 }
 
+/** Checks a node’s supported modifier list without assuming every syntax kind carries modifiers. */
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
-  return ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((modifier) => modifier.kind === kind) === true;
+  return (
+    ts.canHaveModifiers(node) &&
+    ts.getModifiers(node)?.some((modifier) => modifier.kind === kind) === true
+  );
 }
 
+/** Selects the TypeScript parser grammar from the source extension, retaining JSX for component files. */
 function scriptKindForPath(sourcePath: string): ts.ScriptKind {
   const extension = path.extname(sourcePath).toLowerCase();
-  return extension === '.tsx' ? ts.ScriptKind.TSX : extension === '.ts' ? ts.ScriptKind.TS : ts.ScriptKind.JSX;
+  return extension === '.tsx'
+    ? ts.ScriptKind.TSX
+    : extension === '.ts'
+      ? ts.ScriptKind.TS
+      : ts.ScriptKind.JSX;
 }

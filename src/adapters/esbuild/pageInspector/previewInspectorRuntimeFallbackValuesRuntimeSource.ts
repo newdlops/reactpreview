@@ -153,10 +153,13 @@ function readOrCreatePreviewInspectorRuntimeFallback(
     exactFallback,
     metadata.requiredPaths,
   );
-  const fallback = mergePreviewInspectorTypedRuntimeFallback(
+  const completedFallback = mergePreviewInspectorTypedRuntimeFallback(
     overlayPreviewInspectorHookGraphqlLiteralDemands(structuralFallback, readGraphqlDocument),
     metadata,
   );
+  const fallback = graphqlFallback === compilerFallback
+    ? completedFallback
+    : settlePreviewInspectorHookGraphqlTransport(completedFallback);
   markPreviewInspectorGeneratedValue(fallback);
   if (graphqlFallback !== compilerFallback) {
     rememberPreviewInspectorHookGraphqlRowEvidence(fallback, readGraphqlDocument);

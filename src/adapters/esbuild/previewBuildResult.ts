@@ -3,9 +3,9 @@
  * Keeping output validation, dependency recovery, and diagnostic restoration at this boundary lets
  * the compiler focus on build planning while every caller receives the same safety guarantees.
  */
+import type { BuildFailure, BuildResult, Message, Metafile, OutputFile } from 'esbuild';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import type { BuildFailure, BuildResult, Message, Metafile, OutputFile } from 'esbuild';
 import {
   PreviewCompilationError,
   type PreviewBuildRequest,
@@ -24,12 +24,12 @@ import {
   type PreviewBuildOutputSelection,
 } from './previewBuildOutputPlanner';
 import { selectReportablePreviewBuildWarnings } from './previewBuildWarningPolicy';
+import { isKnownPreviewCompilerVirtualInput } from './previewOwnedNamespaceRegistry';
 import {
-  PREVIEW_ASSET_NAMESPACE,
   PREVIEW_APOLLO_BRIDGE_NAMESPACE,
+  PREVIEW_ASSET_NAMESPACE,
   PREVIEW_DATA_URL_NAMESPACE,
   PREVIEW_FORMIK_BRIDGE_NAMESPACE,
-  PREVIEW_YARN_LIBUI_BRIDGE_NAMESPACE,
   PREVIEW_INSPECTOR_ROOT_NAMESPACE,
   PREVIEW_INSPECTOR_RUNTIME_NAMESPACE,
   PREVIEW_INSPECTOR_TARGET_NAMESPACE,
@@ -41,8 +41,8 @@ import {
   PREVIEW_SNAPSHOT_NAMESPACE,
   PREVIEW_TARGET_BRIDGE_NAMESPACE,
   PREVIEW_THEME_BRIDGE_NAMESPACE,
+  PREVIEW_YARN_LIBUI_BRIDGE_NAMESPACE,
 } from './previewPluginProtocol';
-import { isKnownPreviewCompilerVirtualInput } from './previewOwnedNamespaceRegistry';
 import {
   PREVIEW_IMPORT_META_ENV_DEFINE_INPUT,
   PREVIEW_STDIN_ENTRY_NAME,
@@ -127,6 +127,17 @@ export async function createPreviewBundle(
     outputFiles: result.outputFiles,
     outputSelection,
   });
+  assertOutputSize(
+    [
+      { contents: outputPlan.entryJavaScript },
+      ...outputPlan.auxiliaryJavaScript,
+      ...outputPlan.auxiliaryStylesheets,
+      ...(outputPlan.entryStylesheet === undefined
+        ? []
+        : [{ contents: outputPlan.entryStylesheet }]),
+    ],
+    request.maxOutputMebibytes,
+  );
   const baseBundle = {
     chunks: [...outputPlan.auxiliaryJavaScript, ...outputPlan.auxiliaryStylesheets].sort(
       (left, right) => left.relativePath.localeCompare(right.relativePath),
@@ -158,12 +169,12 @@ export async function createPreviewBundle(
  * The asset plugin applies earlier per-file and aggregate limits; this final boundary also covers
  * generated JavaScript, CSS, and base64 expansion.
  *
- * @param outputFiles Complete in-memory output returned by esbuild.
+ * @param outputFiles Complete in-memory output, including any generated loader and wrapper bytes.
  * @param configuredMebibytes Optional resource-scoped user limit, normalized to the safe range.
  * @throws PreviewCompilationError when combined output exceeds the configured local budget.
  */
 export function assertOutputSize(
-  outputFiles: readonly OutputFile[],
+  outputFiles: readonly Pick<OutputFile, 'contents'>[],
   configuredMebibytes?: number,
 ): void {
   const outputBytes = outputFiles.reduce(
@@ -231,6 +242,7 @@ export function collectPreviewBuildDependencies(
   return [...new Set([path.normalize(request.documentPath), ...dependencies])].sort();
 }
 
+/** Recognizes only the environment define and this request’s generated entry identity as synthetic metadata inputs. */
 function isExactPreviewBuildSyntheticInput(
   request: PreviewBuildRequest,
   inputIdentity: string,
@@ -293,6 +305,7 @@ export function readPreviewMetafileNamespacePrefix(inputIdentity: string): strin
   return prefix?.length === 1 && /^[A-Za-z]$/u.test(prefix) ? undefined : prefix;
 }
 
+/** Strips asset suffixes and resolves a physical metadata identity against the exact working directory. */
 function normalizePreviewMetafilePhysicalPath(
   inputIdentity: string,
   workingDirectory: string,
@@ -432,4 +445,15 @@ export function isBuildFailure(error: unknown): error is BuildFailure {
  */
 export function describeUnknownError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Mirrors esbuild's relative, forward-slash metafile identity for one configured stdin sourcefile. */
+export function normalizePreviewMetafileSourceIdentity(
+  sourcefile: string,
+  workingDirectory: string,
+): string {
+  const relativeSourcefile = path.isAbsolute(sourcefile)
+    ? path.relative(workingDirectory, sourcefile)
+    : sourcefile;
+  return relativeSourcefile.split(path.sep).join('/');
 }

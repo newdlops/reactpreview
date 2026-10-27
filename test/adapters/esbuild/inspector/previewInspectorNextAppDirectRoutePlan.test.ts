@@ -29,6 +29,35 @@ function createFixture(sources: Readonly<Record<string, string>>): {
 }
 
 describe('createPreviewInspectorNextAppDirectRoutePlan', () => {
+  it('retains only uniquely proven redirect destinations beside the initial cold shell page', async () => {
+    const layout = '/workspace/app/layout.tsx';
+    const index = '/workspace/app/(account)/mypage/page.tsx';
+    const profile = '/workspace/app/(account)/mypage/profile/page.tsx';
+    const unrelated = '/workspace/app/unrelated/deep/more/page.tsx';
+    const fixture = createFixture({
+      [layout]: 'export default function Layout({children}) { return <body>{children}</body> }',
+      [index]:
+        "import {redirect} from 'next/navigation'; export default function Index(){ redirect('/mypage/profile'); }",
+      [profile]: 'export default function Profile(){ return <main>Profile settings</main>; }',
+      [unrelated]: 'export default function Unrelated(){ return <main>Unrelated</main>; }',
+    });
+    const plan = await createPreviewInspectorNextAppDirectRoutePlan({
+      documentPath: layout,
+      ...fixture,
+    });
+    expect(plan?.root.sourcePath).toBe(profile);
+    expect(plan?.pageCandidates.map((item) => item.routeLocation?.pathname)).toEqual([
+      '/mypage/profile',
+      '/mypage',
+    ]);
+    expect(plan?.dependencyPaths).toContain(profile);
+    expect(plan?.dependencyPaths).not.toContain(unrelated);
+    expect(
+      plan?.pageCandidates.find((item) => item.root.sourcePath === index)
+        ?.nextAppRedirectDestination,
+    ).toBe('/mypage/profile');
+  });
+
   /** Keeps the selected dynamic page, its shells, and reached parameter registry only. */
   it('creates a bounded direct-page corridor with refined route parameters', async () => {
     const pagePath = '/workspace/app/(view)/preview/[base]/[name]/page.tsx';

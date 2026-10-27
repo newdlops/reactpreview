@@ -22,6 +22,7 @@ const previewInspectorCompanionState = {
   disposed: false,
   elementById: new Map(),
   frame: undefined,
+  publicationTimer: undefined,
   lastCss: '',
   lastHtml: '',
   messageListener: undefined,
@@ -111,9 +112,21 @@ function readPreviewInspectorCompanionContextReveal(clone) {
   return evidence === null || evidence === undefined ? undefined : request;
 }
 
+/** Cancels both one-shot callbacks so publication and disposal leave no pending delivery. */
+function clearPreviewInspectorCompanionSnapshotSchedule() {
+  if (previewInspectorCompanionState.frame !== undefined) {
+    cancelAnimationFrame(previewInspectorCompanionState.frame);
+  }
+  if (previewInspectorCompanionState.publicationTimer !== undefined) {
+    clearTimeout(previewInspectorCompanionState.publicationTimer);
+  }
+  previewInspectorCompanionState.frame = undefined;
+  previewInspectorCompanionState.publicationTimer = undefined;
+}
+
 /** Publishes one changed inert shell and static stylesheet through the extension-host relay. */
 function publishPreviewInspectorCompanionSnapshot() {
-  previewInspectorCompanionState.frame = undefined;
+  clearPreviewInspectorCompanionSnapshotSchedule();
   if (previewInspectorCompanionState.disposed) return;
   const shell = previewInspectorCompanionState.shell;
   if (shell === undefined || shell === null || shell.isConnected === false) return;
@@ -168,14 +181,18 @@ function publishPreviewInspectorCompanionSnapshot() {
   }
 }
 
-/** Coalesces dense React and tree mutations into at most one serialized mirror per animation frame. */
+/** Coalesces UI mutations while a one-shot timer also covers hidden groups with stalled frames. */
 function schedulePreviewInspectorCompanionSnapshot() {
   if (
     previewInspectorCompanionState.disposed ||
-    previewInspectorCompanionState.frame !== undefined
+    previewInspectorCompanionState.frame !== undefined ||
+    previewInspectorCompanionState.publicationTimer !== undefined
   ) return;
   previewInspectorCompanionState.frame = requestAnimationFrame(
     publishPreviewInspectorCompanionSnapshot,
+  );
+  previewInspectorCompanionState.publicationTimer = setTimeout(
+    publishPreviewInspectorCompanionSnapshot, 100,
   );
 }
 
@@ -297,9 +314,7 @@ previewInspectorCompanionState.messageListener = handlePreviewInspectorCompanion
 previewInspectorCompanionState.dispose = () => {
   previewInspectorCompanionState.disposed = true;
   previewInspectorCompanionState.observer?.disconnect?.();
-  if (previewInspectorCompanionState.frame !== undefined) {
-    cancelAnimationFrame(previewInspectorCompanionState.frame);
-  }
+  clearPreviewInspectorCompanionSnapshotSchedule();
   globalThis.removeEventListener?.('message', previewInspectorCompanionState.messageListener);
   previewInspectorCompanionState.elementById.clear();
 };

@@ -5,6 +5,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from './previewAnalysisSourceFile';
 import type { PreviewThemeImportSelection } from './previewTargetExports';
 
 const STYLED_COMPONENTS_SPECIFIER = 'styled-components';
@@ -57,11 +58,9 @@ export function collectPreviewStyleSignals(
   sourcePath: string,
   sourceText: string,
 ): readonly PreviewStyleSignal[] {
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = readPreviewAnalysisSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     getScriptKind(sourcePath),
   );
   if (hasParseDiagnostics(sourceFile)) {

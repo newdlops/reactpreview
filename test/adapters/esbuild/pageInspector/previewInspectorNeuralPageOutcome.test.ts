@@ -24,7 +24,8 @@ function evaluate(body: string): unknown {
         targetReachabilityByKey: new Map(), verifiedPageCandidateId: '',
         neuralHumanControlRevision: 0,
       };
-      let blockers = [], hostOutput = true, complete = true, paused = false;
+      let blockers = [], hostOutput = true, complete = true, paused = false, frameworkControl = false;
+      function hasPreviewInspectorNextAppControlBlocker() { return frameworkControl; }
       let scans = 0, outputReads = 0, captures = 0, persisted = 0, requests = 0;
       function readPreviewInspectorPageCandidates(value) { return value?.inspector?.pageCandidates ?? []; }
       function findSelectedPreviewInspectorDescriptor() { return currentDescriptor; }
@@ -65,6 +66,15 @@ function evaluate(body: string): unknown {
 }
 
 describe('neural page outcome admission', () => {
+  it('never learns a redirect placeholder as a verified page while navigation waits', () => {
+    expect(evaluate('frameworkControl = true; result(observe());')).toMatchObject({
+      accepted: false,
+      updates: 0,
+      captures: 0,
+      persisted: 0,
+      scans: 0,
+    });
+  });
   it('rejects an absent verifier state without throwing', () => {
     expect(evaluate('result(observe(null));')).toMatchObject({ accepted: false, updates: 0 });
   });

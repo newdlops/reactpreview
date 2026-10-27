@@ -15,6 +15,31 @@ const SETTINGS_SHAPE = {
 };
 
 describe('typed REST registry precedence', () => {
+  /** Literal list routes retain their declared arrays beside a later generic detail route. */
+  it.each([false, true])(
+    'keeps static collection shape before wildcard detail (reverse=%s)',
+    async (reverse) => {
+      const list = [
+        'GET',
+        '/api/contents/recent',
+        {
+          items: { fields: { contentId: { kind: 'number' } }, kind: 'object' },
+          kind: 'array',
+        },
+      ];
+      const detail = ['GET', '/api/contents/*', SETTINGS_SHAPE];
+      const fetch = evaluate(reverse ? [detail, list] : [list, detail]);
+      const listResponse = await fetch('/api/contents/recent');
+      const detailResponse = await fetch('/api/contents/42');
+
+      expect(Array.isArray(await listResponse.json())).toBe(true);
+      expect(Object.keys((await detailResponse.json()) as object).sort()).toEqual([
+        'locale',
+        'theme',
+      ]);
+    },
+  );
+
   /** `fetchJson<Settings>('/api/settings')` answers with the declared object, not a list. */
   it('uses the registered shape when the compiler only knows `unknown`', async () => {
     const fetch = evaluate([['GET', '/api/settings', SETTINGS_SHAPE]]);

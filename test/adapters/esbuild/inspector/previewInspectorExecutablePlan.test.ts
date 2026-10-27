@@ -16,7 +16,10 @@ describe('preview Inspector executable plan', () => {
       exportName: 'MeetingPaymentPage',
       sourcePath: '/workspace/meeting/meeting-payment-page.tsx',
     };
-    const createRenderPath = (id: string, occurrenceStart: number) => ({
+    const createRenderPath = (
+      id: string,
+      occurrenceStart: number,
+    ): PreviewInspectorAncestorPlan['renderChain']['paths'][number] => ({
       id,
       steps: [
         {
@@ -76,9 +79,7 @@ describe('preview Inspector executable plan', () => {
     const executable = createPreviewInspectorExecutablePlan(plan, candidate.id);
 
     expect(executable.renderChain.paths).toEqual([selectedRenderPath]);
-    expect(executable.renderChainsByExport[target.exportName]?.paths).toEqual([
-      selectedRenderPath,
-    ]);
+    expect(executable.renderChainsByExport[target.exportName]?.paths).toEqual([selectedRenderPath]);
     expect(executable.renderChainsByExport[target.exportName]).toBe(executable.renderChain);
   });
 

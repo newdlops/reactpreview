@@ -1,4 +1,6 @@
 /** Generates exact, bounded activation for a selected target hidden behind authored page tabs. */
+import { createPreviewInspectorPageTabDefaultRuntimeSource } from './previewInspectorPageTabDefaultRuntimeSource';
+import { createPreviewInspectorPageTabInteractionRuntimeSource } from './previewInspectorPageTabInteractionRuntimeSource';
 
 /**
  * Creates browser source that activates only a standard tab whose event key was read from an exact
@@ -7,6 +9,8 @@
  */
 export function createPreviewInspectorPageTabActivationRuntimeSource(): string {
   return String.raw`
+${createPreviewInspectorPageTabDefaultRuntimeSource()}
+${createPreviewInspectorPageTabInteractionRuntimeSource()}
 const PREVIEW_INSPECTOR_TARGET_PAGE_TAB_ACTIVATION_LIMIT = 16;
 const PREVIEW_INSPECTOR_TARGET_PAGE_TAB_KEY_ATTEMPT_LIMIT = 4;
 

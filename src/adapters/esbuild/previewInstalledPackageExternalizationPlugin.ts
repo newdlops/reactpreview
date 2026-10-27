@@ -1,7 +1,7 @@
 /** Externalizes browser package modules while preserving workspace aliases and compiler namespaces. */
+import type { Plugin } from 'esbuild';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Plugin } from 'esbuild';
 import { PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
 import type { PreviewStaticModuleResolver } from './previewStaticModuleResolver';
 
@@ -26,6 +26,7 @@ const INSTANCE_BOUND_PACKAGE_NAMES = new Set([
   'styled-components',
 ]);
 const STATIC_RENDER_BOUNDARY_SPECIFIERS = new Set(['server-only']);
+const MAX_MANIFEST_DEPENDENCIES = 512;
 
 /** Reports whether a specifier can be represented by the preview's closed browser import map. */
 export function isPreviewBareModuleSpecifier(specifier: string): boolean {
@@ -37,6 +38,7 @@ export function createPreviewInstalledPackageExternalizationPlugin(
   options: PreviewInstalledPackageExternalizationOptions,
 ): Plugin {
   const externalizationSafetyByPackageRoot = new Map<string, Promise<boolean>>();
+  let sharedPeerNames: Promise<ReadonlySet<string>> | undefined;
   return {
     name: 'preview-installed-package-externalization',
     setup(build) {
@@ -61,6 +63,16 @@ export function createPreviewInstalledPackageExternalizationPlugin(
         if (hasNodeModulesSegment(consumerPath)) return undefined;
         const resolved = options.staticModuleResolver.resolve(args.path, consumerPath);
         if (resolved === undefined || !hasNodeModulesSegment(resolved)) return undefined;
+        // A package another dependency declares as a peer shares that dependency's instance: the
+        // dependency stays in this bundle and reaches the peer from inside it, so a separate vendor
+        // copy would run beside the bundled one (`@tiptap/react` and `@tiptap/pm/state` give two
+        // `prosemirror-state` modules whose plugin keys collide).
+        sharedPeerNames ??= readApplicationSharedPeerNames(
+          options.documentPath,
+          options.staticModuleResolver,
+        );
+        const packageName = readPackageName(args.path);
+        if (packageName !== undefined && (await sharedPeerNames).has(packageName)) return undefined;
         if (
           !(await isPackageExternalizationSafe(
             args.path,
@@ -118,6 +130,64 @@ async function readPackageExternalizationSafety(
     return runtimeDependencies.every((name) => !INSTANCE_BOUND_PACKAGE_NAMES.has(name));
   } catch {
     return false;
+  }
+}
+
+/**
+ * Collects the packages that the application's own dependencies declare as peers.
+ *
+ * @param documentPath Previewed file; its nearest package manifest names the dependencies.
+ * @param resolver Resolves each dependency the way the preview build does.
+ * @returns Peer package names, empty when no manifest or peer contract is readable.
+ */
+async function readApplicationSharedPeerNames(
+  documentPath: string,
+  resolver: PreviewStaticModuleResolver,
+): Promise<ReadonlySet<string>> {
+  const peers = new Set<string>();
+  const manifest = await readNearestPackageManifest(path.dirname(documentPath));
+  if (manifest === undefined) return peers;
+  const dependencyNames = new Set([
+    ...readDependencyNames(manifest.dependencies),
+    ...readDependencyNames(manifest.devDependencies),
+    ...readDependencyNames(manifest.optionalDependencies),
+  ]);
+  await Promise.all(
+    [...dependencyNames].slice(0, MAX_MANIFEST_DEPENDENCIES).map(async (name) => {
+      const entry = resolver.resolve(name, documentPath);
+      const packageRoot = entry === undefined ? undefined : findPackageRoot(entry, name);
+      if (packageRoot === undefined) return;
+      try {
+        const parsed: unknown = JSON.parse(
+          await readFile(path.join(packageRoot, 'package.json'), 'utf8'),
+        );
+        if (!isRecord(parsed)) return;
+        for (const peer of readDependencyNames(parsed.peerDependencies)) peers.add(peer);
+      } catch {
+        // An unreadable manifest adds no peer contract.
+      }
+    }),
+  );
+  return peers;
+}
+
+/** Reads the closest package manifest at or above a directory. */
+async function readNearestPackageManifest(
+  directory: string,
+): Promise<Readonly<Record<string, unknown>> | undefined> {
+  let current = path.resolve(directory);
+  for (;;) {
+    try {
+      const parsed: unknown = JSON.parse(
+        await readFile(path.join(current, 'package.json'), 'utf8'),
+      );
+      if (isRecord(parsed)) return parsed;
+    } catch {
+      // Keep walking up past folders without a readable manifest.
+    }
+    const parent = path.dirname(current);
+    if (parent === current || path.basename(current) === 'node_modules') return undefined;
+    current = parent;
   }
 }
 

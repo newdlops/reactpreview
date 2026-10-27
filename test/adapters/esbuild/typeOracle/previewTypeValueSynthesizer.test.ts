@@ -4,6 +4,7 @@
  * literal lookups, discriminated form state, and success-shaped query results.
  */
 import ts from 'typescript';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   PREVIEW_TYPED_VALUE_TAG,
@@ -13,6 +14,48 @@ import {
 const ENTRY = '/virtual/page.tsx';
 
 describe('synthesizePreviewTypedValue', () => {
+  it('keeps React component constructors callable even when their type owns metadata properties', () => {
+    const reactTypes = path.resolve('node_modules/@types/react/index.d.ts').replaceAll('\\', '/');
+    const declared = synthesizeCall(
+      [
+        `import type { ComponentType, ForwardRefExoticComponent } from ${JSON.stringify(reactTypes)};`,
+        'declare function useIcons(): { Icon: ComponentType<{ size?: number }> | null; Forwarded: ForwardRefExoticComponent<{ color?: string }> };',
+        'const probe = useIcons();',
+      ].join('\n'),
+      ['Icon', 'Forwarded'],
+    );
+    expect(declared?.value).toEqual({
+      Icon: { [PREVIEW_TYPED_VALUE_TAG]: 'function', returns: null },
+      Forwarded: { [PREVIEW_TYPED_VALUE_TAG]: 'function', returns: null },
+    });
+    const ordinary = synthesizeCall(
+      'interface FunctionComponent { current: null }; declare function useData(): FunctionComponent; const probe = useData();',
+      ['current'],
+    );
+    expect(ordinary?.value).toEqual({ current: null });
+  });
+
+  it('tags genuine React ref contracts while keeping a same-named authored record ordinary', () => {
+    const reactTypes = path.resolve('node_modules/@types/react/index.d.ts').replaceAll('\\', '/');
+    const declared = synthesizeCall(
+      [
+        `import type { RefObject, MutableRefObject } from ${JSON.stringify(reactTypes)};`,
+        'declare function useRefs(): { container: RefObject<object | null>; counter: MutableRefObject<number> };',
+        'const probe = useRefs();',
+      ].join('\n'),
+      ['container', 'counter'],
+    );
+    expect(declared?.value).toEqual({
+      container: { [PREVIEW_TYPED_VALUE_TAG]: 'ref', value: null },
+      counter: { [PREVIEW_TYPED_VALUE_TAG]: 'ref', value: 1 },
+    });
+    const ordinary = synthesizeCall(
+      'interface RefObject { current: null }; declare function useData(): RefObject; const probe = useData();',
+      ['current'],
+    );
+    expect(ordinary?.value).toEqual({ current: null });
+  });
+
   /**
    * A typed value shown as-is fills lists like the browser's generated lists: SimSheet showed one
    * "W+1" header from a one-item `future: string[]`. Tuples keep their declared length.
@@ -160,6 +203,43 @@ describe('synthesizePreviewTypedValue', () => {
     expect(primed?.value).toEqual({ rows: [{ kind: 'x', phase: 'success', status: 'crit' }] });
     expect(primed?.literals['rows[].status']).toEqual(['crit', 'risk', 'warn', 'ok']);
     expect(cold).toEqual(primed);
+  });
+
+  /**
+   * `Omit`/`Pick` list keys in their literals' creation order, so a Prisma row's sample object
+   * changed key order between compiles; keys follow the declaration however checking went.
+   */
+  it('keeps mapped-type property order independent of which literals were checked first', () => {
+    const source = [
+      "type Keys = 'title' | 'body' | 'id';",
+      'interface Notice { id: string; title: string; body: string; read: boolean }',
+      "declare function useNotice(): Omit<Notice, 'read'>;",
+      "export const keys: Keys = 'body';",
+      'export const probe = useNotice();',
+    ].join('\n');
+
+    const primed = synthesizeCall(source, [], 'keys')?.value as object;
+    const cold = synthesizeCall(source, [])?.value as object;
+
+    expect(Object.keys(primed)).toEqual(['id', 'title', 'body']);
+    expect(Object.keys(cold)).toEqual(['id', 'title', 'body']);
+  });
+
+  /** Bigint fields become tagged integer samples instead of disappearing (`Number(undefined)`). */
+  it('tags bigint fields with integer samples and keeps bigint literals', () => {
+    const source = [
+      'interface Usage { costMicros: bigint; totalTokens: number; plan: 7n; debt: -3n; large: 9007199254740993n }',
+      'declare function useUsage(): Usage;',
+      'export const probe = useUsage();',
+    ].join('\n');
+
+    expect(synthesizeCall(source, [])?.value).toEqual({
+      costMicros: { $previewTyped: 'bigint', value: '1' },
+      debt: { $previewTyped: 'bigint', value: '-3' },
+      large: { $previewTyped: 'bigint', value: '9007199254740993' },
+      plan: { $previewTyped: 'bigint', value: '7' },
+      totalTokens: 0,
+    });
   });
 
   /** A selector result carries no annotation; enum members still follow their declarations. */

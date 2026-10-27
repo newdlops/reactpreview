@@ -212,9 +212,9 @@ describe('complete route inventory profile CLI', () => {
       const records: string[] = [];
       const dependencies = createDependencies({
         createClient: (_workerPath, observer) => ({
-          collectCompleteRouteInventory: async () => {
+          collectCompleteRouteInventory: () => {
             observer(scenario.event);
-            return createInventory();
+            return Promise.resolve(createInventory());
           },
         }),
         records,

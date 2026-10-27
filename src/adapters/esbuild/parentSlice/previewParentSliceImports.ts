@@ -94,7 +94,72 @@ export function matchesPreviewParentSliceTargetImport(
     return true;
   }
 
-  const canonicalTarget = canonicalizeSourceModulePath(targetPath);
+  return matchesLexicalTarget(
+    cleanSpecifier,
+    consumerPath,
+    canonicalizeSourceModulePath(targetPath),
+  );
+}
+
+/**
+ * Reuses only the latest lexical comparison during one consumer analysis.
+ * No source, filesystem result, accepted-alias decision, or project resolver result is retained.
+ *
+ * @returns A matcher with the same inputs as the uncached entry point; discard after the analysis.
+ */
+export function createPreviewParentSliceTargetImportMatcher(): typeof matchesPreviewParentSliceTargetImport {
+  let previousSpecifier: string | undefined;
+  let cleanSpecifier: string | undefined;
+  let previousTarget: string | undefined;
+  let canonicalTarget = '';
+  let matchedSpecifier: string | undefined;
+  let matchedConsumer: string | undefined;
+  let matchedTarget: string | undefined;
+  let lexicalMatch = false;
+
+  return (moduleSpecifier, consumerPath, targetPath, acceptedSpecifiers) => {
+    if (moduleSpecifier !== previousSpecifier) {
+      previousSpecifier = moduleSpecifier;
+      cleanSpecifier = cleanModuleSpecifier(moduleSpecifier);
+    }
+    if (cleanSpecifier === undefined) {
+      return false;
+    }
+    if (acceptedSpecifiers.has(cleanSpecifier)) {
+      return true;
+    }
+    if (
+      matchedSpecifier === cleanSpecifier &&
+      matchedConsumer === consumerPath &&
+      matchedTarget === targetPath
+    ) {
+      return lexicalMatch;
+    }
+    if (previousTarget !== targetPath) {
+      canonicalTarget = canonicalizeSourceModulePath(targetPath);
+      previousTarget = targetPath;
+    }
+    lexicalMatch = matchesLexicalTarget(cleanSpecifier, consumerPath, canonicalTarget);
+    matchedSpecifier = cleanSpecifier;
+    matchedConsumer = consumerPath;
+    matchedTarget = targetPath;
+    return lexicalMatch;
+  };
+}
+
+/**
+ * Compares a query-free import to an already canonical target without consulting project state.
+ *
+ * @param cleanSpecifier Normalized nonempty authored import.
+ * @param consumerPath Absolute consumer path used to resolve relative imports.
+ * @param canonicalTarget Extensionless target path with directory indexes collapsed.
+ * @returns Whether the existing relative, absolute, or alias-suffix rules prove a match.
+ */
+function matchesLexicalTarget(
+  cleanSpecifier: string,
+  consumerPath: string,
+  canonicalTarget: string,
+): boolean {
   if (cleanSpecifier.startsWith('.') || path.isAbsolute(cleanSpecifier)) {
     const resolvedPath = path.isAbsolute(cleanSpecifier)
       ? cleanSpecifier

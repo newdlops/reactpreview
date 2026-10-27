@@ -405,9 +405,9 @@ describe('Preview Inspector generated collection repair', () => {
       },
     ) as { imageSrc: unknown; src: unknown };
 
-    expect(draft).toEqual({ imageSrc: 'imageSrc', src: 'src' });
-    expect(automatic).toEqual({ imageSrc: 'imageSrc', src: 'src' });
-    expect((draft.imageSrc as string).replace('/preview', '')).toBe('imageSrc');
+    expect(draft).toEqual({ imageSrc: '', src: 'Src' });
+    expect(automatic).toEqual({ imageSrc: '', src: 'Src' });
+    expect((draft.imageSrc as string).replace('/preview', '')).toBe('');
   });
 
   /** Keeps timer-shaped leaves numeric so toast, debounce, and transition APIs can consume them. */

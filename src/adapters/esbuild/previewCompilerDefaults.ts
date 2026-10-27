@@ -4,7 +4,11 @@
  * readable while preserving exact domain shapes for fast and full preparation modes.
  */
 import path from 'node:path';
-import { PreviewCompilationError, type PreviewBuildRequest } from '../../domain/preview';
+import {
+  PreviewCompilationError,
+  type PreviewBuildRequest,
+  type PreviewRenderMode,
+} from '../../domain/preview';
 import type { PreviewImplicitGlobalEvidenceInventory } from './previewImplicitGlobalEvidence';
 import type { PreviewRuntimeWatchInputs } from './previewRuntimeEnvironment';
 import type { PreviewRouterRequirement } from './previewRouterRequirement';
@@ -47,10 +51,27 @@ export const EMPTY_RUNTIME_WATCH_INPUTS: PreviewRuntimeWatchInputs = Object.free
 
 /** Router bridge selection carried into one discovery or final esbuild attempt. */
 export interface PreviewRouterBuildSelection {
-  /** Whether graph evidence permits a default automatic MemoryRouter wrapper. */
+  /** Default global MemoryRouter flag; Inspector delegates wrapping to each page candidate. */
   readonly automaticallyWrap: boolean;
   /** Whether the project router package should be resolved into the final runtime. */
   readonly enabled: boolean;
+}
+
+/**
+ * Preserves graph-derived router activation while normalizing Inspector's unused global flag.
+ * Inspector's candidate-local boundary checks its own provider and inherited context independently,
+ * so graph-wide ownership changes must not rebuild an otherwise identical Inspector runtime.
+ */
+export function selectPreviewRouterBuild(
+  requirement: PreviewRouterRequirement,
+  renderMode: PreviewRenderMode = 'component',
+): PreviewRouterBuildSelection {
+  return requirement.consumesRouter
+    ? {
+        automaticallyWrap: renderMode === 'page-inspector' || !requirement.ownsRouter,
+        enabled: true,
+      }
+    : { automaticallyWrap: false, enabled: false };
 }
 
 /**
@@ -64,16 +85,15 @@ export function selectPreviewInitialRouterBuild(
   cached: PreviewRouterRequirement | undefined,
   target: PreviewRouterRequirement,
   frontier?: PreviewRouterRequirement,
+  renderMode: PreviewRenderMode = 'component',
 ): PreviewRouterBuildSelection {
   const reached = cached ?? frontier;
   const consumesRouter = reached?.consumesRouter === true || target.consumesRouter;
   const ownsRouter = reached?.ownsRouter === true || target.ownsRouter;
-  return consumesRouter
-    ? { automaticallyWrap: !ownsRouter, enabled: true }
-    : { automaticallyWrap: false, enabled: false };
+  return selectPreviewRouterBuild({ consumesRouter, ownsRouter }, renderMode);
 }
 
-/** Reports whether cached router ownership exactly matches the newly reached source graph. */
+/** Reports whether generated router configuration matches after mode-specific planning. */
 export function haveEquivalentRouterSelections(
   left: PreviewRouterBuildSelection,
   right: PreviewRouterBuildSelection,

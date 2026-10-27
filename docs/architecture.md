@@ -726,8 +726,8 @@ package/usage cache, 최대 256개 adaptive Router/global plan 및 최대 12개 
 worker thread가 소유합니다. 여러 탭의 compile은 peak graph memory를 제한하기 위해 하나씩 실행하고, queued
 `fast` first paint를 `full` enrichment보다 우선합니다. context key에는 target, render/setup/runtime plan과 생성
 virtual module 근거가 포함되고 source text는 포함하지 않습니다. Storybook fallback observer처럼 attempt-local
-trace가 필요한 build는 fresh build로 격리합니다. shutdown은 cached context를 dispose한 뒤 esbuild service와
-worker를 순서대로 종료합니다.
+trace가 필요한 build는 fresh build로 격리합니다. 인스턴스 shutdown은 자신의 context와 cache를 정리합니다.
+전용 worker의 composition root가 정리 완료 후 공유 esbuild service를 한 번 멈추고 worker를 종료합니다.
 
 worker는 entry/CSS/chunk의 content digest와 bundle identity를 계산한 뒤 `ArrayBuffer` transfer list로 byte
 ownership을 extension host에 넘깁니다. 따라서 큰 bundle을 structured clone으로 복사하거나 host event loop에서
@@ -804,9 +804,9 @@ outer Provider에 전달합니다. target-reachable source transformer는 `useSe
 path와 결과 local alias에서 이어지는 비옵셔널 property dereference를 bounded하게 수집합니다. bridge는
 등록된 경로의 객체 container만 plain object로 만들고 deep freeze하며, leaf 값·enum·boolean은 생성하지
 않습니다. optional chain, computed key, unsafe segment, 모호한 alias와 depth/count 한도를 넘는 근거는
-fail closed합니다(0.1.1588부터 Reselect 옵셔널 체인은 첫 `?.`의 수신 객체가 이미 있을 때만 숫자 0·빈 컬렉션·날짜(wrapper `value`는 epoch 밀리초, 오늘로 옮김)로 채우고 문자열·boolean은 비워 둠). dispatch는 action을 실행하지 않고 그대로 반환하며 state와 listener를 바꾸지
+fail closed합니다(0.1.1588부터 Reselect 옵셔널 체인은 첫 `?.`의 수신 객체가 이미 있을 때만 숫자 0·빈 컬렉션·날짜(wrapper `value`는 epoch 밀리초, 오늘로 옮김)로 채우고 문자열·boolean은 비워 둠. 0.1.1602부터는 수신 객체가 없어도 frontier 소스가 그 이름을 역참조·대입 외에는 쓰지 않고 만들 컨테이너를 통째로 돌려주는 selector가 없으면 만들며, `year`/`month` 숫자는 예시 날짜의 연·월을 받아 bridge가 오늘의 연·월로 옮김. 0.1.1603부터 page-authentic 실행에서는 앱 shell이 넘기는 자식마다 overlay boundary를 두어, 바로 위 앱 Provider의 store를 읽을 때 값이 없는 곳에만 이렇게 만든 필드를 보여 줌(실제 값 우선, dispatch·subscribe는 그대로 앱 store로)). dispatch는 action을 실행하지 않고 그대로 반환하며 state와 listener를 바꾸지
 않습니다. setup의 `reduxPreview.state`는 자동 skeleton을 병합하거나 clone하지 않은 exact reference로
-최우선 사용되고, 내부 실제 Provider가 있으면 자동 경계보다 우선합니다.
+최우선 사용되고, 내부 실제 Provider가 있으면 자동 경계보다 우선합니다. `previewNextAuthSessionPlugin`(0.1.1604)은 프로젝트 소스가 import하는 설치된 `next-auth`를 감싸, `NextAuth(config)`가 돌려준 `auth`의 인자 없는 호출만 로그인한 예시 세션으로 바꿉니다(미리보기 `headers()`·`cookies()`는 비어 있어 실제 조회는 항상 비로그인). 세션 값은 타입 oracle이 프로젝트의 `Session` 타입에서 만들며, 빌드가 next-auth를 import하면 그 타입을 확장하는 프로젝트 `.d.ts`(`declare module "next-auth"`)를 analysis root에 더하고, role 후보 중 가장 높은 권한(super·owner/root·admin 순)을 고릅니다. 요청·미들웨어 형태 호출, 다른 export, 패키지 내부 importer, 로그인·가입 경로(`login`·`signin`·`signup`·`register` segment)는 그대로이고, 설치되지 않은 next-auth는 기존 서버 실행 계약을 따릅니다.
 
 `previewFormikBridgePlugin`은 target package에서 정상적으로 해석되는 동일 `formik` package를 optional
 resolve합니다. reached workspace source는 `useField`, `useFormikContext`, `Field` 계열 consumer와 `Formik`,

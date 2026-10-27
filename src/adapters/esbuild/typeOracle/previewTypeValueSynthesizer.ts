@@ -10,7 +10,8 @@
  * their existing syntax-derived fallback.
  */
 import ts from 'typescript';
-import { createPreviewSampleLabel } from '../previewSampleLabel';
+import { PREVIEW_DATE_RANGE_START_PATTERN } from '../previewDateRangeEndpoint';
+import { PREVIEW_LIFECYCLE_END_TIMESTAMP_PATTERN } from '../previewLifecycleTimestamp';
 import {
   createPreviewCanonicalSampleDate,
   createPreviewCanonicalSampleDateTime,
@@ -19,9 +20,9 @@ import {
   PREVIEW_CANONICAL_SAMPLE_DATE_TIME,
   PREVIEW_SAMPLE_DATE_MAX_OFFSET,
 } from '../previewSampleDateRuntimeSource';
-import { PREVIEW_DATE_RANGE_START_PATTERN } from '../previewDateRangeEndpoint';
-import { readPreviewDateTextEvidence } from './previewDateTextEvidence';
+import { createPreviewSampleLabel } from '../previewSampleLabel';
 import { inferPreviewRuntimeSemanticFallback } from '../staticResources/previewRuntimeHookSemantics';
+import { readPreviewDateTextEvidence } from './previewDateTextEvidence';
 
 /** Tag property used by runtime-only value descriptors. */
 export const PREVIEW_TYPED_VALUE_TAG = '$previewTyped';
@@ -59,6 +60,7 @@ interface SynthesisState {
   readonly listLength: number;
   readonly literals: Record<string, (boolean | number | string)[]>;
   nodes: number;
+  readonly unknownPlaceholders: boolean;
 }
 
 /** Options of one synthesis. */
@@ -69,6 +71,12 @@ export interface PreviewTypedValueSynthesisOptions {
    * item's dates and identities differ (`varyPreviewTypedListItem`).
    */
   readonly listLength?: number;
+  /**
+   * Marks nested `any`/`unknown` slots (types the program could not resolve, such as an
+   * uninstalled package's) with an `unknown` tag instead of leaving them out, so a caller can put
+   * its own neutral value there. Off by default.
+   */
+  readonly unknownPlaceholders?: boolean;
 }
 
 const MAX_DEPTH = 9;
@@ -82,6 +90,13 @@ const REACT_NODE_TYPE_NAMES = new Set([
   'ReactNode',
   'ReactPortal',
   'JSXElementConstructor',
+]);
+const REACT_COMPONENT_TYPE_NAMES = new Set([
+  'ComponentClass',
+  'FunctionComponent',
+  'ExoticComponent',
+  'NamedExoticComponent',
+  'ForwardRefExoticComponent',
 ]);
 const DATE_TIME_NAME_PATTERN = /(?:_at|[a-z]At|datetime|DateTime|[tT]ime|[tT]imestamp)$/u;
 const DATE_ONLY_NAME_PATTERN = /(?:date|Date|day|Day|ymd|Ymd|week|Week|month|Month)$/u;
@@ -107,7 +122,14 @@ export function synthesizePreviewTypedValue(
 ): PreviewTypedValueResult | undefined {
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return undefined;
   const listLength = Math.min(10, Math.max(1, Math.trunc(options.listLength ?? 1)));
-  const state: SynthesisState = { anchor, checker, listLength, literals: {}, nodes: 0 };
+  const state: SynthesisState = {
+    anchor,
+    checker,
+    listLength,
+    literals: {},
+    nodes: 0,
+    unknownPlaceholders: options.unknownPlaceholders === true,
+  };
   const value = synthesize(state, type, '', createPreviewTypeDemand(requiredPaths), 0, '');
   if (value === ABSENT) return undefined;
   return { literals: state.literals, nodes: state.nodes, value };
@@ -196,7 +218,14 @@ function synthesize(
 ): PreviewTypedValue | typeof ABSENT {
   if (depth > MAX_DEPTH || state.nodes >= MAX_NODES) return ABSENT;
   const flags = type.flags;
-  if ((flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never)) !== 0) return ABSENT;
+  if ((flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+    return state.unknownPlaceholders ? { [PREVIEW_TYPED_VALUE_TAG]: 'unknown' } : ABSENT;
+  }
+  // Free-form JSON (Prisma's `JsonValue`) has no sample shape; callers keep their neutral value.
+  if (state.unknownPlaceholders && type.aliasSymbol?.getName() === 'JsonValue') {
+    return { [PREVIEW_TYPED_VALUE_TAG]: 'unknown' };
+  }
+  if ((flags & ts.TypeFlags.Never) !== 0) return ABSENT;
   if ((flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0) return ABSENT;
   state.nodes += 1;
   if ((flags & ts.TypeFlags.Null) !== 0) return null;
@@ -217,7 +246,16 @@ function synthesize(
   }
   if ((flags & ts.TypeFlags.Number) !== 0) return semanticScalar(name, 'number');
   if ((flags & ts.TypeFlags.Boolean) !== 0) return semanticScalar(name, 'boolean');
-  if ((flags & (ts.TypeFlags.BigInt | ts.TypeFlags.ESSymbolLike)) !== 0) return ABSENT;
+  if ((flags & ts.TypeFlags.BigIntLiteral) !== 0) {
+    const literal = (type as ts.BigIntLiteralType).value;
+    return createBigIntValue(`${literal.negative ? '-' : ''}${literal.base10Value}`);
+  }
+  if ((flags & ts.TypeFlags.BigInt) !== 0) {
+    // A bigint field (micro-unit costs, ids) follows the number naming rule, as an integer.
+    const sample = semanticScalar(name, 'number');
+    return createBigIntValue(String(typeof sample === 'number' ? Math.trunc(sample) : 1));
+  }
+  if ((flags & ts.TypeFlags.ESSymbolLike) !== 0) return ABSENT;
   if (type.isUnion()) return synthesizeUnion(state, type, path, demand, depth, name, declaration);
   if (type.isIntersection()) return synthesizeIntersection(state, type, path, demand, depth);
   if ((flags & ts.TypeFlags.Object) !== 0) {
@@ -241,8 +279,14 @@ function synthesizeUnion(
     (member) => (member.flags & nullish) === 0,
   );
   const nullable = type.types.some((member) => (member.flags & ts.TypeFlags.Null) !== 0);
-  // Error, fallback, and child slots are absent in an ordinary successful render.
-  if (nullable && name.length > 0 && inferPreviewRuntimeSemanticFallback(name)?.kind === 'null') {
+  // Error, fallback, and child slots are absent in an ordinary successful render, and so is an
+  // ending-state timestamp (`deletedAt`), which would open tombstone or deletion notices.
+  if (
+    nullable &&
+    name.length > 0 &&
+    (inferPreviewRuntimeSemanticFallback(name)?.kind === 'null' ||
+      PREVIEW_LIFECYCLE_END_TIMESTAMP_PATTERN.test(name))
+  ) {
     return null;
   }
   if (members.length === 0)
@@ -327,12 +371,58 @@ function synthesizeObject(
       varyPreviewTypedListItem(item, index, itemName, direction),
     );
   }
-  const symbolName = type.getSymbol()?.getName() ?? '';
+  const symbol = type.getSymbol();
+  const symbolName = symbol?.getName() ?? '';
+  const specialReactType =
+    REACT_COMPONENT_TYPE_NAMES.has(symbolName) ||
+    symbolName === 'RefObject' ||
+    symbolName === 'MutableRefObject';
+  const declaredByReact =
+    specialReactType &&
+    symbol?.declarations?.some((node) =>
+      node.getSourceFile().fileName.replaceAll('\\', '/').includes('/node_modules/@types/react/'),
+    ) === true;
+  // React constructors also own metadata properties; treating them as records yields invalid JSX.
+  if (declaredByReact && REACT_COMPONENT_TYPE_NAMES.has(symbolName)) {
+    return { [PREVIEW_TYPED_VALUE_TAG]: 'function', returns: null };
+  }
+  if ((symbolName === 'RefObject' || symbolName === 'MutableRefObject') && declaredByReact) {
+    const current = checker.getPropertyOfType(type, 'current');
+    const currentType =
+      current === undefined ? undefined : checker.getTypeOfSymbolAtLocation(current, state.anchor);
+    const members =
+      currentType?.isUnion() === true
+        ? currentType.types
+        : currentType === undefined
+          ? []
+          : [currentType];
+    const nullable = members.some(
+      (member) =>
+        (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
+    );
+    const value =
+      currentType === undefined || nullable
+        ? null
+        : synthesize(
+            state,
+            currentType,
+            `${path}.current`,
+            demand?.children.get('current'),
+            depth + 1,
+            'current',
+          );
+    return { [PREVIEW_TYPED_VALUE_TAG]: 'ref', value: value === ABSENT ? null : value };
+  }
   if (symbolName === 'Date')
     return { [PREVIEW_TYPED_VALUE_TAG]: 'date', iso: '2026-01-15T09:00:00.000Z' };
   if (symbolName === 'Map' || symbolName === 'WeakMap') return { [PREVIEW_TYPED_VALUE_TAG]: 'map' };
   if (symbolName === 'Set' || symbolName === 'WeakSet') return { [PREVIEW_TYPED_VALUE_TAG]: 'set' };
-  if (symbolName === 'Promise' || symbolName === 'PromiseLike') {
+  // Thenable classes such as Prisma's `PrismaPromise` settle like a promise of their result.
+  if (
+    symbolName === 'Promise' ||
+    symbolName === 'PromiseLike' ||
+    checker.getPropertyOfType(type, 'then') !== undefined
+  ) {
     const awaited = checker.getAwaitedType(type) ?? type;
     const value =
       awaited === type ? ABSENT : synthesize(state, awaited, path, demand, depth + 1, name);
@@ -376,7 +466,7 @@ function synthesizeProperties(
   const { anchor, checker } = state;
   const output: Record<string, PreviewTypedValue> = {};
   // Authored reads first, so a large sibling such as an Apollo `client` cannot starve them.
-  const properties = [...checker.getPropertiesOfType(type)].sort(
+  const properties = orderPropertiesDeterministically(checker.getPropertiesOfType(type)).sort(
     (left, right) =>
       Number(demand?.children.has(right.getName()) === true) -
       Number(demand?.children.has(left.getName()) === true),
@@ -387,8 +477,14 @@ function synthesizeProperties(
     const childDemand = demand?.children.get(propertyName);
     const optional = (property.getFlags() & ts.SymbolFlags.Optional) !== 0;
     if (optional && childDemand === undefined) continue;
-    const propertyType = checker.getTypeOfSymbolAtLocation(property, anchor);
     const childPath = path.length === 0 ? propertyName : `${path}.${propertyName}`;
+    // A free-form slot declared nullable (Prisma `Json?`: `any | null`, `JsonValue | null`) has
+    // no sample shape, and an empty column is what such a slot ordinarily holds.
+    if (state.unknownPlaceholders && isNullableFreeFormSlot(readOriginalTypeNode(property))) {
+      output[propertyName] = null;
+      continue;
+    }
+    const propertyType = checker.getTypeOfSymbolAtLocation(property, anchor);
     const value = synthesize(
       state,
       propertyType,
@@ -411,6 +507,41 @@ function synthesizeProperties(
     }
   }
   return output;
+}
+
+/**
+ * Orders synthesized properties as their source declares them. A mapped type over a key union
+ * (`Pick`, `Omit`, Prisma's `GetPayloadResult`) lists properties in the key literals' type-id
+ * order, which follows whatever the checker resolved first, so the same type could produce objects
+ * whose keys come in a different order from one compile to the next. Declared properties are
+ * grouped by declaring node (nodes in source order) and kept in declaration order; properties
+ * without declarations (remapped `select` results) follow by name. Lists with only declared,
+ * non-synthesized properties (interfaces, type literals, plain intersections) are already stable
+ * and keep the checker's order.
+ */
+function orderPropertiesDeterministically(properties: readonly ts.Symbol[]): ts.Symbol[] {
+  if (!properties.some((property) => (property.getFlags() & ts.SymbolFlags.Transient) !== 0)) {
+    return [...properties];
+  }
+  /** Sort key of one property: its declaring node's place, then its own position. */
+  const readKey = (property: ts.Symbol): readonly [string, number, number] | undefined => {
+    const declaration = property.declarations?.[0];
+    if (declaration === undefined) return undefined;
+    return [declaration.getSourceFile().fileName, declaration.parent.pos, declaration.pos];
+  };
+  return properties
+    .map((property) => ({ key: readKey(property), name: property.getName(), property }))
+    .sort((left, right) => {
+      if (left.key === undefined || right.key === undefined) {
+        if (left.key !== right.key) return left.key === undefined ? 1 : -1;
+        return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
+      }
+      const [leftFile, leftParent, leftPosition] = left.key;
+      const [rightFile, rightParent, rightPosition] = right.key;
+      if (leftFile !== rightFile) return leftFile < rightFile ? -1 : 1;
+      return leftParent - rightParent || leftPosition - rightPosition;
+    })
+    .map(({ property }) => property);
 }
 
 /**
@@ -466,6 +597,48 @@ function collectDeclaredUnionMembers(
   } else {
     output.push(type);
   }
+}
+
+/**
+ * Reports a slot declared as a union with `null` whose other members are written as free-form
+ * types: `any`, `unknown`, or a `JsonValue` reference. The checker folds `any | null` into `any`,
+ * so the declaration is the only evidence of the `null`. A nullable reference to a type the
+ * program could not resolve is not free-form and keeps its neutral value.
+ */
+function isNullableFreeFormSlot(declaration: ts.TypeNode | undefined): boolean {
+  if (declaration === undefined || !ts.isUnionTypeNode(declaration)) return false;
+  const members = declaration.types.filter(
+    (member) =>
+      !(ts.isLiteralTypeNode(member) && member.literal.kind === ts.SyntaxKind.NullKeyword),
+  );
+  return (
+    members.length > 0 &&
+    members.length < declaration.types.length &&
+    members.every(
+      (member) =>
+        member.kind === ts.SyntaxKind.AnyKeyword ||
+        member.kind === ts.SyntaxKind.UnknownKeyword ||
+        (ts.isTypeReferenceNode(member) &&
+          (ts.isIdentifier(member.typeName) ? member.typeName.text : member.typeName.right.text) ===
+            'JsonValue'),
+    )
+  );
+}
+
+/**
+ * Reads a property's annotated type, through mapped types (`Pick`, Prisma's `DefaultSelection`)
+ * whose properties keep only the original property's declarations.
+ */
+function readOriginalTypeNode(symbol: ts.Symbol): ts.TypeNode | undefined {
+  const declaration =
+    symbol.valueDeclaration ??
+    symbol.declarations?.find(
+      (candidate) => ts.isPropertySignature(candidate) || ts.isPropertyDeclaration(candidate),
+    );
+  return declaration !== undefined &&
+    (ts.isPropertySignature(declaration) || ts.isPropertyDeclaration(declaration))
+    ? declaration.type
+    : undefined;
 }
 
 /** Reads the type node of the alias a union was declared with (`type Status = 'a' | 'b'`). */
@@ -592,6 +765,16 @@ function semanticScalar(
   if (kind === 'boolean') return false;
   if (kind === 'number') return 1;
   return createPreviewSampleLabel(name);
+}
+
+/**
+ * Tags an integer sample without converting its exact decimal digits to a JavaScript number.
+ *
+ * @param digits Decimal integer text, including a leading minus sign for negative literals.
+ * @returns JSON-safe descriptor materialized as a bigint in the compiled preview or hook fallback.
+ */
+function createBigIntValue(digits: string): PreviewTypedValue {
+  return { [PREVIEW_TYPED_VALUE_TAG]: 'bigint', value: digits };
 }
 
 /** Derives an item name from a collection name for semantic samples (`rows` → `row`). */

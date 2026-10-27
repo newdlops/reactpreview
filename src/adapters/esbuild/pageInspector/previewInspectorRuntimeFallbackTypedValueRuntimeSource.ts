@@ -16,8 +16,9 @@ export function createPreviewInspectorRuntimeFallbackTypedValueRuntimeSource(): 
 const previewInspectorTypedSampleDates = ${createPreviewSampleDateApiExpression()};
 const PREVIEW_INSPECTOR_TYPED_VALUE_TAG = '$previewTyped';
 const PREVIEW_INSPECTOR_TYPED_VALUE_DEPTH_LIMIT = 12;
+const previewInspectorTypedRefs = new WeakSet();
 
-/** Converts a JSON descriptor into runtime values: functions, dates, collections, promises. */
+/** Converts descriptors into runtime values; only declared React ref cells stay writable. */
 function materializePreviewInspectorTypedValue(descriptor, depth = 0) {
   if (depth > PREVIEW_INSPECTOR_TYPED_VALUE_DEPTH_LIMIT) return undefined;
   if (Array.isArray(descriptor)) {
@@ -27,6 +28,11 @@ function materializePreviewInspectorTypedValue(descriptor, depth = 0) {
   if (typeof descriptor === 'string') return previewInspectorTypedSampleDates.rebase(descriptor);
   if (descriptor === null || typeof descriptor !== 'object') return descriptor;
   const tag = descriptor[PREVIEW_INSPECTOR_TYPED_VALUE_TAG];
+  if (tag === 'ref') {
+    const ref = { current: materializePreviewInspectorTypedValue(descriptor.value ?? null, depth + 1) };
+    previewInspectorTypedRefs.add(ref);
+    return ref;
+  }
   if (tag === 'function') {
     const returns = Object.hasOwn(descriptor, 'returns')
       ? materializePreviewInspectorTypedValue(descriptor.returns, depth + 1)
@@ -36,6 +42,13 @@ function materializePreviewInspectorTypedValue(descriptor, depth = 0) {
   if (tag === 'date') {
     return new Date(typeof descriptor.iso === 'string'
       ? previewInspectorTypedSampleDates.rebase(descriptor.iso) : 0);
+  }
+  if (tag === 'bigint') {
+    try {
+      return BigInt(typeof descriptor.value === 'string' ? descriptor.value : '0');
+    } catch {
+      return BigInt(0);
+    }
   }
   if (tag === 'map') return new Map();
   if (tag === 'set') return new Set();
@@ -56,6 +69,9 @@ function materializePreviewInspectorTypedValue(descriptor, depth = 0) {
  */
 function mergePreviewInspectorTypedLeaf(syntax, typed, literals, path, depth, itemIndex = 0) {
   if (typed === undefined || depth > PREVIEW_INSPECTOR_TYPED_VALUE_DEPTH_LIMIT) return syntax;
+  // Only compiler-proven React refs escape the ordinary immutable generated-data contract.
+  // This merges generated fallbacks; the authored hook result is reconciled separately.
+  if (typed !== null && typeof typed === 'object' && previewInspectorTypedRefs.has(typed)) return typed;
   if (syntax === undefined) return typed;
   if (isPreviewInspectorGeneratedPlainRecord(syntax) && isPreviewInspectorGeneratedPlainRecord(typed)) {
     const output = {};
@@ -78,7 +94,10 @@ function mergePreviewInspectorTypedLeaf(syntax, typed, literals, path, depth, it
   }
   // A shape-blind neutral object is the placeholder that crashed scalar renders.
   if (isPreviewInspectorGeneratedPlainRecord(syntax) && Object.keys(syntax).length === 0) return typed;
-  if (typeof syntax === 'function') return syntax;
+  // An action-like name can be an optional Boolean (open?: boolean), not an open() callback.
+  // Declared Boolean evidence keeps unrelated overlays closed; actual authored values are merged
+  // later by ordinary completion and remain unchanged.
+  if (typeof syntax === 'function') return typeof typed === 'boolean' ? typed : syntax;
   if (typeof syntax !== typeof typed || (syntax === null) !== (typed === null)) return typed;
   const allowed = literals !== null && typeof literals === 'object' ? literals[path] : undefined;
   if (Array.isArray(allowed) && allowed.length > 0 && !allowed.includes(syntax)) {

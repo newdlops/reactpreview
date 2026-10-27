@@ -25,34 +25,39 @@ import {
   PREVIEW_COMPLETE_ROUTE_REPLAY_POLICY_VERSION,
 } from '../esbuild/inspector/previewInspectorCompleteRouteInventory';
 import {
-  PREVIEW_TARGET_FACADE_OWNERSHIP_POLICY_DIGEST,
-  PREVIEW_TARGET_FACADE_OWNERSHIP_POLICY_VERSION,
-} from '../esbuild/inspector/previewInspectorTargetModuleContract';
-import {
   PREVIEW_ABSENCE_EXECUTION_ROOT_POLICY_DIGEST,
   PREVIEW_ABSENCE_EXECUTION_ROOT_POLICY_VERSION,
 } from '../esbuild/inspector/previewInspectorExecutionRootModuleContract';
 import {
+  PREVIEW_TARGET_FACADE_OWNERSHIP_POLICY_DIGEST,
+  PREVIEW_TARGET_FACADE_OWNERSHIP_POLICY_VERSION,
+} from '../esbuild/inspector/previewInspectorTargetModuleContract';
+import {
   PREVIEW_METAFILE_DEPENDENCY_RECOVERY_POLICY_DIGEST,
   PREVIEW_METAFILE_DEPENDENCY_RECOVERY_POLICY_VERSION,
 } from '../esbuild/previewBuildResult';
+import {
+  PREVIEW_OWNED_NAMESPACE_POLICY_DIGEST,
+  PREVIEW_OWNED_NAMESPACE_POLICY_VERSION,
+} from '../esbuild/previewOwnedNamespaceRegistry';
 import {
   assertPreviewResolutionPaths,
   createPreviewResolutionConfinementIdentity,
   normalizePreviewResolutionConfinement,
 } from '../esbuild/previewResolutionConfinement';
 import {
-  PREVIEW_OWNED_NAMESPACE_POLICY_DIGEST,
-  PREVIEW_OWNED_NAMESPACE_POLICY_VERSION,
-} from '../esbuild/previewOwnedNamespaceRegistry';
+  PREVIEW_ROUTE_EXECUTION_PLAN_POLICY_DIGEST,
+  PREVIEW_ROUTE_EXECUTION_PLAN_POLICY_VERSION,
+} from '../esbuild/previewRouteExecutionPlan';
 import {
   PREVIEW_SYNTHETIC_INPUT_POLICY_DIGEST,
   PREVIEW_SYNTHETIC_INPUT_POLICY_VERSION,
 } from '../esbuild/previewSyntheticInputRegistry';
 import {
-  PREVIEW_ROUTE_EXECUTION_PLAN_POLICY_DIGEST,
-  PREVIEW_ROUTE_EXECUTION_PLAN_POLICY_VERSION,
-} from '../esbuild/previewRouteExecutionPlan';
+  assertPreviewCompilerWorkerIsolation,
+  PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_DIGEST,
+  PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_VERSION,
+} from '../worker/previewCompilerWorkerIsolation';
 import {
   PREVIEW_HEADLESS_FAILED_CAPTURE_MS,
   PREVIEW_HEADLESS_STABILIZATION_CAP_MS,
@@ -65,11 +70,6 @@ import {
   PREVIEW_MANAGED_CHILD_ENVIRONMENT_POLICY_DIGEST,
   PREVIEW_MANAGED_CHILD_ENVIRONMENT_POLICY_VERSION,
 } from './previewManagedChildEnvironment';
-import {
-  assertPreviewCompilerWorkerIsolation,
-  PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_DIGEST,
-  PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_VERSION,
-} from '../worker/previewCompilerWorkerIsolation';
 
 const CAMPAIGN_VERSION = 7;
 const COMPILER_ISOLATION_VERSION = 2;
@@ -273,10 +273,8 @@ export async function runPreviewHeadlessRouteCampaign(
     failedCaptureMs: PREVIEW_HEADLESS_FAILED_CAPTURE_MS,
     inventoryReplayPolicyDigest: PREVIEW_COMPLETE_ROUTE_REPLAY_POLICY_DIGEST,
     inventoryReplayPolicyVersion: PREVIEW_COMPLETE_ROUTE_REPLAY_POLICY_VERSION,
-    inventoryCompilerIsolationPolicyDigest:
-      PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_DIGEST,
-    inventoryCompilerIsolationPolicyVersion:
-      PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_VERSION,
+    inventoryCompilerIsolationPolicyDigest: PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_DIGEST,
+    inventoryCompilerIsolationPolicyVersion: PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_VERSION,
     renderTimeoutMs,
     namespaceConfinementPolicyDigest: PREVIEW_OWNED_NAMESPACE_POLICY_DIGEST,
     namespaceConfinementPolicyVersion: PREVIEW_OWNED_NAMESPACE_POLICY_VERSION,
@@ -300,10 +298,8 @@ export async function runPreviewHeadlessRouteCampaign(
     engineDigest,
     executionPlanPolicyDigest: PREVIEW_ROUTE_EXECUTION_PLAN_POLICY_DIGEST,
     inventoryDigest,
-    inventoryCompilerIsolationPolicyDigest:
-      PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_DIGEST,
-    inventoryCompilerIsolationPolicyVersion:
-      PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_VERSION,
+    inventoryCompilerIsolationPolicyDigest: PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_DIGEST,
+    inventoryCompilerIsolationPolicyVersion: PREVIEW_INVENTORY_COMPILER_ISOLATION_POLICY_VERSION,
     inventoryReplayPolicyDigest: inventory.replayPolicy.digest,
     kind: 'header',
     managedChildEnvironmentPolicyDigest: PREVIEW_MANAGED_CHILD_ENVIRONMENT_POLICY_DIGEST,
@@ -318,11 +314,7 @@ export async function runPreviewHeadlessRouteCampaign(
     targetFacadeOwnershipPolicyDigest: PREVIEW_TARGET_FACADE_OWNERSHIP_POLICY_DIGEST,
     version: 7,
   });
-  const resumedRecords = await openOrCreateLedger(
-    options.ledgerPath,
-    header,
-    [],
-  );
+  const resumedRecords = await openOrCreateLedger(options.ledgerPath, header, []);
   const recordsByRouteId = new Map(
     resumedRecords.map((record) => [record.routeId, record] as const),
   );
@@ -576,10 +568,8 @@ function createReport(
     engineDigest: header.engineDigest,
     executionPlanPolicyDigest: header.executionPlanPolicyDigest,
     inventory,
-    inventoryCompilerIsolationPolicyDigest:
-      header.inventoryCompilerIsolationPolicyDigest,
-    inventoryCompilerIsolationPolicyVersion:
-      header.inventoryCompilerIsolationPolicyVersion,
+    inventoryCompilerIsolationPolicyDigest: header.inventoryCompilerIsolationPolicyDigest,
+    inventoryCompilerIsolationPolicyVersion: header.inventoryCompilerIsolationPolicyVersion,
     inventoryDigest: header.inventoryDigest,
     inventoryReplayPolicyDigest: header.inventoryReplayPolicyDigest,
     managedChildEnvironmentPolicyDigest: header.managedChildEnvironmentPolicyDigest,

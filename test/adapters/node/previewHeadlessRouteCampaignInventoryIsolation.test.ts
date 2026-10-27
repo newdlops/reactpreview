@@ -2,9 +2,9 @@ import { lstat, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { PreviewBuildRequest } from '../../../src/domain/preview';
 import type { PreviewInspectorCompleteRouteInventory } from '../../../src/adapters/esbuild/inspector/previewInspectorCompleteRouteInventory';
 import { runPreviewHeadlessRouteCampaign } from '../../../src/adapters/node/previewHeadlessRouteCampaign';
+import type { PreviewBuildRequest } from '../../../src/domain/preview';
 
 const temporaryDirectories: string[] = [];
 
@@ -26,11 +26,7 @@ describe('headless route campaign inventory isolation', () => {
     const controller = new AbortController();
     let inventoryReleased = false;
     const collectCompleteRouteInventory = vi.fn(
-      async (
-        request: PreviewBuildRequest,
-        limits: unknown,
-        signal: AbortSignal | undefined,
-      ) => {
+      async (request: PreviewBuildRequest, limits: unknown, signal: AbortSignal | undefined) => {
         void request;
         void limits;
         expect(signal).toBe(controller.signal);

@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import {
   PREVIEW_INSPECTOR_PAGE_COMPOSITION_ROW_LIMIT,
+  PREVIEW_INSPECTOR_PAGE_COMPOSITION_VISIT_LIMIT,
   createPreviewInspectorPageCompositionHealthRuntimeSource,
 } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorPageCompositionHealthRuntimeSource';
 
@@ -50,6 +51,7 @@ interface PageCompositionRecord {
       readonly mounted: number;
     };
     readonly targetState: {
+      readonly activeAutoAttemptSettled: boolean;
       readonly errorMessage?: string;
       readonly errorOwner?: string;
       readonly hasOutput: boolean;
@@ -67,6 +69,7 @@ interface PageCompositionRecord {
       readonly state: string;
     }[];
     readonly treeRowsTruncated: boolean;
+    readonly visitLimitReached: boolean;
   };
   readonly event: string;
 }
@@ -82,6 +85,74 @@ interface PageCompositionFixture {
 }
 
 describe('Preview Inspector page-composition health runtime source', () => {
+  /** Live tree rows acquire condition/blocker wrappers before health counters inspect them. */
+  it('counts a late target after a full live tree and its diagnostic annotations', () => {
+    const runtime = createPageCompositionFixture();
+    const target = {
+      children: [],
+      currentFileExport: true,
+      id: 'target',
+      kind: 'component',
+      mounted: true,
+      name: 'TargetPanel',
+    };
+    const snapshot = {
+      hostNodesById: new Map([['target', [{ isConnected: true }]]]),
+      roots: [
+        ...Array.from({ length: 768 }, (_, index) => ({
+          children: [],
+          id: `annotated-${index.toString()}`,
+          kind: index < 512 ? 'component' : 'condition',
+          mounted: index < 512,
+          name: index < 512 ? 'Live component' : 'Diagnostic condition',
+        })),
+        target,
+      ],
+    };
+
+    const { detail } = runtime.create(snapshot);
+
+    expect(detail.visitLimitReached).toBe(false);
+    expect(detail.statusCounts.currentFileMounted).toBe(1);
+    expect(detail.statusCounts.hostOutput).toBe(1);
+    expect(detail.treeRows).toContainEqual(expect.objectContaining({ currentFile: true }));
+    expect(detail.treeRows).toHaveLength(PREVIEW_INSPECTOR_PAGE_COMPOSITION_ROW_LIMIT);
+  });
+
+  /** A bounded summary must still report incomplete evidence for genuinely oversized trees. */
+  it('keeps explicit truncation when diagnostic traversal exhausts its finite budget', () => {
+    const runtime = createPageCompositionFixture();
+    const roots = Array.from(
+      { length: PREVIEW_INSPECTOR_PAGE_COMPOSITION_VISIT_LIMIT + 1 },
+      (_, index) => ({
+        children: [],
+        id: `oversized-${index.toString()}`,
+        kind: 'component',
+        name: 'Unvisited component',
+      }),
+    );
+
+    const { detail } = runtime.create({ roots });
+
+    expect(detail.visitLimitReached).toBe(true);
+    expect(detail.treeRows).toHaveLength(PREVIEW_INSPECTOR_PAGE_COMPOSITION_ROW_LIMIT);
+  });
+
+  it('publishes attempt settlement even when the committed tree and target output stay identical', () => {
+    const attempt: { autoMode: string; settledAt?: number } = { autoMode: 'collection-auto' };
+    const runtime = createPageCompositionFixture({}, [], attempt);
+    const snapshot = { roots: [] };
+
+    const pending = runtime.create(snapshot);
+    attempt.settledAt = 100;
+    const settled = runtime.create(snapshot);
+
+    expect(pending.detail.targetState.activeAutoAttemptSettled).toBe(false);
+    expect(settled.detail.targetState.activeAutoAttemptSettled).toBe(true);
+    expect(settled.digest).not.toBe(pending.digest);
+    expect(runtime.create(snapshot).digest).toBe(settled.digest);
+  });
+
   /** Summarizes selected page identity, target reachability, shell gaps, and blocker ownership. */
   it('emits one readable bounded snapshot for a mixed live and expected page tree', () => {
     const runtime = createPageCompositionFixture();
@@ -351,7 +422,7 @@ describe('Preview Inspector page-composition health runtime source', () => {
     const runtime = createPageCompositionFixture({
       targetOutputError: {
         message: 'Error: Unreachable',
-        ownerName: 'FiStaManagementApp',
+        ownerName: 'ApplicationWrapper',
         phase: 'unhandled browser error',
       },
       targetOutputKind: 'fallback-output',
@@ -372,7 +443,7 @@ describe('Preview Inspector page-composition health runtime source', () => {
 
     expect(health.detail.targetState).toMatchObject({
       errorMessage: 'Error: Unreachable',
-      errorOwner: 'FiStaManagementApp',
+      errorOwner: 'ApplicationWrapper',
       hasOutput: false,
       outputKind: 'fallback-output',
       stage: 'fallback-output',
@@ -382,7 +453,7 @@ describe('Preview Inspector page-composition health runtime source', () => {
       items: [
         expect.objectContaining({
           name: 'Error fallback shown instead · TargetPanel',
-          ownerPath: 'FiStaManagementApp',
+          ownerPath: 'ApplicationWrapper',
         }),
       ],
     });
@@ -393,8 +464,10 @@ describe('Preview Inspector page-composition health runtime source', () => {
 function createPageCompositionFixture(
   reachabilityOverrides: Record<string, unknown> = {},
   projectedIdentities: readonly string[] = [],
+  activeAttempt?: Record<string, unknown>,
 ): PageCompositionFixture {
   const context: {
+    __activeAttempt: Record<string, unknown> | undefined;
     __reachability: Record<string, unknown>;
     __runtime?: PageCompositionFixture;
     document: {
@@ -404,6 +477,7 @@ function createPageCompositionFixture(
       }[];
     };
   } = {
+    __activeAttempt: activeAttempt,
     __reachability: reachabilityOverrides,
     document: {
       querySelectorAll: (selector) =>
@@ -462,7 +536,10 @@ function createPageCompositionFixture(
         targetWasMounted: true,
         ...globalThis.__reachability,
       };
-      const previewInspectorSession = { runtimeFallbacks: new Map() };
+      const previewInspectorSession = {
+        blockerTraceActiveAttempt: globalThis.__activeAttempt,
+        runtimeFallbacks: new Map(),
+      };
       const records = [];
       const findSelectedPreviewInspectorDescriptor = () => descriptor;
       const readPreviewInspectorPageCandidates = () => [candidate];

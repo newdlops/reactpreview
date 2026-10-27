@@ -10,6 +10,10 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
+import {
+  createPreviewRuntimeSourceSyntax,
+  type PreviewRuntimeSourceSyntax,
+} from './previewRuntimeSourceSyntax';
 
 const MAX_SWITCHES_PER_MODULE = 32;
 const MAX_SWITCH_BRANCHES = 32;
@@ -88,15 +92,17 @@ interface ReactSwitchClauseEvidence {
  * @param sourceText JavaScript or TypeScript source after compatibility rewrites.
  * @returns Instrumented source, or the original text when no safe render switch is proven.
  */
-export function instrumentReactSwitchRendering(sourcePath: string, sourceText: string): string {
+export function instrumentReactSwitchRendering(
+  sourcePath: string,
+  sourceText: string,
+  syntax?: PreviewRuntimeSourceSyntax,
+): string {
   if (!isJavaScriptLikeSource(sourcePath) || !/\bswitch\s*\(/u.test(sourceText)) {
     return sourceText;
   }
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = (syntax ?? createPreviewRuntimeSourceSyntax()).readSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     selectScriptKind(sourcePath),
   );
   const parseDiagnostics = (
@@ -152,11 +158,7 @@ function readSwitchClauseEvidence(
   if (clauses.length < 2 || clauses.length > MAX_SWITCH_BRANCHES) return undefined;
   const evidence: ReactSwitchClauseEvidence[] = [];
   for (const [clauseIndex, clause] of clauses.entries()) {
-    const renderExpression = readSwitchClauseRenderExpression(
-      clauses,
-      clauseIndex,
-      portalBindings,
-    );
+    const renderExpression = readSwitchClauseRenderExpression(clauses, clauseIndex, portalBindings);
     const defaultClause = ts.isDefaultClause(clause);
     const caseExpression = defaultClause ? undefined : clause.expression;
     const literalEvidence =
@@ -205,7 +207,11 @@ function readSwitchClauseRenderExpression(
     if (clause.statements.length === 0) continue;
     if (clause.statements.length !== 1) return undefined;
     const returned = clause.statements[0];
-    if (returned === undefined || !ts.isReturnStatement(returned) || returned.expression === undefined) {
+    if (
+      returned === undefined ||
+      !ts.isReturnStatement(returned) ||
+      returned.expression === undefined
+    ) {
       return undefined;
     }
     const renderExpression = unwrapExpression(returned.expression);
@@ -264,10 +270,7 @@ function createSwitchRenderReplacements(
       selectable,
       ...(branch.literalSupported ? { value: branch.literal } : {}),
     });
-    if (
-      branch.expression !== undefined &&
-      branch.observedValueKey !== undefined
-    ) {
+    if (branch.expression !== undefined && branch.observedValueKey !== undefined) {
       const caseStart = branch.expression.getStart(sourceFile);
       const caseEnd = branch.expression.end;
       const caseExpression = sourceFile.text.slice(caseStart, caseEnd);

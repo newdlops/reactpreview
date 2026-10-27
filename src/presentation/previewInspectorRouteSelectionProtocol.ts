@@ -17,6 +17,8 @@ const MAXIMUM_INTERACTION_ID_LENGTH = 128;
 const COMPONENT_NAME_PATTERN = /^[$_\p{L}][$_\u200C\u200D\p{ID_Continue}]*$/u;
 const INTERACTION_ID_PATTERN = /^route:[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$/u;
 const ROUTE_BRANCH_ID_PATTERN = /^route-[a-f0-9]{20}$/u;
+const ROUTE_PARAMETER_CONSTRAINT_PATTERN =
+  /:[$_\p{ID_Start}][$_\u200C\u200D\p{ID_Continue}]*\((?:\\.|[^\\()])*\)/gu;
 
 /** Bounded request accepted from one committed Page Inspector runtime. */
 export interface PreviewInspectorRouteSelectionRequest {
@@ -90,7 +92,8 @@ export function readPreviewInspectorRouteSelectionRequest(
       pattern.length > MAXIMUM_ROUTE_PATTERN_LENGTH ||
       !pattern.startsWith('/') ||
       pattern.startsWith('//') ||
-      /[?#\\\u0000-\u001f\u007f]/u.test(pattern)
+      /[?#\u0000-\u001f\u007f]/u.test(pattern) ||
+      hasUnscopedRoutePatternEscape(pattern)
     ) {
       return undefined;
     }
@@ -103,4 +106,13 @@ export function readPreviewInspectorRouteSelectionRequest(
     selectionPath: Object.freeze(normalized),
     type: 'react-preview-inspector-route-selected',
   });
+}
+
+/**
+ * Allows escapes only inside a complete named parameter constraint such as `:id(\\d+)`.
+ * These tokens remain opaque source identities: this boundary never evaluates their regex, and
+ * compiler replay still has to match the complete component/pattern pair against fresh evidence.
+ */
+function hasUnscopedRoutePatternEscape(pattern: string): boolean {
+  return pattern.replace(ROUTE_PARAMETER_CONSTRAINT_PATTERN, '').includes('\\');
 }

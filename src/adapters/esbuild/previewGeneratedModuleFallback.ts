@@ -434,7 +434,7 @@ function isFile(candidatePath: string): boolean {
 
 /** Checks trusted workspace containment without accepting sibling-prefix lookalikes. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

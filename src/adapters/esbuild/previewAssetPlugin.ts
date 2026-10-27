@@ -1,11 +1,11 @@
 /**
  * Adapts render-oriented asset import conventions without executing framework configuration.
  * Normal URL assets remain owned by esbuild loaders; this plugin adds explicit `?raw`, SVG
- * component, and Create React App-style named `ReactComponent` semantics for reachable imports.
+ * component, WAV MIME compatibility, and Create React App-style named `ReactComponent` semantics.
  */
+import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import {
   parsePreviewBarePackageSpecifier,
@@ -28,7 +28,7 @@ const MAX_TOTAL_INLINE_ASSET_BYTES = 20 * 1024 * 1024;
 const PACKAGE_MANIFEST_NAME = 'package.json';
 
 /** Asset transformations that produce JavaScript modules for the browser bundle. */
-type PreviewAssetMode = 'data-url' | 'raw' | 'svg-component' | 'svg-url';
+type PreviewAssetMode = 'data-url' | 'raw' | 'svg-component' | 'svg-url' | 'wav-url';
 
 /** Private data transferred from asset resolution to loading. */
 interface PreviewAssetPluginData {
@@ -36,7 +36,7 @@ interface PreviewAssetPluginData {
   readonly [ASSET_PLUGIN_DATA]: true;
   /** Transformation selected from the original query and import kind. */
   readonly mode: PreviewAssetMode;
-  /** Optional SVG fragment retained in a generated browser URL. */
+  /** Optional fragment retained in a generated browser URL. */
   readonly urlFragment: string;
 }
 
@@ -126,6 +126,11 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
         }
 
         const parsedRequest = parseAssetRequest(arguments_.path);
+        if (isPassiveHttpsCssAsset(arguments_, parsedRequest.path)) {
+          // CSS URLs are loaded by the webview under its existing image/font/media CSP. They are
+          // never fetched or evaluated by the compiler and cannot become external JS imports.
+          return { external: true, path: arguments_.path };
+        }
         const stylePackageResolution = await resolveCssPackageStyleImport({
           arguments_,
           build,
@@ -154,10 +159,7 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
           boundedRequest = resolveAssetRequestPath({
             canonicalPublicDirectory,
             canonicalWorkspaceRoot,
-            importerIsWorkspaceOwned: isPathInside(
-              canonicalWorkspaceRoot,
-              virtualImporter,
-            ),
+            importerIsWorkspaceOwned: isPathInside(canonicalWorkspaceRoot, virtualImporter),
             publicDirectory,
             requestPath: parsedRequest.path,
             workspaceRoot: options.workspaceRoot,
@@ -299,6 +301,22 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
       build.onLoad({ filter: /.*/, namespace: PREVIEW_DATA_URL_NAMESPACE }, loadPreviewAsset);
     },
   };
+}
+
+/** Preserves supported passive HTTPS CSS URLs without admitting script imports or credentials. */
+function isPassiveHttpsCssAsset(arguments_: OnResolveArgs, assetPath: string): boolean {
+  if (arguments_.kind !== 'url-token' || !/^https:\/\//iu.test(assetPath)) return false;
+  try {
+    const url = new URL(arguments_.path);
+    return (
+      url.protocol === 'https:' &&
+      url.username === '' &&
+      url.password === '' &&
+      isInlinePreviewAssetPath(url.pathname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Inputs used by the CSS-only conditional package resolver. */
@@ -600,6 +618,7 @@ function extractUrlFragment(suffix: string): string {
 
 /**
  * Chooses an asset transformation while leaving CSS URL tokens to esbuild's URL loader.
+ * JavaScript WAV URLs need `audio/wav`: Chromium rejects the loader's `audio/wave` spelling.
  *
  * @param arguments_ Original resolution request including import kind.
  * @param request Parsed asset path and query suffix.
@@ -616,8 +635,10 @@ function selectAssetMode(
     return 'raw';
   }
 
+  const isJavascriptWav =
+    request.path.toLowerCase().endsWith('.wav') && JAVASCRIPT_IMPORT_KINDS.has(arguments_.kind);
   if (query?.has('url') === true) {
-    return 'data-url';
+    return isJavascriptWav ? 'wav-url' : 'data-url';
   }
 
   const isSvg = request.path.toLowerCase().endsWith('.svg');
@@ -628,6 +649,8 @@ function selectAssetMode(
   if (isSvg && JAVASCRIPT_IMPORT_KINDS.has(arguments_.kind)) {
     return 'svg-url';
   }
+
+  if (isJavascriptWav) return 'wav-url';
 
   return isInlinePreviewAssetPath(request.path) ? 'data-url' : undefined;
 }
@@ -715,7 +738,7 @@ async function reserveAssetBudget(
  *
  * @param source Complete bounded asset contents.
  * @param mode Representation selected during resolution.
- * @param urlFragment Optional SVG fragment retained by generated URL modules.
+ * @param urlFragment Optional fragment retained by generated URL modules.
  * @returns Raw bytes for esbuild's data-URL loader or JavaScript module source.
  */
 function createAssetContents(
@@ -729,6 +752,10 @@ function createAssetContents(
 
   if (mode === 'raw') {
     return `export default ${JSON.stringify(source.toString('utf8'))};`;
+  }
+
+  if (mode === 'wav-url') {
+    return `export default ${JSON.stringify(`data:audio/wav;base64,${source.toString('base64')}${urlFragment}`)};`;
   }
 
   return createSvgModule(source, mode === 'svg-component', urlFragment);

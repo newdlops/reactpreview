@@ -279,15 +279,21 @@ function readPreviewInspectorPageExecutionContextObservation(descriptor, candida
     execution?.executionRootSurfaceId === execution?.runtimeTargetSurfaceId &&
     candidate?.root?.exportName === (candidate?.target?.exportName ?? targetExportName) &&
     samePath(candidate?.root?.sourcePath, candidate?.target?.sourcePath ?? state?.targetSourcePath);
+  const selectedJsxPath = typeof readPreviewInspectorSelectedJsxPathObservation === 'function'
+    ? readPreviewInspectorSelectedJsxPathObservation(candidate, state)
+    : { selectedPathObserved: (candidate?.selectedJsxOccurrenceIds?.length ?? 0) === 0 &&
+        !(candidate?.edges ?? []).some((edge) => typeof edge?.occurrenceId === 'string'),
+        missingOccurrenceIds: [] };
   const contextComplete = state?.directTarget === true || targetIsPageRoot ||
     pageCandidateComplete && pageLevel && !componentOnly && pageRootObserved &&
-      executionRootObserved && pageFrameObserved;
+      executionRootObserved && pageFrameObserved && selectedJsxPath.selectedPathObserved;
   return Object.freeze({
     authoredOwnerDepth: Number.isSafeInteger(execution?.authoredOwnerDepth)
       ? execution.authoredOwnerDepth
       : applicationPath.length,
     componentOnly,
     contextComplete,
+    ...selectedJsxPath,
     executionCandidateId: execution?.id,
     executionRootMounted,
     executionRootName,
@@ -346,6 +352,14 @@ function retainPreviewInspectorIncompletePageExecutionSuccess(state, snapshot, r
   if (
     state?.directTarget === true || snapshot?.pageExecutionContext?.contextComplete !== false ||
     typeof findSelectedPreviewInspectorDescriptor !== 'function'
+  ) return false;
+  // The authentic page is already mounted. Let its finite local gate search repair the selected
+  // occurrence before attempting a different execution artifact or collecting a success recipe.
+  if (
+    snapshot.pageExecutionContext.pageRootObserved === true &&
+    snapshot.pageExecutionContext.executionRootObserved === true &&
+    snapshot.pageExecutionContext.pageFrameObserved === true &&
+    snapshot.pageExecutionContext.selectedPathObserved === false
   ) return false;
   if (typeof activatePreviewInspectorNeuralTemporalStateContract === 'function') {
     activatePreviewInspectorNeuralTemporalStateContract(snapshot.temporalState);

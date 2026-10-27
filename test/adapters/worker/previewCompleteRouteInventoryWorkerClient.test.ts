@@ -1,15 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { PreviewBuildRequest } from '../../../src/domain/preview';
-import type {
-  PreviewCompleteRouteInventoryTelemetryEvent,
-  PreviewInspectorCompleteRouteInventory,
-} from '../../../src/adapters/esbuild/inspector/previewInspectorCompleteRouteInventory';
 import {
-  PreviewCompleteRouteInventoryWorkerClient,
-  PreviewCompleteRouteInventoryWorkerError,
-  type PreviewCompleteRouteInventoryWorkerConfiguration,
-  type PreviewCompleteRouteInventoryWorkerTransport,
-} from '../../../src/adapters/worker/previewCompleteRouteInventoryWorkerClient';
+  PREVIEW_COMPLETE_ROUTE_INVENTORY_TELEMETRY_POLICY_VERSION,
+  type PreviewCompleteRouteInventoryTelemetryEvent,
+  type PreviewInspectorCompleteRouteInventory,
+} from '../../../src/adapters/esbuild/inspector/previewInspectorCompleteRouteInventory';
 import {
   PREVIEW_COMPILER_WORKER_SHUTDOWN_GRACE_MS,
   PREVIEW_INVENTORY_WORKER_TIMEOUT_MS,
@@ -18,6 +12,13 @@ import type {
   PreviewCompilerWorkerRequest,
   PreviewCompilerWorkerResponse,
 } from '../../../src/adapters/worker/previewCompilerWorkerProtocol';
+import {
+  PreviewCompleteRouteInventoryWorkerClient,
+  PreviewCompleteRouteInventoryWorkerError,
+  type PreviewCompleteRouteInventoryWorkerConfiguration,
+  type PreviewCompleteRouteInventoryWorkerTransport,
+} from '../../../src/adapters/worker/previewCompleteRouteInventoryWorkerClient';
+import type { PreviewBuildRequest } from '../../../src/domain/preview';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -164,6 +165,10 @@ describe('PreviewCompleteRouteInventoryWorkerClient', () => {
       analysisPasses: 1,
       discoveredBranches: 1,
       elapsedMs: PREVIEW_INVENTORY_WORKER_TIMEOUT_MS - 1,
+      enumerationPrefixComputationCount: 0,
+      enumerationPrefixEntryCount: 0,
+      enumerationPrefixHitCount: 0,
+      enumerationPrefixRequestCount: 0,
       phase: 'enumerate-branches',
       queuedSelections: 1,
       transition: 'checkpoint',
@@ -191,6 +196,10 @@ describe('PreviewCompleteRouteInventoryWorkerClient', () => {
         analysisPasses: 2,
         discoveredBranches: 2,
         elapsedMs: PREVIEW_INVENTORY_WORKER_TIMEOUT_MS,
+        enumerationPrefixComputationCount: 0,
+        enumerationPrefixEntryCount: 0,
+        enumerationPrefixHitCount: 0,
+        enumerationPrefixRequestCount: 0,
         phase: 'enumerate-branches',
         queuedSelections: 2,
         sequence: 2,
@@ -377,7 +386,7 @@ function createTelemetryEvent(
     rssBytes: 4,
     sequence: 1,
     transition: 'start',
-    version: 1,
+    version: PREVIEW_COMPLETE_ROUTE_INVENTORY_TELEMETRY_POLICY_VERSION,
     ...overrides,
   };
 }

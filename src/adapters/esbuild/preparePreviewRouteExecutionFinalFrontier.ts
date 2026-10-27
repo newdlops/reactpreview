@@ -97,7 +97,11 @@ export async function preparePreviewRouteExecutionFinalFrontier(
   const activeInspectorPlan =
     analysisPlan === undefined
       ? undefined
-      : createPreviewInspectorExecutablePlan(analysisPlan, request.inspectorPageCandidateId);
+      : createPreviewInspectorExecutablePlan(
+          analysisPlan,
+          request.inspectorPageCandidateId,
+          request.inspectorTargetMode,
+        );
   const rawPageExecutionCandidates =
     activeInspectorPlan === undefined
       ? []
@@ -195,13 +199,17 @@ export async function preparePreviewRouteExecutionFinalFrontier(
       maximumBytes: MAXIMUM_PREVIEW_ROUTE_SOURCE_BYTES,
       sourcePath,
     });
-  const pageExecutionCandidates = await inferPreviewInspectorPageExecutionRootProps({
-    candidates: rawPageExecutionCandidates,
-    readSource: readFrontierSource,
-    resolveModule: options.staticModuleResolver.resolve,
-    snapshotSourceByPath,
-    workspaceRoot: options.workspaceRoot,
-  });
+  // An automatic build mounts one candidate. Other candidates remain inert recovery choices and
+  // receive current prop inference only when a later request actually selects their frontier.
+  let pageExecutionCandidates = shouldPrepareArtifact
+    ? await inferPreviewInspectorPageExecutionRootProps({
+        candidates: rawPageExecutionCandidates,
+        readSource: readFrontierSource,
+        resolveModule: options.staticModuleResolver.resolve,
+        snapshotSourceByPath,
+        workspaceRoot: options.workspaceRoot,
+      })
+    : rawPageExecutionCandidates;
   const requestedPageExecutionCandidates =
     request.inspectorPageExecutionCandidateId === undefined
       ? pageExecutionCandidates
@@ -232,7 +240,7 @@ export async function preparePreviewRouteExecutionFinalFrontier(
         workspaceRoot: options.workspaceRoot,
       })
     : undefined;
-  const preparedBundleExecution =
+  let preparedBundleExecution =
     plannedRouteExecution?.preparedBundleExecution ??
     (shouldPrepareArtifact
       ? undefined
@@ -256,6 +264,25 @@ export async function preparePreviewRouteExecutionFinalFrontier(
           styleSnapshotCount: styleContext.tailwindCandidateSnapshots.length,
           workspaceRoot: options.workspaceRoot,
         }));
+  const selectedCandidate = preparedBundleExecution?.executionCandidate;
+  if (!shouldPrepareArtifact && selectedCandidate !== undefined) {
+    const [inferredCandidate] = await inferPreviewInspectorPageExecutionRootProps({
+      candidates: [selectedCandidate],
+      readSource: readFrontierSource,
+      resolveModule: options.staticModuleResolver.resolve,
+      snapshotSourceByPath,
+      workspaceRoot: options.workspaceRoot,
+    });
+    if (inferredCandidate !== undefined && preparedBundleExecution !== undefined) {
+      pageExecutionCandidates = pageExecutionCandidates.map((candidate) =>
+        candidate.id === inferredCandidate.id ? inferredCandidate : candidate,
+      );
+      preparedBundleExecution = {
+        ...preparedBundleExecution,
+        executionCandidate: inferredCandidate,
+      };
+    }
+  }
   const completedStyleContext =
     preparedBundleExecution === undefined
       ? styleContext

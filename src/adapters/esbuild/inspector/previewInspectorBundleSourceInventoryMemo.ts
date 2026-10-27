@@ -1,12 +1,13 @@
 /** Owns request-local source analysis and successful Page Execution closure reuse. */
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
 import {
   createPreviewInspectorLocalComponentSlice,
   createPreviewInspectorSelectedExportSlice,
   type PreviewInspectorMountSurfaceSliceResult,
 } from './previewInspectorMountSurfaceSlice';
-import { collectPreviewInspectorRuntimeImportInventory } from './previewInspectorRuntimeImportInventory';
+import { collectPreviewInspectorRuntimeImportInventoryFromSourceFile } from './previewInspectorRuntimeImportInventory';
 import type { PreviewInspectorBundleDiagnosticsCollector } from './previewInspectorBundleDiagnostics';
 import { createPreviewInspectorStableMinPriorityQueue } from './previewInspectorStableMinPriorityQueue';
 import type {
@@ -558,10 +559,15 @@ export function collectPreviewInspectorBundleSourceInventory(
   inventorySource: string,
 ): PreviewInspectorBundleSourceInventoryResult {
   const byteLength = Buffer.byteLength(inventorySource, 'utf8');
-  if (hasSourceParseFailure(normalizedSourcePath, inventorySource)) return 'source-parse-failure';
+  const sourceFile = readPreviewAnalysisSourceFile(
+    normalizedSourcePath,
+    inventorySource,
+    normalizedSourcePath.toLowerCase().endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  if (hasSourceParseFailure(sourceFile)) return 'source-parse-failure';
   return Object.freeze({
     byteLength,
-    edges: collectPreviewInspectorRuntimeImportInventory(normalizedSourcePath, inventorySource),
+    edges: collectPreviewInspectorRuntimeImportInventoryFromSourceFile(sourceFile),
   });
 }
 
@@ -803,14 +809,7 @@ function compareSourcePaths(left: string, right: string): number {
 }
 
 /** Detects syntax failures before native esbuild begins bundling. */
-function hasSourceParseFailure(sourcePath: string, sourceText: string): boolean {
-  const sourceFile = ts.createSourceFile(
-    sourcePath,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    sourcePath.toLowerCase().endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
+function hasSourceParseFailure(sourceFile: ts.SourceFile): boolean {
   return (
     ((sourceFile as ts.SourceFile & { readonly parseDiagnostics?: readonly ts.Diagnostic[] })
       .parseDiagnostics?.length ?? 0) > 0

@@ -1,6 +1,9 @@
+import { createPreviewInspectorNeuralRuntimeSnapshotValueSource } from './previewInspectorNeuralRuntimeSnapshotValueSource';
+
 /** Generates reproducible viewer-state snapshots used by neural success verification. */
 export function createPreviewInspectorNeuralSuccessSnapshotRuntimeSource(): string {
   return String.raw`
+${createPreviewInspectorNeuralRuntimeSnapshotValueSource()}
 /** Copies only the renderer-safe value already admitted by preview prop normalization. */
 function copyPreviewInspectorNeuralSuccessValue(value) {
   const copied = typeof copyPreviewInspectorBlockerValueForJson === 'function'
@@ -19,9 +22,9 @@ function copyPreviewInspectorNeuralSuccessValue(value) {
       : copied;
   } catch { return copied; }
 }
-/** Restores JSON-safe hook snapshots to the inert runtime values expected by project code. */
+/** Restores runtime checkpoints without flattening native leaves or generated callbacks. */
 function restorePreviewInspectorNeuralSuccessRuntimeFallbackValue(value) {
-  const copied = copyPreviewInspectorNeuralSuccessValue(value);
+  const copied = copyPreviewInspectorNeuralRuntimeSnapshotValue(value);
   if (copied === undefined) return undefined;
   return typeof materializePreviewInspectorRuntimeFallbackOverride === 'function'
     ? materializePreviewInspectorRuntimeFallbackOverride(copied)
@@ -29,19 +32,35 @@ function restorePreviewInspectorNeuralSuccessRuntimeFallbackValue(value) {
 }
 /** Serializes only checkpoint-safe values and rejects a snapshot that cannot be reproduced. */
 function stringifyPreviewInspectorNeuralSuccessValue(value) {
-  try { return JSON.stringify(value); } catch { return undefined; }
+  try {
+    return JSON.stringify(value, (_key, current) => {
+      if (typeof current === 'function') return '[Preview no-op function]';
+      if (current instanceof RegExp) {
+        return { $previewRuntimeRegExp: readPreviewInspectorNeuralSnapshotRegExp(current) };
+      }
+      const element = readPreviewInspectorNeuralSnapshotElement(current);
+      if (element !== undefined) return element;
+      return current;
+    });
+  } catch { return undefined; }
 }
-/** Copies a bounded keyed viewer-state map for exact success restoration. */
-function copyPreviewInspectorNeuralSuccessEntries(map) {
+/** Copies bounded viewer state, filtering to admitted controls before applying the value limit. */
+function copyPreviewInspectorNeuralSuccessEntries(map, admittedIds, runtimeValues = false) {
   if (!(map instanceof Map)) return Object.freeze([]);
-  return Object.freeze([...map]
-    .filter(([id]) => typeof id === 'string' && id.length > 0)
+  let incomplete = false;
+  const entries = [...map]
+    .filter(([id]) => typeof id === 'string' && id.length > 0 &&
+      (admittedIds === undefined || admittedIds.includes(id)))
     .sort(([left], [right]) => left.localeCompare(right))
     .slice(0, PREVIEW_INSPECTOR_NEURAL_SUCCESS_VALUE_LIMIT)
     .flatMap(([id, value]) => {
-      const copied = copyPreviewInspectorNeuralSuccessValue(value);
+      const copied = runtimeValues
+        ? copyPreviewInspectorNeuralRuntimeSnapshotValue(value)
+        : copyPreviewInspectorNeuralSuccessValue(value);
+      if (runtimeValues && copied === undefined && value !== undefined) incomplete = true;
       return copied === undefined ? [] : [Object.freeze([id, copied])];
-    }));
+    });
+  return incomplete ? undefined : Object.freeze(entries);
 }
 /** Reads bounded blocker ids even when their current strategy intentionally has no override. */
 function readPreviewInspectorNeuralSuccessIds(map) {
@@ -50,8 +69,30 @@ function readPreviewInspectorNeuralSuccessIds(map) {
     .sort((left, right) => left.localeCompare(right))
     .slice(0, PREVIEW_INSPECTOR_NEURAL_SUCCESS_VALUE_LIMIT));
 }
+/**
+ * Owns fallback controls, excluding passive observations with no restorable viewer state.
+ * A real useContext wrapper may disappear after its caller changes without losing target output.
+ * Observed values alone are not controls. Smart choices, signatures, and manual overrides still
+ * require that exact id, including when the instrumented hook is otherwise passive.
+ */
+function readPreviewInspectorNeuralSuccessRuntimeFallbackIds() {
+  const records = previewInspectorSession.runtimeFallbacks;
+  if (!(records instanceof Map)) return Object.freeze([]);
+  return Object.freeze([...records]
+    .filter(([id, record]) => typeof id === 'string' && id.length > 0 && (
+      record?.passive !== true ||
+      previewInspectorSession.runtimeFallbackSmartIds?.has?.(id) === true ||
+      previewInspectorSession.runtimeFallbackSmartPathSignatures?.has?.(id) === true ||
+      previewInspectorSession.runtimeFallbackOverrides?.has?.(id) === true
+    ))
+    .map(([id]) => id)
+    .sort((left, right) => left.localeCompare(right))
+    .slice(0, PREVIEW_INSPECTOR_NEURAL_SUCCESS_VALUE_LIMIT));
+}
 /** Captures the small mutable viewer state that can reproduce one verified target output. */
 function createPreviewInspectorNeuralSuccessSnapshot(state) {
+  if (typeof hasPreviewInspectorNextAppControlBlocker === 'function' &&
+    hasPreviewInspectorNextAppControlBlocker(state)) return undefined;
   const exportName = typeof state?.targetExportName === 'string'
     ? state.targetExportName
     : previewInspectorSession.selectedExportName;
@@ -70,8 +111,9 @@ function createPreviewInspectorNeuralSuccessSnapshot(state) {
   const resolverMap = previewInspectorSession.resolverPropsByExport;
   const hasResolverProps = resolverMap instanceof Map && resolverMap.has(exportName);
   const resolverProps = hasResolverProps
-    ? copyPreviewInspectorNeuralSuccessValue(resolverMap.get(exportName))
+    ? copyPreviewInspectorNeuralRuntimeSnapshotValue(resolverMap.get(exportName))
     : undefined;
+  if (hasResolverProps && resolverProps === undefined) return undefined;
   const resolverFingerprint = hasResolverProps &&
     typeof fingerprintPreviewInspectorSmartPropValue === 'function'
       ? fingerprintPreviewInspectorSmartPropValue(resolverProps)
@@ -86,14 +128,15 @@ function createPreviewInspectorNeuralSuccessSnapshot(state) {
   const dataPayloadEntries = copyPreviewInspectorNeuralSuccessEntries(
     previewInspectorSession.dataPayloadOverrides,
   );
-  const runtimeFallbackIds = readPreviewInspectorNeuralSuccessIds(
-    previewInspectorSession.runtimeFallbacks,
-  );
+  const runtimeFallbackIds = readPreviewInspectorNeuralSuccessRuntimeFallbackIds();
   const runtimeFallbackValueEntries = Object.freeze(
     copyPreviewInspectorNeuralSuccessEntries(
       previewInspectorSession.runtimeFallbackValues,
-    ).filter(([id]) => runtimeFallbackIds.includes(id)),
+      runtimeFallbackIds,
+      true,
+    ),
   );
+  if (runtimeFallbackValueEntries === undefined) return undefined;
   const runtimeFallbackSmartIds = Object.freeze((
     previewInspectorSession.runtimeFallbackSmartIds instanceof Set
       ? [...previewInspectorSession.runtimeFallbackSmartIds]
@@ -102,7 +145,8 @@ function createPreviewInspectorNeuralSuccessSnapshot(state) {
   const runtimeFallbackSmartPathEntries = Object.freeze(
     copyPreviewInspectorNeuralSuccessEntries(
       previewInspectorSession.runtimeFallbackSmartPathSignatures,
-    ).filter(([id]) => runtimeFallbackIds.includes(id)),
+      runtimeFallbackIds,
+    ),
   );
   const fallbackValuesEnabled = previewInspectorSession.fallbackValuesEnabled !== false;
   const temporalState = typeof createPreviewInspectorNeuralTemporalStateSnapshot === 'function'

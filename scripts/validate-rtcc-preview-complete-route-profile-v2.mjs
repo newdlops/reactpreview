@@ -302,6 +302,24 @@ export function buildV2ValidationResult(core, carriedContractPassed, metadata) {
   });
 }
 
+/** Validates carried bytes independently of telemetry while retaining the official identity gate. */
+export function carriedInputsAreValid(options, reservedOutputsAbsent) {
+  return (
+    sha256(options.planBytes) === options.expectedPlanSha256 &&
+    sha256(options.failedValidatorBytes) === options.expectedFailedValidatorSha256 &&
+    sha256(options.failedValidatorTestBytes) === options.expectedFailedValidatorTestSha256 &&
+    sha256(options.productionManifestBytes) === options.expectedProductionManifestSha256 &&
+    buffersEqual(options.productionManifestBytes, options.predecessorProductionManifestBytes) &&
+    failureLineageIsValid(options.failureLineageBytes) &&
+    reservedOutputsAbsent.every(Boolean) &&
+    (!options.enforceOfficialIdentity ||
+      (options.expectedPlanSha256 === PLAN_SHA256 &&
+        options.expectedFailedValidatorSha256 === FAILED_VALIDATOR_SHA256 &&
+        options.expectedFailedValidatorTestSha256 === FAILED_VALIDATOR_TEST_SHA256 &&
+        options.expectedProductionManifestSha256 === PRODUCTION_MANIFEST_SHA256))
+  );
+}
+
 /** Runs the frozen semantic core and binds check 24 to v5.5.25's carried lineage. */
 export async function validateProfileSnapshot(options) {
   const core = await validateProfileSnapshotV1({
@@ -321,19 +339,7 @@ export async function validateProfileSnapshot(options) {
   const reservedOutputsAbsent = await Promise.all(
     (options.v5524ReservedOutputPaths ?? []).map(pathDoesNotExist),
   );
-  const carriedContractPassed =
-    sha256(options.planBytes) === options.expectedPlanSha256 &&
-    sha256(options.failedValidatorBytes) === options.expectedFailedValidatorSha256 &&
-    sha256(options.failedValidatorTestBytes) === options.expectedFailedValidatorTestSha256 &&
-    sha256(options.productionManifestBytes) === options.expectedProductionManifestSha256 &&
-    buffersEqual(options.productionManifestBytes, options.predecessorProductionManifestBytes) &&
-    failureLineageIsValid(options.failureLineageBytes) &&
-    reservedOutputsAbsent.every(Boolean) &&
-    (!options.enforceOfficialIdentity ||
-      (options.expectedPlanSha256 === PLAN_SHA256 &&
-        options.expectedFailedValidatorSha256 === FAILED_VALIDATOR_SHA256 &&
-        options.expectedFailedValidatorTestSha256 === FAILED_VALIDATOR_TEST_SHA256 &&
-        options.expectedProductionManifestSha256 === PRODUCTION_MANIFEST_SHA256));
+  const carriedContractPassed = carriedInputsAreValid(options, reservedOutputsAbsent);
   return buildV2ValidationResult(core, carriedContractPassed, options);
 }
 

@@ -1,12 +1,12 @@
 /** Verifies canonical campaign artifacts reject every material form of stale planner identity. */
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { PreviewRouteExecutionPlanArtifact } from '../../../src/domain/preview';
-import { PreviewRouteExecutionPlanInvariantError } from '../../../src/domain/preview';
 import {
   assertPreviewRouteExecutionPlanArtifact,
   stablePreviewRouteExecutionPlanJson,
 } from '../../../src/adapters/esbuild/previewRouteExecutionPlan';
+import type { PreviewRouteExecutionPlanArtifact } from '../../../src/domain/preview';
+import { PreviewRouteExecutionPlanInvariantError } from '../../../src/domain/preview';
 import { createPreviewRouteExecutionPlanFixture } from '../../support/previewRouteExecutionPlanFixture';
 
 const BASE_ARTIFACT = createPreviewRouteExecutionPlanFixture({
@@ -60,10 +60,7 @@ describe('previewRouteExecutionPlan', () => {
         },
       },
     ],
-    [
-      'executionCandidateId',
-      { ...BASE_ARTIFACT, executionCandidateId: 'execution:other' },
-    ],
+    ['executionCandidateId', { ...BASE_ARTIFACT, executionCandidateId: 'execution:other' }],
     [
       'executionRoot.sourcePath',
       {
@@ -98,21 +95,15 @@ describe('previewRouteExecutionPlan', () => {
         },
       },
     ],
-    [
-      'frontierIdentity',
-      { ...BASE_ARTIFACT, frontierIdentity: '4'.repeat(64) },
-    ],
+    ['frontierIdentity', { ...BASE_ARTIFACT, frontierIdentity: '4'.repeat(64) }],
   ])('rejects current-plan drift at %s', (field, observed) => {
-    expectInvariantField(
-      () => {
-        assertPreviewRouteExecutionPlanArtifact(
-          BASE_ARTIFACT,
-          observed as PreviewRouteExecutionPlanArtifact,
-          'exact',
-        );
-      },
-      field,
-    );
+    expectInvariantField(() => {
+      assertPreviewRouteExecutionPlanArtifact(
+        BASE_ARTIFACT,
+        observed as PreviewRouteExecutionPlanArtifact,
+        'exact',
+      );
+    }, field);
   });
 
   it('rejects route-recipe drift', () => {
@@ -145,12 +136,9 @@ describe('previewRouteExecutionPlan', () => {
       recipe: { ...expectedRecipe, pathname: '/parent/alternate/item-2' },
     };
 
-    expectInvariantField(
-      () => {
-        assertPreviewRouteExecutionPlanArtifact(expected, observed, 'exact');
-      },
-      'recipe.pathname',
-    );
+    expectInvariantField(() => {
+      assertPreviewRouteExecutionPlanArtifact(expected, observed, 'exact');
+    }, 'recipe.pathname');
   });
 
   it.each([
@@ -171,11 +159,7 @@ describe('previewRouteExecutionPlan', () => {
     ],
   ])('rejects a stale or tampered frozen %s', (field, expected, reason) => {
     try {
-      assertPreviewRouteExecutionPlanArtifact(
-        expected,
-        BASE_ARTIFACT,
-        'exact',
-      );
+      assertPreviewRouteExecutionPlanArtifact(expected, BASE_ARTIFACT, 'exact');
       throw new Error('Expected invariant validation to fail.');
     } catch (error) {
       expect(error).toBeInstanceOf(PreviewRouteExecutionPlanInvariantError);
@@ -185,12 +169,9 @@ describe('previewRouteExecutionPlan', () => {
   });
 
   it('rejects fallback resolution even when all serialized fields agree', () => {
-    expectInvariantField(
-      () => {
-        assertPreviewRouteExecutionPlanArtifact(BASE_ARTIFACT, BASE_ARTIFACT, 'fallback');
-      },
-      'routeSelectionResolution',
-    );
+    expectInvariantField(() => {
+      assertPreviewRouteExecutionPlanArtifact(BASE_ARTIFACT, BASE_ARTIFACT, 'fallback');
+    }, 'routeSelectionResolution');
   });
 
   it('bounds evidence copied from an invalid artifact', () => {
@@ -205,21 +186,23 @@ describe('previewRouteExecutionPlan', () => {
       throw new Error('Expected invariant validation to fail.');
     } catch (error) {
       expect(error).toBeInstanceOf(PreviewRouteExecutionPlanInvariantError);
-      expect((error as PreviewRouteExecutionPlanInvariantError).evidence.routeId.length).toBe(4_096);
+      expect((error as PreviewRouteExecutionPlanInvariantError).evidence.routeId.length).toBe(
+        4_096,
+      );
     }
   });
 });
 
 /** Recomputes the fixture self-digest after adding a recipe. */
-function sealArtifact(artifact: PreviewRouteExecutionPlanArtifact): PreviewRouteExecutionPlanArtifact {
+function sealArtifact(
+  artifact: PreviewRouteExecutionPlanArtifact,
+): PreviewRouteExecutionPlanArtifact {
   const payload = Object.fromEntries(
     Object.entries(artifact).filter(([key]) => key !== 'digest'),
   ) as Omit<PreviewRouteExecutionPlanArtifact, 'digest'>;
   return {
     ...payload,
-    digest: createHash('sha256')
-      .update(stablePreviewRouteExecutionPlanJson(payload))
-      .digest('hex'),
+    digest: createHash('sha256').update(stablePreviewRouteExecutionPlanJson(payload)).digest('hex'),
   };
 }
 

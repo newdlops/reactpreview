@@ -4,22 +4,19 @@
  * expands the final module namespace only at that exact source position. A directly imported theme
  * candidate is exposed as private metadata without loading an application entry point.
  */
-import path from 'node:path';
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
+import path from 'node:path';
 import type { PreviewParentSlicePlansByExport } from './parentSlice';
-import { createPreviewParentSliceSpecifier } from './previewParentSlicePlugin';
-import type { PreviewTargetExportSlot, PreviewThemeImportSelection } from './previewTargetExports';
-import type { PreviewStaticPropsByExport } from './previewTargetUsageProps';
-import type { PreviewInferredPropsByExport } from './staticResources/reactExportPropInference';
-import type { PreviewApplicationStylesheetImportSelection } from './previewApplicationStylesheetSelection';
 import {
   createPreviewApplicationStylesheetSpecifier,
   registerPreviewApplicationStylesheetResolver,
 } from './previewApplicationStylesheetBridge';
-import {
-  PREVIEW_TARGET_BRIDGE_NAMESPACE,
-  PREVIEW_TARGET_SPECIFIER,
-} from './previewPluginProtocol';
+import type { PreviewApplicationStylesheetImportSelection } from './previewApplicationStylesheetSelection';
+import { createPreviewParentSliceSpecifier } from './previewParentSlicePlugin';
+import { PREVIEW_TARGET_BRIDGE_NAMESPACE, PREVIEW_TARGET_SPECIFIER } from './previewPluginProtocol';
+import type { PreviewTargetExportSlot, PreviewThemeImportSelection } from './previewTargetExports';
+import type { PreviewStaticPropsByExport } from './previewTargetUsageProps';
+import type { PreviewInferredPropsByExport } from './staticResources/reactExportPropInference';
 
 /** Immutable source metadata required to create one target gallery bridge. */
 export interface PreviewTargetBridgePluginOptions {

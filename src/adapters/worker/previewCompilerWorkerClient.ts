@@ -31,10 +31,8 @@ import {
   createPreviewCompilerWorkerBudget,
   selectPreviewCompilerStageTimeoutMs,
 } from './previewCompilerWorkerBudget';
-import {
-  createPreviewCompilerWorkerOptions,
-  PREVIEW_ROUTE_WORKER_OLD_GENERATION_LIMIT_MB,
-} from './previewCompilerWorkerIsolation';
+import { PREVIEW_ROUTE_WORKER_OLD_GENERATION_LIMIT_MB } from './previewCompilerWorkerIsolation';
+import { createPreviewInteractiveCompilerWorkerOptions } from './previewInteractiveCompilerWorkerOptions';
 
 /** Minimal event boundary implemented by both Node Worker and deterministic test transports. */
 export interface PreviewCompilerWorkerTransport {
@@ -155,7 +153,7 @@ class NodePreviewCompilerWorkerTransport implements PreviewCompilerWorkerTranspo
     parentEnvironment: Readonly<NodeJS.ProcessEnv>,
     maxOldGenerationSizeMb: number,
   ) {
-    const workerOptions = createPreviewCompilerWorkerOptions(
+    const workerOptions = createPreviewInteractiveCompilerWorkerOptions(
       parentEnvironment,
       maxOldGenerationSizeMb,
     );

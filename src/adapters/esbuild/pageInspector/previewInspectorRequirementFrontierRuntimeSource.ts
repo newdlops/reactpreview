@@ -491,6 +491,8 @@ function schedulePreviewInspectorTargetRequirementContinuation(reachabilityKey) 
     }
     state.targetMounted = hasMountedPreviewInspectorTarget(state);
     state.targetHasOutput = hasPreviewInspectorTargetHostOutput(state);
+    if (typeof isPreviewInspectorTargetHiddenByPageTabInteraction === 'function' &&
+      isPreviewInspectorTargetHiddenByPageTabInteraction(state)) return;
     if (state.targetHasOutput === true) return;
     const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
       ? findSelectedPreviewInspectorDescriptor()

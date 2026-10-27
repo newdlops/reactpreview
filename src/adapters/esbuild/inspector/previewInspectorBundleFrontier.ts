@@ -1,107 +1,68 @@
-/** Creates the deterministic authored import closure before esbuild resolution. */
+import { preparePreviewInspectorBundleInitialSeeds } from './previewInspectorBundleInitialSeeds';
+import { createPreviewInspectorBundleNodeReader } from './previewInspectorBundleNodeReader';
+/** Coordinates source-closure traversal and candidate-specific bundle frontier materialization. */
 import path from 'node:path';
-import type {
-  PreviewCompilerFrontierPolicy,
-  PreviewCompilerFrontierReason,
-} from '../../../domain/previewCompilerFrontier';
-import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
-import type {
-  PreviewInspectorMountSurface,
-  PreviewInspectorPageExecutionCandidate,
-} from './previewInspectorPageExecutionTypes';
+import type { PreviewCompilerFrontierReason } from '../../../domain/previewCompilerFrontier';
 import { collectPreviewDynamicImportInventory } from '../staticResources/previewDynamicImportInventory';
-import { collectPreviewInspectorRuntimeImportInventory } from './previewInspectorRuntimeImportInventory';
+import { sortPreviewInspectorBundleFrontierReasons } from './previewInspectorBundleFrontierFinalization';
+import {
+  MAXIMUM_SMALL_PAGE_SHELL_DYNAMIC_IMPORTS,
+  type AdmittedKind,
+  type PreparePreviewInspectorBundleFrontierOptions,
+  type PreparedPreviewInspectorBundleFrontier,
+} from './previewInspectorBundleFrontierModel';
+import type { PreviewInspectorRuntimeImportEdge } from './previewInspectorBundleFrontierTypes';
+import {
+  createPreviewInspectorBundleSourceClosureKey,
+  materializePreviewInspectorBundleFrontier,
+} from './previewInspectorBundleMaterialization';
+import {
+  appendProjection,
+  compareProjectedEdges,
+  compareQueueItems,
+  countKinds,
+  createResolvedNodeRepresentationContextKey,
+  createResolvedNodeRepresentationKey,
+  createRuntimeEdgeIdentity,
+  isVirtualSliceSurface,
+} from './previewInspectorBundleRepresentations';
+import { isAuthoredPath, isSelectedDynamicVisualPath } from './previewInspectorBundleSeeds';
+import {
+  collectPreviewInspectorBundleOptionalClosure,
+  type PreviewInspectorBundleDynamicResolution,
+  type PreviewInspectorBundleResolvedSourceNode,
+  type PreviewInspectorBundleSourceClosureTemplate,
+} from './previewInspectorBundleSourceInventoryMemo';
 import {
   createPreviewInspectorLocalComponentSlice,
   createPreviewInspectorSelectedExportSlice,
-  type PreviewInspectorMountSurfaceSliceResult,
 } from './previewInspectorMountSurfaceSlice';
+import { matchesPreviewInspectorRouteParameterBranch } from './previewInspectorRouteParameterBranch';
+import { collectPreviewInspectorRuntimeImportInventory } from './previewInspectorRuntimeImportInventory';
 import {
-  collectPreviewInspectorRuntimeHookProjectionInventory,
   collectPreviewInspectorShallowProjectionInventory,
   collectPreviewInspectorWholeModuleShallowProjectionInventory,
   type PreviewInspectorShallowProjection,
   type PreviewInspectorShallowProjectionInventory,
 } from './previewInspectorShallowProjection';
-import { collectPreviewStaticRouteProjectionInventory } from './previewInspectorStaticRouteProjection';
-import { collectPreviewStyleSignals } from '../previewStyleInventory';
-import { collectPreviewImportMetaGlobInventory } from '../staticResources/previewImportMetaGlobInventory';
-import type { PreviewInspectorBundleDiagnosticsCollector } from './previewInspectorBundleDiagnostics';
-import {
-  createPreviewInspectorBundleFrontierIdentity,
-  PREVIEW_INSPECTOR_BUNDLE_FRONTIER_FORMAT_VERSION,
-  PREVIEW_INSPECTOR_PAGE_EXECUTION_FRONTIER_FORMAT_VERSION,
-  sortPreviewInspectorBundleFrontierReasons,
-} from './previewInspectorBundleFrontierFinalization';
 import { createPreviewInspectorStableMinPriorityQueue } from './previewInspectorStableMinPriorityQueue';
-import {
-  collectPreviewInspectorExecutionRouteParameterGroups,
-  matchesPreviewInspectorRouteParameterBranch,
-} from './previewInspectorRouteParameterBranch';
-import {
-  collectPreviewInspectorBundleOptionalClosure,
-  collectPreviewInspectorBundleSourceInventory,
-  type PreviewInspectorBundleDynamicResolution,
-  type PreviewInspectorBundleResolvedNodeFailure,
-  type PreviewInspectorBundleResolvedSourceNode,
-  type PreviewInspectorBundleResolvedStaticEdge,
-  type PreviewInspectorBundleSourceClosureTemplate,
-  type PreviewInspectorBundleSourceInventoryMemo,
-  type PreviewInspectorBundleSourceInventoryResult,
-} from './previewInspectorBundleSourceInventoryMemo';
-import type {
-  PreviewInspectorBundleFrontier,
-  PreviewInspectorProjectedEdge,
-  PreviewInspectorRuntimeImportEdge,
-} from './previewInspectorBundleFrontierTypes';
+import { collectPreviewStaticRouteProjectionInventory } from './previewInspectorStaticRouteProjection';
+import { readPreviewInspectorUnresolvedRouteFactoryOwner } from './previewInspectorUnresolvedRouteFactoryOwner';
+import { createPreviewInspectorLocalUiHookAdmission } from './previewInspectorLocalUiHookAdmission';
+
+export type {
+  PreparePreviewInspectorBundleFrontierOptions,
+  PreparedPreviewInspectorBundleFrontier,
+} from './previewInspectorBundleFrontierModel';
 export {
   createPreviewInspectorBundleSourceInventoryMemo,
-  type PreviewInspectorBundleSourceClosureMemoStatistics,
   type PreviewInspectorBundleGraphMemoStatistics,
+  type PreviewInspectorBundleSourceClosureMemoStatistics,
   type PreviewInspectorBundleSourceInventoryMemo,
   type PreviewInspectorBundleSourceInventoryMemoStatistics,
   type PreviewInspectorBundleSurfaceSliceMemoStatistics,
 } from './previewInspectorBundleSourceInventoryMemo';
-const SOURCE_MODULE_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
-const STYLE_OR_ASSET_PATTERN =
-  /\.(?:css|less|sass|scss|svg|png|jpe?g|gif|webp|avif|woff2?|ttf|eot)$/iu;
-/** Keeps a small lazy shell intact while preventing route catalogs from becoming page chrome. */
-const MAXIMUM_SMALL_PAGE_SHELL_DYNAMIC_IMPORTS = 8;
-export interface PreparePreviewInspectorBundleFrontierOptions {
-  readonly bundleDiagnostics?: PreviewInspectorBundleDiagnosticsCollector;
-  /** Runtime bridge modules that the generated execution entry evaluates beside selected surfaces. */
-  readonly runtimeCompanionSourcePaths?: readonly string[];
-  /** A frozen Page Execution candidate switches exact admission from broad evidence to surfaces. */
-  readonly executionCandidate?: PreviewInspectorPageExecutionCandidate;
-  readonly plan: PreviewInspectorAncestorPlan;
-  readonly policy: PreviewCompilerFrontierPolicy;
-  /** Vite-root-relative glob base; defaults to the workspace for direct/test callers. */
-  readonly projectRoot?: string;
-  readonly readSource: (sourcePath: string) => Promise<string | undefined>;
-  /** Page selection accounts only shared-cache misses upstream to avoid duplicate raw-read counts. */
-  readonly rawSourceReadAccounting?: 'upstream-page-cache';
-  readonly resolveModule: (specifier: string, importer: string) => string | undefined;
-  /** Request-owned reuse of only exact source-inventory analysis. */
-  readonly sourceInventoryMemo?: PreviewInspectorBundleSourceInventoryMemo;
-  readonly workspaceRoot: string;
-}
-export interface PreparedPreviewInspectorBundleFrontier {
-  readonly frontier: PreviewInspectorBundleFrontier;
-  readonly rejected: boolean;
-}
-interface FrontierSourceQueueItem {
-  readonly depth: number;
-  readonly kind:
-    | 'exact'
-    | 'optional-component'
-    | 'optional-support'
-    | 'page-shell-component'
-    | 'support'
-    | 'target-component';
-  readonly optionalEdge?: Omit<PreviewInspectorProjectedEdge, 'reason'>;
-  readonly sourcePath: string;
-}
-type AdmittedKind = FrontierSourceQueueItem['kind'];
+
 /** Builds the same frontier for equal source snapshots regardless of resolve callback timing. */
 export async function preparePreviewInspectorBundleFrontier(
   options: PreparePreviewInspectorBundleFrontierOptions,
@@ -119,7 +80,8 @@ export async function preparePreviewInspectorBundleFrontier(
         );
   return materializePreviewInspectorBundleFrontier(options, template);
 }
-/** Collects route-invariant authored closure data without retaining candidate identity. */
+
+/** Collects reusable authored closure data without retaining candidate identity. */
 async function collectPreviewInspectorBundleSourceClosureTemplate(
   options: PreparePreviewInspectorBundleFrontierOptions,
 ): Promise<PreviewInspectorBundleSourceClosureTemplate> {
@@ -138,125 +100,29 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
     diagnostics === undefined || options.rawSourceReadAccounting === 'upstream-page-cache'
       ? options.readSource(sourcePath)
       : diagnostics.measureRawSourceRead(() => options.readSource(sourcePath));
-  const authenticInventorySourcePaths = collectAuthenticInventorySourcePaths(options);
-  const selectedRouteParameterGroups = collectPreviewInspectorExecutionRouteParameterGroups(
-    options.executionCandidate,
-  );
-  const exactSeedPaths = new Set(
-    collectExactSeedPaths(options.plan, options.executionCandidate).map((sourcePath) =>
-      path.normalize(sourcePath),
-    ),
-  );
-  const pending: FrontierSourceQueueItem[] = [
-    ...exactSeedPaths,
-    ...(options.runtimeCompanionSourcePaths ?? []),
-  ]
-    .filter(checkAuthoredPath)
-    .map((sourcePath) => ({ depth: 0, kind: 'exact', sourcePath }));
-  const projectedEdges: PreviewInspectorProjectedEdge[] = [];
-  const optionalExportsByPath = new Map<string, Set<string>>();
-  const optionalIdentities = new Set<string>();
-  for (const visualPath of [...(options.plan.shallowVisualPaths ?? [])]
-    .filter(
-      (candidate) =>
-        options.executionCandidate === undefined ||
-        exactSeedPaths.has(path.normalize(candidate.importerPath)),
-    )
-    .sort(compareVisualPaths)) {
-    if (visualPath.relation === 'route-alternative' || !checkAuthoredPath(visualPath.sourcePath))
-      continue;
-    const sourcePath = path.normalize(visualPath.sourcePath);
-    const edge = Object.freeze({
-      exportNames: Object.freeze([visualPath.exportName]),
-      importerPath: path.normalize(visualPath.importerPath),
-      moduleSpecifier: visualPath.moduleSpecifier,
-      occurrenceStart: visualPath.occurrenceStart,
-      runtimeHookExportNames: Object.freeze([]),
-      targetPath: sourcePath,
-    });
-    const identity = `${sourcePath}\0${visualPath.exportName}`;
-    if (optionalIdentities.has(identity)) continue;
-    optionalIdentities.add(identity);
-    const exports = optionalExportsByPath.get(sourcePath) ?? new Set<string>();
-    exports.add(visualPath.exportName);
-    optionalExportsByPath.set(sourcePath, exports);
-    pending.push({ depth: 1, kind: 'optional-component', optionalEdge: edge, sourcePath });
-  }
-  for (const reference of options.executionCandidate === undefined
-    ? collectExactVisualRoots(options.plan)
-    : []) {
-    await collectExactVisualAdmissions(
-      reference,
-      optionalExportsByPath,
-      optionalIdentities,
-      pending,
-      readRawSource,
-      resolveModule,
-      checkAuthoredPath,
-    );
-  }
-  const authenticRuntimeTargetSurface = options.executionCandidate?.criticalSurfaces.find(
-    (surface) =>
-      surface.id === options.executionCandidate?.runtimeTargetSurfaceId &&
-      surface.strategy === 'authentic-module-export',
-  );
-  if (authenticRuntimeTargetSurface !== undefined) {
-    await collectExactVisualAdmissions(
-      authenticRuntimeTargetSurface, optionalExportsByPath, optionalIdentities, pending,
-      readRawSource, resolveModule, checkAuthoredPath, 'static', 'target-component',
-    );
-    await collectExactVisualAdmissions(
-      authenticRuntimeTargetSurface, optionalExportsByPath, optionalIdentities, pending,
-      readRawSource, resolveModule, checkAuthoredPath, 'dynamic-import', 'target-component',
-    );
-  }
-  const fullAuthoredExecutionRootSurface = options.executionCandidate?.criticalSurfaces.find(
-    (surface) =>
-      surface.id === options.executionCandidate?.executionRootSurfaceId &&
-      (surface.strategy === 'authentic-module-export' ||
-        surface.strategy === 'selected-route-surface'),
-  );
-  if (
-    fullAuthoredExecutionRootSurface !== undefined &&
-    (authenticRuntimeTargetSurface === undefined ||
-      fullAuthoredExecutionRootSurface.sourcePath !== authenticRuntimeTargetSurface.sourcePath ||
-      fullAuthoredExecutionRootSurface.exportName !== authenticRuntimeTargetSurface.exportName)
-  ) {
-    await collectExactVisualAdmissions(
-      fullAuthoredExecutionRootSurface, optionalExportsByPath, optionalIdentities, pending,
-      readRawSource, resolveModule, checkAuthoredPath, 'static', 'page-shell-component', options.plan,
-    );
-    await collectExactVisualAdmissions(
-      fullAuthoredExecutionRootSurface, optionalExportsByPath, optionalIdentities, pending,
-      readRawSource, resolveModule, checkAuthoredPath, 'dynamic-import', 'page-shell-component', options.plan,
-    );
-  }
-  for (const surface of options.executionCandidate?.optionalSurfaces ?? []) {
-    const sourcePath = path.normalize(surface.sourcePath);
-    if (!checkAuthoredPath(sourcePath)) continue;
-    const identity = `${sourcePath}\0${surface.exportName}`;
-    if (optionalIdentities.has(identity)) continue;
-    optionalIdentities.add(identity);
-    const edge = Object.freeze({
-      exportNames: Object.freeze([surface.exportName]),
-      importerPath: sourcePath,
-      moduleSpecifier: surface.sourcePath,
-      occurrenceStart: 0,
-      runtimeHookExportNames: Object.freeze([]),
-      targetPath: sourcePath,
-    });
-    optionalExportsByPath.set(sourcePath, new Set(edge.exportNames));
-    pending.push({
-      depth: 1,
-      kind: 'optional-component',
-      optionalEdge: edge,
-      sourcePath,
-    });
-  }
+  const retainLocalUiHook = createPreviewInspectorLocalUiHookAdmission(readRawSource);
+  const {
+    pending,
+    authenticInventorySourcePaths,
+    projectedEdges,
+    optionalExportsByPath,
+    optionalIdentities,
+    exactSeedPaths,
+    selectedRouteParameterGroups,
+  } = await preparePreviewInspectorBundleInitialSeeds({
+    options,
+    checkAuthoredPath,
+    readRawSource,
+    resolveModule,
+  });
   const queue = createPreviewInspectorStableMinPriorityQueue(pending, compareQueueItems);
   const graphMemo =
     options.executionCandidate === undefined ? undefined : options.sourceInventoryMemo;
   const sourceCache = new Map<string, Promise<PreviewInspectorBundleResolvedSourceNode>>();
+  const unresolvedFactoryOwner = readPreviewInspectorUnresolvedRouteFactoryOwner(
+    options.plan,
+    options.executionCandidate,
+  );
   const wholeModuleProjectionCache = new Map<
     string,
     Promise<PreviewInspectorShallowProjectionInventory>
@@ -268,232 +134,16 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
   let maximumDepth = 0;
   let sourceBytes = 0;
   const processedStaticEdges = new Set<string>();
-  const readNode = (sourcePath: string): Promise<PreviewInspectorBundleResolvedSourceNode> => {
-    const normalizedSourcePath = path.normalize(sourcePath);
-    const representationKey = createResolvedNodeRepresentationKey(
-      options,
-      authenticInventorySourcePaths,
-      normalizedSourcePath,
-    );
-    const cached = sourceCache.get(representationKey);
-    if (cached !== undefined) {
-      diagnostics?.recordInventoryRead(true);
-      return cached;
-    }
-    const compute = async (): Promise<PreviewInspectorBundleResolvedSourceNode> => {
-      diagnostics?.recordInventoryRead(false);
-      const sourceText = await readRawSource(normalizedSourcePath);
-      if (sourceText === undefined)
-        return createResolvedNodeFailure(
-          normalizedSourcePath,
-          representationKey,
-          'exact-source-unreadable',
-        );
-      const slicedSurfaces = collectSlicedSurfaces(
-        options.executionCandidate,
-        normalizedSourcePath,
-      );
-      if (slicedSurfaces !== undefined && slicedSurfaces.length > 1)
-        return createResolvedNodeFailure(
-          normalizedSourcePath,
-          representationKey,
-          'slice-unavailable',
-        );
-      const slicedSurface = slicedSurfaces?.[0];
-      let slice: PreviewInspectorMountSurfaceSliceResult | undefined;
-      if (slicedSurface !== undefined) {
-        const before = diagnostics && options.sourceInventoryMemo?.getSliceStatistics();
-        const collectSlice = (): PreviewInspectorMountSurfaceSliceResult =>
-          slicedSurface.strategy === 'inner-local-component-slice' &&
-          slicedSurface.localName !== undefined
-            ? (options.sourceInventoryMemo?.collectLocalComponentSlice(
-                normalizedSourcePath,
-                sourceText,
-                slicedSurface.localName,
-                slicedSurface.preservedWrapperKinds ?? [],
-              ) ??
-              createPreviewInspectorLocalComponentSlice({
-                localName: slicedSurface.localName,
-                preservedWrapperKinds: slicedSurface.preservedWrapperKinds ?? [],
-                sourcePath: normalizedSourcePath,
-                sourceText,
-              }))
-            : (options.sourceInventoryMemo?.collectSelectedExportSlice(
-                normalizedSourcePath,
-                sourceText,
-                slicedSurface.exportName,
-              ) ??
-              createPreviewInspectorSelectedExportSlice({
-                exportName: slicedSurface.exportName,
-                sourcePath: normalizedSourcePath,
-                sourceText,
-              }));
-        slice =
-          diagnostics === undefined ? collectSlice() : diagnostics.measureSliceLookup(collectSlice);
-        const after = diagnostics && options.sourceInventoryMemo?.getSliceStatistics();
-        diagnostics?.recordSliceMemoDelta(
-          before === undefined || after === undefined
-            ? { computations: 1, hits: 0, requests: 1 }
-            : {
-                computations: after.sliceComputations - before.sliceComputations,
-                hits: after.sliceHits - before.sliceHits,
-                requests: after.sliceRequests - before.sliceRequests,
-              },
-        );
-      }
-      if (slicedSurface !== undefined && slice?.kind !== 'success')
-        return createResolvedNodeFailure(
-          normalizedSourcePath,
-          representationKey,
-          'slice-unavailable',
-        );
-      const inventorySource = authenticInventorySourcePaths.has(normalizedSourcePath)
-        ? sourceText
-        : slice?.kind === 'success'
-          ? slice.slice.contents
-          : sourceText;
-      const before = diagnostics && options.sourceInventoryMemo?.getStatistics();
-      const collectInventory = (): PreviewInspectorBundleSourceInventoryResult =>
-        options.sourceInventoryMemo?.collect(normalizedSourcePath, inventorySource) ??
-        collectPreviewInspectorBundleSourceInventory(normalizedSourcePath, inventorySource);
-      const inventory =
-        diagnostics === undefined
-          ? collectInventory()
-          : diagnostics.measureInventoryLookup(collectInventory);
-      const after = diagnostics && options.sourceInventoryMemo?.getStatistics();
-      diagnostics?.recordInventoryMemoDelta(
-        before === undefined || after === undefined
-          ? { computations: 1, hits: 0, requests: 1 }
-          : {
-              computations: after.computations - before.computations,
-              hits: after.hits - before.hits,
-              requests: after.requests - before.requests,
-            },
-      );
-      if (typeof inventory === 'string')
-        return createResolvedNodeFailure(normalizedSourcePath, representationKey, inventory);
-      const runtimeHookProjections =
-        slice === undefined
-          ? collectPreviewInspectorRuntimeHookProjectionInventory(
-              normalizedSourcePath,
-              inventorySource,
-            ).projectionsBySpecifier
-          : new Map<string, PreviewInspectorShallowProjection>();
-      const staticRouteInventory =
-        slice === undefined
-          ? collectPreviewStaticRouteProjectionInventory(normalizedSourcePath, inventorySource)
-          : undefined;
-      const staticEdges: PreviewInspectorBundleResolvedStaticEdge[] = [];
-      for (const edge of inventory.edges) {
-        diagnostics?.recordEdgeVisit();
-        if (edge.kind === 'dynamic-import' || STYLE_OR_ASSET_PATTERN.test(edge.moduleSpecifier))
-          continue;
-        const identity = createRuntimeEdgeIdentity(normalizedSourcePath, edge);
-        const resolved = resolveModule(edge.moduleSpecifier, normalizedSourcePath);
-        if (resolved !== undefined && checkAuthoredPath(resolved)) {
-          const runtimeHookProjection = runtimeHookProjections.get(edge.moduleSpecifier);
-          const staticRouteProjection = staticRouteInventory?.projectionsBySpecifier.get(
-            edge.moduleSpecifier,
-          );
-          const projection: PreviewInspectorShallowProjection | undefined =
-            runtimeHookProjection ??
-            (staticRouteProjection === undefined
-              ? undefined
-              : {
-                  exportNames: staticRouteProjection.exportNames,
-                  moduleSpecifier: staticRouteProjection.moduleSpecifier,
-                  ...(staticRouteProjection.neutralRouteBasePath === undefined
-                    ? {}
-                    : {
-                        neutralRouteBasePath: staticRouteProjection.neutralRouteBasePath,
-                      }),
-                  runtimeHookExportNames: Object.freeze([]),
-                });
-          staticEdges.push(
-            Object.freeze({
-              identity,
-              importedNames: Object.freeze([...edge.importedNames]),
-              kind: 'authored' as const,
-              moduleSpecifier: edge.moduleSpecifier,
-              occurrenceStart: edge.occurrenceStart,
-              ...(projection === undefined
-                ? {}
-                : {
-                    projection: Object.freeze({
-                      exportNames: Object.freeze([...projection.exportNames]),
-                      moduleSpecifier: projection.moduleSpecifier,
-                      ...(projection.neutralRouteBasePath === undefined
-                        ? {}
-                        : { neutralRouteBasePath: projection.neutralRouteBasePath }),
-                      occurrenceStart: edge.occurrenceStart,
-                      runtimeHookExportNames: Object.freeze([...projection.runtimeHookExportNames]),
-                    }),
-                  }),
-              targetPath: path.normalize(resolved),
-            }),
-          );
-          continue;
-        }
-        if (normalizeBarePackageSpecifier(edge.moduleSpecifier) !== undefined)
-          staticEdges.push(
-            Object.freeze({
-              identity,
-              importedNames: Object.freeze([...edge.importedNames]),
-              kind: 'package-demand' as const,
-              moduleSpecifier: edge.moduleSpecifier,
-              occurrenceStart: edge.occurrenceStart,
-            }),
-          );
-      }
-      if (slice === undefined && inventorySource.includes('styled-components')) {
-        for (const signal of collectPreviewStyleSignals(normalizedSourcePath, inventorySource)) {
-          const resolved = resolveModule(signal.moduleSpecifier, normalizedSourcePath);
-          if (resolved === undefined || !checkAuthoredPath(resolved)) continue;
-          staticEdges.push(
-            Object.freeze({
-              compilerGeneratedSupport: true as const,
-              identity: `${normalizedSourcePath}\0preview-generated-theme\0${signal.moduleSpecifier}\0${signal.exportName}`,
-              importedNames: Object.freeze([signal.exportName]),
-              kind: 'authored' as const,
-              moduleSpecifier: signal.moduleSpecifier,
-              occurrenceStart: 0,
-              targetPath: path.normalize(resolved),
-            }),
-          );
-        }
-      }
-      for (const reference of await collectPreviewImportMetaGlobInventory({
-        projectRoot: options.projectRoot ?? options.workspaceRoot,
-        sourcePath: normalizedSourcePath,
-        sourceText: inventorySource,
-        workspaceRoot: options.workspaceRoot,
-      })) {
-        const resolved = resolveModule(reference.moduleSpecifier, normalizedSourcePath);
-        if (resolved === undefined || !checkAuthoredPath(resolved)) continue;
-        staticEdges.push(
-          Object.freeze({
-            compilerGeneratedSupport: true as const,
-            identity: `${normalizedSourcePath}\0preview-generated-import-meta-glob\0${reference.occurrenceStart.toString()}\0${reference.moduleSpecifier}`,
-            importedNames: Object.freeze([]),
-            kind: 'authored' as const,
-            moduleSpecifier: reference.moduleSpecifier,
-            occurrenceStart: reference.occurrenceStart,
-            targetPath: path.normalize(resolved),
-          }),
-        );
-      }
-      return Object.freeze({
-        byteLength: inventory.byteLength,
-        edges: inventory.edges,
-        representationKey,
-        sourcePath: normalizedSourcePath,
-        staticEdges: Object.freeze(staticEdges),
-      });
-    };
-    const read = graphMemo?.collectResolvedSourceNode(representationKey, compute) ?? compute();
-    sourceCache.set(representationKey, read);
-    return read;
-  };
+  const readNode = createPreviewInspectorBundleNodeReader({
+    options,
+    authenticInventorySourcePaths,
+    sourceCache,
+    diagnostics,
+    readRawSource,
+    resolveModule,
+    checkAuthoredPath,
+    graphMemo,
+  });
   const resolveDynamicEdge = (
     node: PreviewInspectorBundleResolvedSourceNode,
     edge: PreviewInspectorRuntimeImportEdge,
@@ -571,8 +221,11 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
           : shallowInventory.projectionsBySpecifier;
       const pageShellRouteOnlySpecifiers =
         item.kind === 'page-shell-component' && sourceText !== undefined
-          ? collectPreviewStaticRouteProjectionInventory(item.sourcePath, sourceText)
-              .projectionsBySpecifier
+          ? collectPreviewStaticRouteProjectionInventory(
+              item.sourcePath,
+              sourceText,
+              unresolvedFactoryOwner,
+            ).projectionsBySpecifier
           : undefined;
       const pageShellDynamicInventory =
         item.kind === 'page-shell-component' && sourceText !== undefined
@@ -669,6 +322,10 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
             kind: 'support',
             sourcePath: edge.targetPath,
           });
+          continue;
+        }
+        if (await retainLocalUiHook(edge)) {
+          queue.push({ depth: item.depth + 1, kind: 'support', sourcePath: edge.targetPath });
           continue;
         }
         if (
@@ -794,7 +451,9 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       for (const sourcePath of [...proposal.supportPaths].sort()) {
         const supportNode = graph.entries.find((entry) => entry.sourcePath === sourcePath)?.node;
         if (supportNode === undefined || supportNode.failure !== undefined) continue;
-        const dynamicImportEdges = supportNode.edges.filter((edge) => edge.kind === 'dynamic-import');
+        const dynamicImportEdges = supportNode.edges.filter(
+          (edge) => edge.kind === 'dynamic-import',
+        );
         const selectedDynamicEdgeIdentities = new Set(
           dynamicImportEdges
             .filter((edge) => {
@@ -819,7 +478,8 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
           const edgeIdentity = createRuntimeEdgeIdentity(sourcePath, edge);
           if (
             resolution.targetPath === undefined ||
-            (!selectedDynamicEdgeIdentities.has(edgeIdentity) && !retainSmallSupportDynamicClosure) ||
+            (!selectedDynamicEdgeIdentities.has(edgeIdentity) &&
+              !retainSmallSupportDynamicClosure) ||
             processedStaticEdges.has(edgeIdentity)
           )
             continue;
@@ -899,6 +559,10 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         continue;
       }
       authoredEdgeCount += 1;
+      if (edge.targetPath !== undefined && (await retainLocalUiHook(edge))) {
+        queue.push({ depth: item.depth + 1, kind: 'support', sourcePath: edge.targetPath });
+        continue;
+      }
       if (edge.compilerGeneratedSupport === true && edge.targetPath !== undefined) {
         queue.push({
           depth: item.depth + 1,
@@ -972,14 +636,14 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       isVirtualSliceSurface(surface),
   );
   if (slicedExecutionRoot !== undefined) {
-    type PhaseTwoItem = {
+    interface PhaseTwoItem {
       readonly depth: number;
       readonly exportNames?: readonly string[];
       readonly importerPath: string;
       readonly kind: 'component' | 'support';
       readonly occurrenceStart: number;
       readonly sourcePath: string;
-    };
+    }
     const comparePhaseTwoItems = (left: PhaseTwoItem, right: PhaseTwoItem): number =>
       left.depth - right.depth ||
       (left.kind === 'component' ? 0 : 1) - (right.kind === 'component' ? 0 : 1) ||
@@ -1007,7 +671,14 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       const identity = `${normalizedPath}\0${names.join('\0')}`;
       if (phaseTwoQueuedComponents.has(identity) || componentExpansions.has(identity)) return;
       phaseTwoQueuedComponents.add(identity);
-      phaseTwoQueue.push({ depth, exportNames: Object.freeze(names), importerPath, kind: 'component', occurrenceStart, sourcePath: normalizedPath });
+      phaseTwoQueue.push({
+        depth,
+        exportNames: Object.freeze(names),
+        importerPath,
+        kind: 'component',
+        occurrenceStart,
+        sourcePath: normalizedPath,
+      });
     };
     const queueSupport = (
       sourcePath: string,
@@ -1018,7 +689,13 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       const normalizedPath = path.normalize(sourcePath);
       if (admittedKinds.has(normalizedPath) || phaseTwoQueuedSupport.has(normalizedPath)) return;
       phaseTwoQueuedSupport.add(normalizedPath);
-      phaseTwoQueue.push({ depth, importerPath, kind: 'support', occurrenceStart, sourcePath: normalizedPath });
+      phaseTwoQueue.push({
+        depth,
+        importerPath,
+        kind: 'support',
+        occurrenceStart,
+        sourcePath: normalizedPath,
+      });
     };
     queueComponent(
       slicedExecutionRoot.sourcePath,
@@ -1093,7 +770,7 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       const representation =
         item.sourcePath === path.normalize(slicedExecutionRoot.sourcePath)
           ? slicedExecutionRoot.strategy === 'inner-local-component-slice' &&
-              slicedExecutionRoot.localName !== undefined
+            slicedExecutionRoot.localName !== undefined
             ? createPreviewInspectorLocalComponentSlice({
                 localName: slicedExecutionRoot.localName,
                 preservedWrapperKinds: slicedExecutionRoot.preservedWrapperKinds ?? [],
@@ -1111,7 +788,8 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         phaseTwoFailure = true;
         continue;
       }
-      const inventorySource = representation?.kind === 'success' ? representation.slice.contents : sourceText;
+      const inventorySource =
+        representation?.kind === 'success' ? representation.slice.contents : sourceText;
       const projections = collectPreviewInspectorShallowProjectionInventory(
         item.sourcePath,
         inventorySource,
@@ -1122,20 +800,34 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         phaseTwoFailure = true;
         continue;
       }
-      const runtimeEdges = collectPreviewInspectorRuntimeImportInventory(item.sourcePath, inventorySource);
+      const runtimeEdges = collectPreviewInspectorRuntimeImportInventory(
+        item.sourcePath,
+        inventorySource,
+      );
       for (const projection of projections.projectionsBySpecifier.values()) {
-        const edge = runtimeEdges.find((candidate) => candidate.moduleSpecifier === projection.moduleSpecifier);
+        const edge = runtimeEdges.find(
+          (candidate) => candidate.moduleSpecifier === projection.moduleSpecifier,
+        );
         if (edge === undefined) continue;
         const resolved = resolveModule(projection.moduleSpecifier, item.sourcePath);
         if (resolved === undefined || !checkAuthoredPath(resolved)) {
-          if (projection.moduleSpecifier.startsWith('.') || path.isAbsolute(projection.moduleSpecifier)) {
+          if (
+            projection.moduleSpecifier.startsWith('.') ||
+            path.isAbsolute(projection.moduleSpecifier)
+          ) {
             reasons.add('frontier-mismatch');
             phaseTwoFailure = true;
             break;
           }
           continue;
         }
-        queueComponent(path.normalize(resolved), projection.exportNames, item.depth + 1, item.sourcePath, edge.occurrenceStart);
+        queueComponent(
+          path.normalize(resolved),
+          projection.exportNames,
+          item.depth + 1,
+          item.sourcePath,
+          edge.occurrenceStart,
+        );
       }
       if (phaseTwoFailure) continue;
       for (const edge of node.staticEdges) {
@@ -1148,7 +840,11 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
           processedStaticEdges.add(edge.identity);
           authoredEdgeCount += 1;
         }
-        if (edge.moduleSpecifier !== undefined && projections.projectionsBySpecifier.has(edge.moduleSpecifier)) continue;
+        if (
+          edge.moduleSpecifier !== undefined &&
+          projections.projectionsBySpecifier.has(edge.moduleSpecifier)
+        )
+          continue;
         queueSupport(edge.targetPath, item.depth + 1, item.sourcePath, edge.occurrenceStart ?? 0);
       }
     }
@@ -1225,686 +921,4 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
     ),
     summary,
   });
-}
-/** Rebuilds candidate-specific identity and transport around one immutable closure template. */
-function materializePreviewInspectorBundleFrontier(
-  options: PreparePreviewInspectorBundleFrontierOptions,
-  template: PreviewInspectorBundleSourceClosureTemplate,
-): PreparedPreviewInspectorBundleFrontier {
-  const diagnostics = options.bundleDiagnostics;
-  const finalize = (): PreparedPreviewInspectorBundleFrontier => {
-    const collectIdentity = (): string =>
-      createPreviewInspectorBundleFrontierIdentity(
-        Object.freeze({ mode: options.policy.mode }),
-        options.executionCandidate,
-        template.authenticSourcePaths,
-        template.exactSourcePaths,
-        template.packageDemandSourcePaths,
-        template.authenticComponentExports,
-        template.projectedEdges,
-        template.summary,
-      );
-    const identity =
-      diagnostics === undefined
-        ? collectIdentity()
-        : diagnostics.measureFrontierIdentity(collectIdentity);
-    return {
-      frontier: Object.freeze({
-        authenticComponentExports: template.authenticComponentExports,
-        authenticSourcePaths: template.authenticSourcePaths,
-        exactSourcePaths: template.exactSourcePaths,
-        identity,
-        packageDemandSourcePaths: template.packageDemandSourcePaths,
-        projectedEdges: template.projectedEdges,
-        summary: template.summary,
-        version:
-          options.executionCandidate === undefined
-            ? PREVIEW_INSPECTOR_BUNDLE_FRONTIER_FORMAT_VERSION
-            : PREVIEW_INSPECTOR_PAGE_EXECUTION_FRONTIER_FORMAT_VERSION,
-        ...(options.executionCandidate === undefined
-          ? {}
-          : {
-              executionCandidateId: options.executionCandidate.id,
-              sourceKinds: template.sourceKinds,
-            }),
-      }),
-      rejected: template.rejected,
-    };
-  };
-  return diagnostics === undefined ? finalize() : diagnostics.measureFrontierFinalize(finalize);
-}
-/** Keys only immutable inputs that can change v2 authored closure traversal. */
-function createPreviewInspectorBundleSourceClosureKey(
-  options: PreparePreviewInspectorBundleFrontierOptions,
-): string {
-  const candidate = options.executionCandidate;
-  if (candidate === undefined) throw new TypeError('Page Execution closure requires a candidate.');
-  const sortRows = <Row extends readonly unknown[]>(rows: Row[]): Row[] =>
-    rows.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
-  return JSON.stringify([
-    'preview-inspector-bundle-source-closure',
-    1,
-    PREVIEW_INSPECTOR_PAGE_EXECUTION_FRONTIER_FORMAT_VERSION,
-    path.normalize(options.workspaceRoot),
-    path.normalize(options.projectRoot ?? options.workspaceRoot),
-    options.policy.maximumAuthoredModules,
-    options.policy.maximumSourceBytes,
-    [...(options.runtimeCompanionSourcePaths ?? [])]
-      .map((sourcePath) => path.normalize(sourcePath))
-      .sort(),
-    sortRows(
-      candidate.criticalSurfaces.map(
-        (surface) =>
-          [
-            path.normalize(surface.sourcePath),
-            surface.exportName,
-            surface.strategy,
-            surface.localName ?? null,
-            [...(surface.preservedWrapperKinds ?? [])],
-          ] as const,
-      ),
-    ),
-    collectPreviewInspectorExecutionCorridorSeedPaths(options.plan, candidate),
-    sortRows(
-      candidate.optionalSurfaces.map(
-        (surface) =>
-          [path.normalize(surface.sourcePath), surface.exportName, surface.strategy] as const,
-      ),
-    ),
-    sortRows(
-      (options.plan.shallowVisualPaths ?? [])
-        .filter((visualPath) => visualPath.relation !== 'route-alternative')
-        .map(
-          (visualPath) =>
-            [
-              path.normalize(visualPath.importerPath),
-              path.normalize(visualPath.sourcePath),
-            ] as const,
-        ),
-    ),
-  ]);
-}
-/** Identifies critical strategies evaluated through the generated virtual surface namespace. */
-function isVirtualSliceSurface(surface: PreviewInspectorMountSurface): boolean {
-  return (
-    surface.strategy === 'selected-export-slice' ||
-    surface.strategy === 'inner-local-component-slice'
-  );
-}
-/** Selects only the virtual critical representations associated with one authored path. */
-function collectSlicedSurfaces(
-  candidate: PreviewInspectorPageExecutionCandidate | undefined,
-  sourcePath: string,
-): readonly PreviewInspectorMountSurface[] | undefined {
-  return candidate?.criticalSurfaces.filter(
-    (surface) =>
-      isVirtualSliceSurface(surface) && path.normalize(surface.sourcePath) === sourcePath,
-  );
-}
-/** Keys one path by the exact full, sliced, or multi-slice representation it evaluates. */
-function createResolvedNodeRepresentationKey(
-  options: PreparePreviewInspectorBundleFrontierOptions,
-  authenticSourcePaths: ReadonlySet<string>,
-  sourcePath: string,
-): string {
-  const normalizedSourcePath = path.normalize(sourcePath);
-  const slicedSurfaces = collectSlicedSurfaces(options.executionCandidate, normalizedSourcePath);
-  if (slicedSurfaces !== undefined && slicedSurfaces.length > 1) {
-    const shapes = slicedSurfaces
-      .map((surface) => [
-        surface.exportName,
-        surface.strategy,
-        surface.localName ?? null,
-        [...(surface.preservedWrapperKinds ?? [])],
-      ])
-      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
-    return JSON.stringify([
-      'preview-inspector-bundle-resolved-node',
-      1,
-      normalizedSourcePath,
-      'multi-slice-unavailable',
-      shapes,
-    ]);
-  }
-  const slicedSurface = slicedSurfaces?.[0];
-  const representation =
-    slicedSurface === undefined
-      ? ['authentic-full-source']
-      : slicedSurface.strategy === 'inner-local-component-slice' &&
-          slicedSurface.localName !== undefined
-        ? [
-            'inner-local-slice',
-            slicedSurface.localName,
-            [...(slicedSurface.preservedWrapperKinds ?? [])],
-          ]
-        : ['selected-export-slice', slicedSurface.exportName];
-  return JSON.stringify([
-    'preview-inspector-bundle-resolved-node',
-    1,
-    normalizedSourcePath,
-    slicedSurface === undefined || authenticSourcePaths.has(normalizedSourcePath)
-      ? 'authentic-inventory'
-      : 'slice-inventory',
-    representation,
-  ]);
-}
-/** Identifies only representation choices needed to coalesce identical pending rooted work. */
-function createResolvedNodeRepresentationContextKey(
-  options: PreparePreviewInspectorBundleFrontierOptions,
-  authenticSourcePaths: ReadonlySet<string>,
-): string {
-  const sourcePaths = new Set(authenticSourcePaths);
-  for (const surface of options.executionCandidate?.criticalSurfaces ?? [])
-    sourcePaths.add(path.normalize(surface.sourcePath));
-  return JSON.stringify(
-    [...sourcePaths]
-      .sort()
-      .map((sourcePath) => [
-        sourcePath,
-        createResolvedNodeRepresentationKey(options, authenticSourcePaths, sourcePath),
-      ]),
-  );
-}
-/** Builds one deeply frozen structural-failure node without retaining an error. */
-function createResolvedNodeFailure(
-  sourcePath: string,
-  representationKey: string,
-  failure: PreviewInspectorBundleResolvedNodeFailure,
-): PreviewInspectorBundleResolvedSourceNode {
-  return Object.freeze({
-    byteLength: 0,
-    edges: Object.freeze([]),
-    failure,
-    representationKey,
-    sourcePath,
-    staticEdges: Object.freeze([]),
-  });
-}
-
-/** Identifies one source-ordered runtime edge independently of route selection. */
-function createRuntimeEdgeIdentity(
-  sourcePath: string,
-  edge: PreviewInspectorRuntimeImportEdge,
-): string {
-  return `${sourcePath}\0${edge.occurrenceStart.toString()}\0${edge.moduleSpecifier}`;
-}
-/** Collects sources already guaranteed to be evaluated as full authored modules. */
-function collectAuthenticInventorySourcePaths(
-  options: PreparePreviewInspectorBundleFrontierOptions,
-): ReadonlySet<string> {
-  const sourcePaths = new Set(
-    (options.runtimeCompanionSourcePaths ?? []).map((sourcePath) => path.normalize(sourcePath)),
-  );
-  for (const surface of options.executionCandidate?.criticalSurfaces ?? []) {
-    if (!isVirtualSliceSurface(surface)) sourcePaths.add(path.normalize(surface.sourcePath));
-  }
-  for (const surface of options.executionCandidate?.optionalSurfaces ?? []) {
-    sourcePaths.add(path.normalize(surface.sourcePath));
-  }
-  return sourcePaths;
-}
-
-/** Requires existing one-hop render evidence before a dynamic import can enter a v2 slice. */
-function isSelectedDynamicVisualPath(
-  plan: PreviewInspectorAncestorPlan,
-  importerPath: string,
-  sourcePath: string,
-): boolean {
-  return (plan.shallowVisualPaths ?? []).some(
-    (visualPath) =>
-      path.normalize(visualPath.importerPath) === path.normalize(importerPath) &&
-      path.normalize(visualPath.sourcePath) === path.normalize(sourcePath) &&
-      visualPath.relation !== 'route-alternative',
-  );
-}
-
-/** Excludes a dynamically imported page that the analyzer proved belongs to another route. */
-function isRouteAlternativeVisualPath(
-  plan: PreviewInspectorAncestorPlan,
-  importerPath: string,
-  sourcePath: string,
-): boolean {
-  return (plan.shallowVisualPaths ?? []).some(
-    (visualPath) =>
-      path.normalize(visualPath.importerPath) === path.normalize(importerPath) &&
-      path.normalize(visualPath.sourcePath) === path.normalize(sourcePath) &&
-      visualPath.relation === 'route-alternative',
-  );
-}
-/** Promotes proven JSX children of an exact render root when broad plan evidence omits them. */
-async function collectExactVisualAdmissions(
-  reference: { readonly exportName: string; readonly sourcePath: string },
-  optionalExportsByPath: Map<string, Set<string>>,
-  optionalIdentities: Set<string>,
-  pending: FrontierSourceQueueItem[],
-  readSource: (sourcePath: string) => Promise<string | undefined>,
-  resolveModule: (specifier: string, importer: string) => string | undefined,
-  checkAuthoredPath: (sourcePath: string) => boolean,
-  edgeKind: 'static' | 'dynamic-import' = 'static',
-  queueKind: Extract<
-    FrontierSourceQueueItem['kind'],
-    'optional-component' | 'page-shell-component' | 'target-component'
-  > = 'optional-component',
-  plan?: PreviewInspectorAncestorPlan,
-): Promise<void> {
-  const importerPath = path.normalize(reference.sourcePath);
-  const sourceText = await readSource(importerPath);
-  if (sourceText === undefined) return;
-  const inventory = collectPreviewInspectorRuntimeImportInventory(importerPath, sourceText);
-  const projections = collectPreviewInspectorShallowProjectionInventory(
-    importerPath,
-    sourceText,
-    new Set([reference.exportName]),
-  );
-  if (projections.truncated) return;
-  const pageShellRouteOnlySpecifiers =
-    queueKind === 'page-shell-component' && edgeKind === 'static'
-      ? collectPreviewStaticRouteProjectionInventory(importerPath, sourceText)
-          .projectionsBySpecifier
-      : undefined;
-  const pageShellDynamicInventory =
-    queueKind === 'page-shell-component' && edgeKind === 'dynamic-import'
-      ? collectPreviewDynamicImportInventory(importerPath, sourceText)
-      : undefined;
-  const hasExactPageShellDynamicVisualEvidence =
-    pageShellDynamicInventory !== undefined &&
-    plan?.shallowVisualPaths?.some(
-      (visualPath) =>
-        path.normalize(visualPath.importerPath) === importerPath &&
-        visualPath.importKind === 'react-lazy' &&
-        visualPath.relation !== 'route-alternative',
-    ) === true;
-  const hasBroadPageShellDynamicRegistry =
-    pageShellDynamicInventory !== undefined &&
-    (!pageShellDynamicInventory.reliable ||
-      pageShellDynamicInventory.truncated ||
-      pageShellDynamicInventory.specifiers.length > MAXIMUM_SMALL_PAGE_SHELL_DYNAMIC_IMPORTS);
-  for (const projection of projections.projectionsBySpecifier.values()) {
-    if (pageShellRouteOnlySpecifiers?.has(projection.moduleSpecifier) === true) continue;
-    const importEdge = inventory.find(
-      (edge) =>
-        (edgeKind === 'dynamic-import'
-          ? edge.kind === 'dynamic-import'
-          : edge.kind !== 'dynamic-import') && edge.moduleSpecifier === projection.moduleSpecifier,
-    );
-    if (importEdge === undefined) continue;
-    const resolved = resolveModule(projection.moduleSpecifier, importerPath);
-    if (resolved === undefined || !checkAuthoredPath(resolved)) continue;
-    const sourcePath = path.normalize(resolved);
-    if (
-      hasExactPageShellDynamicVisualEvidence &&
-      (plan === undefined || !isSelectedDynamicVisualPath(plan, importerPath, sourcePath))
-    ) {
-      continue;
-    }
-    if (
-      queueKind === 'page-shell-component' &&
-      edgeKind === 'dynamic-import' &&
-      plan !== undefined &&
-      isRouteAlternativeVisualPath(plan, importerPath, sourcePath)
-    ) {
-      continue;
-    }
-    if (
-      hasBroadPageShellDynamicRegistry &&
-      (plan === undefined || !isSelectedDynamicVisualPath(plan, importerPath, sourcePath))
-    ) {
-      continue;
-    }
-    const existingExports = optionalExportsByPath.get(sourcePath);
-    if (existingExports !== undefined) {
-      for (const exportName of projection.exportNames) existingExports.add(exportName);
-      promotePendingPreviewInspectorComponent(pending, sourcePath, queueKind);
-      continue;
-    }
-    const identity = `${sourcePath}\0${projection.exportNames.join('\0')}`;
-    const edge = Object.freeze({
-      exportNames: Object.freeze([...projection.exportNames]),
-      importerPath,
-      moduleSpecifier: projection.moduleSpecifier,
-      occurrenceStart: importEdge.occurrenceStart,
-      runtimeHookExportNames: Object.freeze([...projection.runtimeHookExportNames]),
-      targetPath: sourcePath,
-    });
-    if (optionalIdentities.has(identity)) continue;
-    optionalIdentities.add(identity);
-    optionalExportsByPath.set(sourcePath, new Set(projection.exportNames));
-    pending.push({
-      depth: 1,
-      kind: queueKind,
-      optionalEdge: edge,
-      sourcePath,
-    });
-  }
-}
-
-/** Raises an already-discovered visual root without duplicating its immutable incoming edge. */
-function promotePendingPreviewInspectorComponent(
-  pending: FrontierSourceQueueItem[],
-  sourcePath: string,
-  kind: Extract<
-    FrontierSourceQueueItem['kind'],
-    'optional-component' | 'page-shell-component' | 'target-component'
-  >,
-): void {
-  const index = pending.findIndex((item) => item.sourcePath === sourcePath);
-  const item = index < 0 ? undefined : pending[index];
-  if (item === undefined || queuePriority(item.kind) <= queuePriority(kind)) return;
-  pending[index] = { ...item, kind };
-}
-/** Lists only named exports the generated VirtualPage can mount or compose as authored roots. */
-function collectExactVisualRoots(
-  plan: PreviewInspectorAncestorPlan,
-): readonly { readonly exportName: string; readonly sourcePath: string }[] {
-  const roots = new Map<string, { readonly exportName: string; readonly sourcePath: string }>();
-  const add = (reference: { readonly exportName: string; readonly sourcePath: string }): void => {
-    roots.set(`${path.normalize(reference.sourcePath)}\0${reference.exportName}`, {
-      exportName: reference.exportName,
-      sourcePath: path.normalize(reference.sourcePath),
-    });
-  };
-  add(plan.target);
-  add(plan.root);
-  const active = plan.pageCandidates[0];
-  if (active !== undefined) {
-    add(active.root);
-    if (active.target !== undefined) add(active.target);
-    for (const edge of active.edges) {
-      add(edge.child);
-      add(edge.owner);
-    }
-  }
-  return [...roots.values()].sort(
-    (left, right) =>
-      left.sourcePath.localeCompare(right.sourcePath) ||
-      left.exportName.localeCompare(right.exportName),
-  );
-}
-/** Records only an incoming optional edge, never a partially admitted component. */
-function appendProjection(
-  projections: PreviewInspectorProjectedEdge[],
-  item: FrontierSourceQueueItem,
-  reason: PreviewInspectorProjectedEdge['reason'],
-): void {
-  if (item.optionalEdge !== undefined)
-    projections.push(Object.freeze({ ...item.optionalEdge, reason }));
-}
-/** Keeps exact closure ahead of optional transactions and preserves their source order. */
-function compareQueueItems(left: FrontierSourceQueueItem, right: FrontierSourceQueueItem): number {
-  return (
-    queuePriority(left.kind) - queuePriority(right.kind) ||
-    left.depth - right.depth ||
-    (left.optionalEdge?.importerPath ?? '').localeCompare(right.optionalEdge?.importerPath ?? '') ||
-    (left.optionalEdge?.occurrenceStart ?? 0) - (right.optionalEdge?.occurrenceStart ?? 0) ||
-    left.sourcePath.localeCompare(right.sourcePath)
-  );
-}
-/** Finishes mandatory exact closure before optional component transactions. */
-function queuePriority(kind: FrontierSourceQueueItem['kind']): number {
-  return kind === 'exact'
-    ? 0
-    : kind === 'target-component'
-      ? 1
-      : kind === 'page-shell-component'
-        ? 2
-        : kind === 'support'
-          ? 3
-          : 4;
-}
-/** Counts current optional support entries; exact sources are deliberately never charged to it. */
-function countKinds(kinds: ReadonlyMap<string, AdmittedKind>, kind: AdmittedKind): number {
-  return [...kinds.values()].filter((value) => value === kind).length;
-}
-/** Preserves visual relation ordering before stable source/export tie breakers. */
-function compareVisualPaths(
-  left: NonNullable<PreviewInspectorAncestorPlan['shallowVisualPaths']>[number],
-  right: NonNullable<PreviewInspectorAncestorPlan['shallowVisualPaths']>[number],
-): number {
-  return (
-    visualRelationPriority(left.relation) - visualRelationPriority(right.relation) ||
-    path.normalize(left.importerPath).localeCompare(path.normalize(right.importerPath)) ||
-    left.renderBoundaryStart - right.renderBoundaryStart ||
-    left.occurrenceStart - right.occurrenceStart ||
-    path.normalize(left.sourcePath).localeCompare(path.normalize(right.sourcePath)) ||
-    left.exportName.localeCompare(right.exportName)
-  );
-}
-/** Keeps owner/wrapper paths ahead of sibling and component-prop alternatives. */
-function visualRelationPriority(relation: string): number {
-  return relation === 'wrapper'
-    ? 0
-    : relation === 'sibling'
-      ? 1
-      : relation === 'component-prop'
-        ? 2
-        : 3;
-}
-/** Sorts public projection records independently of source read or resolver completion timing. */
-function compareProjectedEdges(
-  left: PreviewInspectorProjectedEdge,
-  right: PreviewInspectorProjectedEdge,
-): number {
-  return (
-    left.importerPath.localeCompare(right.importerPath) ||
-    left.occurrenceStart - right.occurrenceStart ||
-    left.moduleSpecifier.localeCompare(right.moduleSpecifier)
-  );
-}
-/** Selects only active structured Inspector evidence as exact authored seeds. */
-function collectExactSeedPaths(
-  plan: PreviewInspectorAncestorPlan,
-  executionCandidate: PreviewInspectorPageExecutionCandidate | undefined,
-): readonly string[] {
-  if (executionCandidate !== undefined) {
-    return [
-      ...new Set([
-        ...executionCandidate.criticalSurfaces.map((surface) => path.normalize(surface.sourcePath)),
-        ...collectPreviewInspectorExecutionCorridorSeedPaths(plan, executionCandidate),
-      ]),
-    ].sort();
-  }
-  const active = plan.pageCandidates[0];
-  const paths = new Set<string>([plan.target.sourcePath, plan.root.sourcePath]);
-  const addReference = (reference: { readonly sourcePath: string } | undefined): void => {
-    if (reference !== undefined) paths.add(reference.sourcePath);
-  };
-  if (active !== undefined) {
-    addReference(active.root);
-    addReference(active.target);
-    for (const edge of active.edges) {
-      addReference(edge.child);
-      addReference(edge.owner);
-    }
-    /* TODO(plan7 Phase 7/8): replace this broad compatibility inventory with the selected Page
-     * Execution Candidate's critical and admitted optional surfaces. Until composition surfaces
-     * are wired into the root plugin, retaining it keeps strict metafile membership sound. */
-    for (const step of active.renderPath?.steps.slice(active.rootStepIndex ?? 0) ?? []) {
-      paths.add(step.sourcePath);
-      for (const evidencePath of step.evidenceSourcePaths ?? []) paths.add(evidencePath);
-    }
-    if (active.routeLocation !== undefined && 'routeMounts' in active.routeLocation) {
-      for (const mount of active.routeLocation.routeMounts ?? []) paths.add(mount.sourcePath);
-    }
-    for (const layout of active.nextAppLayoutChain ?? []) paths.add(layout.sourcePath);
-    addReference(active.nextPagesShell?.app);
-    for (const contextPath of active.contextModule?.importPath ?? []) paths.add(contextPath);
-  }
-  for (const edge of plan.edges) {
-    addReference(edge.child);
-    addReference(edge.owner);
-  }
-  for (const contextPath of plan.contextModule?.importPath ?? []) paths.add(contextPath);
-  return [...paths].map((sourcePath) => path.normalize(sourcePath)).sort();
-}
-
-/**
- * Retains the selected lazy/HOC descent between a generated page root and the current-file target.
- *
- * Page Execution surfaces describe the mount topology, but an authentic route owner can still
- * reach its selected descendant through a barrel, React.lazy import, permission HOC, and ordinary
- * component parents. Those modules are compiler-proven by the same selected render path and must
- * remain authentic frontier members; otherwise broad-registry pruning replaces the lazy page and
- * the authored owner legitimately falls through without ever invoking the target. Steps above
- * the chosen execution root remain excluded so application entry and unrelated outer routes do
- * not expand the bounded execution slice.
- */
-function collectPreviewInspectorExecutionCorridorSeedPaths(
-  plan: PreviewInspectorAncestorPlan,
-  executionCandidate: PreviewInspectorPageExecutionCandidate,
-): readonly string[] {
-  const plannedPageCandidate = plan.pageCandidates.find(
-    (candidate) => candidate.id === executionCandidate.browserCandidate.id,
-  );
-  const executionPageCandidate = executionCandidate.browserCandidate;
-  const executionRootSurface = executionCandidate.criticalSurfaces.find(
-    (surface) => surface.id === executionCandidate.executionRootSurfaceId,
-  );
-  const executionRootPath = executionRootSurface?.sourcePath;
-  const normalizedExecutionRootPath =
-    executionRootPath === undefined ? undefined : path.normalize(executionRootPath);
-  const executionPageRootMatchesSurface =
-    normalizedExecutionRootPath !== undefined &&
-    executionPageCandidate.renderPath !== undefined &&
-    path.normalize(executionPageCandidate.root.sourcePath) === normalizedExecutionRootPath &&
-    executionPageCandidate.root.exportName === executionRootSurface?.exportName;
-  const plannedPageRootMatchesSurface =
-    normalizedExecutionRootPath !== undefined &&
-    plannedPageCandidate !== undefined &&
-    path.normalize(plannedPageCandidate.root.sourcePath) === normalizedExecutionRootPath &&
-    plannedPageCandidate.root.exportName === executionRootSurface?.exportName;
-  // Page Execution can pin a selected route to an authentic owner shell after the executable
-  // plan was narrowed. Prefer that compiler-owned root/render path so checkpoint recovery follows
-  // the component that esbuild will actually mount; the candidate id and proven-path filter below
-  // still prevent unrelated analysis paths from entering the exact frontier.
-  const pageCandidate =
-    plannedPageCandidate?.id === executionPageCandidate.id &&
-    executionPageCandidate.renderPath !== undefined &&
-    executionPageCandidate.stopReason === 'render-path-checkpoint' &&
-    executionPageRootMatchesSurface &&
-    !plannedPageRootMatchesSurface
-      ? executionPageCandidate
-      : plannedPageCandidate;
-  const rootStepIndex = pageCandidate?.rootStepIndex;
-  const steps = pageCandidate?.renderPath?.steps;
-  if (steps === undefined) return Object.freeze([]);
-  const safeRootStepIndex =
-    typeof rootStepIndex === 'number' &&
-    Number.isSafeInteger(rootStepIndex) &&
-    rootStepIndex >= 0 &&
-    rootStepIndex < steps.length
-      ? rootStepIndex
-      : -1;
-  const hasValidRootStepIndex = safeRootStepIndex >= 0;
-  const provenPaths = new Set(
-    executionCandidate.evidenceSourcePaths.map((sourcePath) => path.normalize(sourcePath)),
-  );
-  const candidateRootPath = pageCandidate?.root.sourcePath;
-  const normalizedCandidateRootPath =
-    candidateRootPath === undefined ? undefined : path.normalize(candidateRootPath);
-  const executionRootStepIndex =
-    normalizedExecutionRootPath === undefined
-      ? -1
-      : steps.findIndex(
-          (step, index) =>
-            index >= (hasValidRootStepIndex ? safeRootStepIndex : 0) &&
-            path.normalize(step.sourcePath) === normalizedExecutionRootPath,
-        );
-  const findExactReferenceStepIndex = (reference: {
-    readonly exportName: string;
-    readonly sourcePath: string;
-  }): number =>
-    steps.findIndex(
-      (step) =>
-        path.normalize(step.sourcePath) === path.normalize(reference.sourcePath) &&
-        (step.label === reference.exportName ||
-          (reference.exportName === 'default' && step.label === '@default')),
-    );
-  // Route-leaf and pinned-browser candidates intentionally omit rootStepIndex. Recover an exact
-  // checkpoint whose candidate root is also the admitted execution root; other missing-index
-  // shapes remain fail-closed unless selected-route evidence below proves the whole corridor.
-  const canRecoverCheckpointRoot =
-    !hasValidRootStepIndex &&
-    pageCandidate?.stopReason === 'render-path-checkpoint' &&
-    normalizedCandidateRootPath !== undefined &&
-    normalizedCandidateRootPath === normalizedExecutionRootPath &&
-    pageCandidate.root.exportName === executionRootSurface?.exportName;
-  const routeLocation = pageCandidate?.routeLocation;
-  const routeTarget = pageCandidate?.target;
-  const routeComponentSourcePath =
-    routeLocation !== undefined && 'componentSourcePath' in routeLocation
-      ? routeLocation.componentSourcePath
-      : undefined;
-  const routeComponentExportName =
-    routeLocation !== undefined && 'componentExportName' in routeLocation
-      ? routeLocation.componentExportName
-      : undefined;
-  const routeOwnerMatchesExecutionRoot =
-    routeLocation !== undefined &&
-    normalizedExecutionRootPath !== undefined &&
-    path.normalize(routeLocation.sourcePath) === normalizedExecutionRootPath;
-  const routeTargetMatchesLocation =
-    routeComponentSourcePath !== undefined &&
-    routeTarget !== undefined &&
-    path.normalize(routeComponentSourcePath) === path.normalize(routeTarget.sourcePath) &&
-    (routeComponentExportName ?? 'default') === routeTarget.exportName;
-  const analysisTargetStepIndex = findExactReferenceStepIndex(plan.target);
-  const candidateRootStepIndex =
-    pageCandidate === undefined ? -1 : findExactReferenceStepIndex(pageCandidate.root);
-  const routeTargetStepIndex =
-    routeTarget === undefined ? -1 : findExactReferenceStepIndex(routeTarget);
-  const exactExecutionRootStepIndex =
-    executionRootSurface === undefined ? -1 : findExactReferenceStepIndex(executionRootSurface);
-  const selectedRouteCorridorIsProven =
-    analysisTargetStepIndex >= 0 &&
-    exactExecutionRootStepIndex >= analysisTargetStepIndex &&
-    steps
-      .slice(analysisTargetStepIndex, exactExecutionRootStepIndex + 1)
-      .every((step) => provenPaths.has(path.normalize(step.sourcePath)));
-  // Expanding a statically selected route intentionally replaces the browser candidate target
-  // with its barrel export and omits rootStepIndex. Admit that shape only when the exact ordered
-  // target -> page root -> route export -> route owner chain is present in the selected path.
-  const canRecoverSelectedRouteRoot =
-    !hasValidRootStepIndex &&
-    pageCandidate?.stopReason === 'root-reached' &&
-    routeOwnerMatchesExecutionRoot &&
-    routeTargetMatchesLocation &&
-    selectedRouteCorridorIsProven &&
-    analysisTargetStepIndex >= 0 &&
-    candidateRootStepIndex >= analysisTargetStepIndex &&
-    routeTargetStepIndex >= candidateRootStepIndex &&
-    exactExecutionRootStepIndex >= routeTargetStepIndex;
-  if (
-    !hasValidRootStepIndex &&
-    ((!canRecoverCheckpointRoot && !canRecoverSelectedRouteRoot) || executionRootStepIndex < 0)
-  ) {
-    return Object.freeze([]);
-  }
-  const corridorEndStepIndex = Math.max(safeRootStepIndex, executionRootStepIndex);
-  const corridorPaths = new Set<string>();
-  for (const step of steps.slice(0, corridorEndStepIndex + 1)) {
-    for (const sourcePath of [step.sourcePath, ...(step.evidenceSourcePaths ?? [])]) {
-      const normalizedPath = path.normalize(sourcePath);
-      if (provenPaths.has(normalizedPath)) corridorPaths.add(normalizedPath);
-    }
-  }
-  return Object.freeze([...corridorPaths].sort());
-}
-
-/** Excludes installed dependencies and non-source resources from authored graph accounting. */
-function isAuthoredPath(workspaceRoot: string, sourcePath: string): boolean {
-  const relative = path.relative(path.normalize(workspaceRoot), path.normalize(sourcePath));
-  return (
-    relative.length > 0 &&
-    !relative.startsWith(`..${path.sep}`) &&
-    relative !== '..' &&
-    !relative.split(path.sep).includes('node_modules') &&
-    SOURCE_MODULE_PATTERN.test(sourcePath)
-  );
-}
-/** Normalizes package subpaths so each package consumes one demand identity. */
-function normalizeBarePackageSpecifier(specifier: string): string | undefined {
-  if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:'))
-    return undefined;
-  const parts = specifier.split('/');
-  return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
 }

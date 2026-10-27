@@ -169,7 +169,7 @@ function isTraversableRouteDirectory(directoryName: string): boolean {
 
 /** Segment-aware containment prevents sibling path prefixes from entering the route inventory. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (!relativePath.startsWith(`..${path.sep}`) &&

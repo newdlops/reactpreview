@@ -78,18 +78,26 @@ describe('runtime instrumentation probe reuse', () => {
     }
   });
 
-  it('bounds retained entries and recomputes an evicted source', () => {
+  it('retains a 455-source working set and recomputes entries evicted at 512', () => {
     const probe = vi.spyOn(deferred, 'instrumentPreviewDeferredUiTriggers');
     const path = '/cache/evicted.tsx';
     instrumentation.mayRequirePreviewRuntimeSourceInstrumentation(path, plainSource);
-    for (let index = 0; index < 128; index += 1) {
+    for (let index = 0; index < 454; index += 1) {
       instrumentation.mayRequirePreviewRuntimeSourceInstrumentation(
         '/cache/entry-' + String(index) + '.tsx',
         plainSource,
       );
     }
     instrumentation.mayRequirePreviewRuntimeSourceInstrumentation(path, plainSource);
-    expect(probe).toHaveBeenCalledTimes(130);
+    expect(probe).toHaveBeenCalledTimes(455);
+    for (let index = 454; index < 512; index += 1) {
+      instrumentation.mayRequirePreviewRuntimeSourceInstrumentation(
+        '/cache/entry-' + String(index) + '.tsx',
+        plainSource,
+      );
+    }
+    instrumentation.mayRequirePreviewRuntimeSourceInstrumentation(path, plainSource);
+    expect(probe).toHaveBeenCalledTimes(514);
   });
 
   it('bounds retained source bytes independently from the entry limit', () => {

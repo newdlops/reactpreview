@@ -1,5 +1,5 @@
 /** Verifies unbuilt linked workspace packages recover from exact authored-source evidence. */
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -8,7 +8,75 @@ import { describe, expect, it, vi } from 'vitest';
 import { createPreviewWorkspacePackageSourceFallbackPlugin } from '../../../src/adapters/esbuild/previewWorkspacePackageSourceFallback';
 import { canonicalizeExistingPath } from '../../../src/shared/pathIdentity';
 
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, lstat: vi.fn(actual.lstat) };
+});
+
 describe('createPreviewWorkspacePackageSourceFallbackPlugin', () => {
+  /** Sibling issuers share parent proof, but a changed link must be checked on the next build. */
+  it('reuses exact parent lookups and rejects a retargeted outside link on rebuild', async () => {
+    const fixture = await createWorkspaceFixture('shared-parent');
+    const external = await createWorkspaceFixture('shared-parent');
+    try {
+      const manifest = {
+        name: 'shared-parent',
+        exports: './dist/index.js',
+        scripts: { build: 'tsup' },
+      };
+      await writePackageManifest(fixture.packageRoot, manifest);
+      await writePackageManifest(external.packageRoot, manifest);
+      await writeSource(fixture.packageRoot, 'src/index.ts', "export const answer = 'inside';");
+      await writeSource(external.packageRoot, 'src/index.ts', "export const answer = 'outside';");
+      const directory = path.dirname(fixture.entryPath);
+      await mkdir(path.join(directory, 'nested'), { recursive: true });
+      await writeFile(
+        path.join(directory, 'first.ts'),
+        "export { answer as first } from 'shared-parent';",
+      );
+      await writeFile(
+        path.join(directory, 'nested/second.ts'),
+        "export { answer as second } from 'shared-parent';",
+      );
+      await writeEntry(
+        fixture.entryPath,
+        "import { first } from './first'; import { second } from './nested/second'; console.log(first, second);",
+      );
+      const plugin = createPreviewWorkspacePackageSourceFallbackPlugin({
+        workspaceRoot: fixture.workspaceRoot,
+      });
+      vi.mocked(lstat).mockClear();
+      const result = await buildFixture(fixture, plugin);
+      const log = vi.fn();
+      vm.runInNewContext(result.outputFiles?.[0]?.text ?? '', { console: { log } });
+      expect(log).toHaveBeenCalledWith('inside', 'inside');
+      const lookupPath = path.join(
+        canonicalizeExistingPath(path.dirname(fixture.logicalPackageRoot)),
+        path.basename(fixture.logicalPackageRoot),
+      );
+      expect(vi.mocked(lstat).mock.calls.filter(([file]) => file === lookupPath)).toHaveLength(1);
+
+      const nearestRoot = path.join(fixture.workspaceRoot, 'packages', 'nearest');
+      await writePackageManifest(nearestRoot, manifest);
+      await writeSource(nearestRoot, 'src/index.ts', "export const answer = 'nearest';");
+      const nearestLink = path.join(directory, 'nested/node_modules/shared-parent');
+      await mkdir(path.dirname(nearestLink), { recursive: true });
+      await symlink(nearestRoot, nearestLink);
+      const shadowed = await buildFixture(fixture, plugin);
+      log.mockClear();
+      vm.runInNewContext(shadowed.outputFiles?.[0]?.text ?? '', { console: { log } });
+      expect(log).toHaveBeenCalledWith('inside', 'nearest');
+
+      await rename(fixture.logicalPackageRoot, fixture.logicalPackageRoot + '.previous');
+      await symlink(external.packageRoot, fixture.logicalPackageRoot);
+      await expect(buildFixture(fixture, plugin)).rejects.toThrow(
+        'Could not resolve "shared-parent"',
+      );
+    } finally {
+      await Promise.all([fixture.dispose(), external.dispose()]);
+    }
+  });
+
   /** Resolves one exact missing dist export from a symlinked monorepo package's source entry. */
   it('uses source for an unbuilt linked workspace package subpath', async () => {
     const fixture = await createWorkspaceFixture('@scope/toolkit');

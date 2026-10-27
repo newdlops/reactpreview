@@ -14,7 +14,7 @@ function findElement(root: unknown, type: string): TestElement | undefined {
   if (root === null || typeof root !== 'object') return undefined;
   const element = root as TestElement;
   if (element.type === type) return element;
-  for (const child of element.children ?? []) {
+  for (const child of element.children) {
     if (Array.isArray(child)) {
       for (const nested of child) {
         const found = findElement(nested, type);

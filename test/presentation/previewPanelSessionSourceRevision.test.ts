@@ -414,26 +414,38 @@ describe('PreviewPanelSession displayed Inspector revision', () => {
     fixture.session.dispose();
   });
 
-  /** Rebuilding identical bytes changes host progress only, not the revision embedded in Chromium. */
-  it('retains the actual browser revision across a same-hash rebuild', async () => {
+  /** A new input frontier must reach the browser even when compilation emits identical bytes. */
+  it('refreshes a same-hash page context while retaining the displayed revision until acknowledgement', async () => {
     const fixture = createFixture(
       vi.fn<PreviewBuildService['execute']>(() =>
         Promise.resolve(createPreparedPreview('unchanged')),
       ),
     );
     await startReadyInitialRuntime(fixture, 'unchanged');
+    const previousFrontier = /data-react-preview-page-context-frontier-id="([^"]+)"/u.exec(
+      fixture.panel.webview.html,
+    )?.[1];
+    expect(previousFrontier).toBeTruthy();
     fixture.session.refresh();
     await settleAsyncWork();
 
-    expect(fixture.panel.hotReloadMessages).toHaveLength(0);
+    expect(fixture.panel.hotReloadMessages).toHaveLength(1);
+    expect(fixture.panel.hotReloadMessages[0]?.pageContextFrontierId).toEqual(expect.any(String));
+    expect(fixture.panel.hotReloadMessages[0]?.pageContextFrontierId).not.toBe(previousFrontier);
+    expect(fixture.releaseArtifact).not.toHaveBeenCalled();
     fixture.panel.emitMessage(createSelectionMessage(1, 1));
     fixture.panel.emitMessage(createSelectionMessage(2, 2));
+    fixture.panel.emitMessage(createHotReloadAcknowledgement(fixture.panel, true));
+    fixture.panel.emitMessage(createSelectionMessage(2, 3));
+    expect(fixture.releaseArtifact).toHaveBeenCalledExactlyOnceWith('unchanged');
 
     expect(decorationState.observations).toEqual([
       { accepted: true, displayedRevision: 1, requestRevision: 1 },
       { accepted: false, displayedRevision: 1, requestRevision: 2 },
+      { accepted: true, displayedRevision: 2, requestRevision: 2 },
     ]);
     fixture.session.dispose();
+    expect(fixture.releaseArtifact).toHaveBeenCalledTimes(2);
   });
 
   /** Carries a current browser route choice into only this pinned panel's next immutable request. */
@@ -470,6 +482,7 @@ describe('PreviewPanelSession displayed Inspector revision', () => {
 /** Observable collaborators returned for one real panel-session fixture. */
 interface RevisionFixture {
   readonly panel: RevisionPanel;
+  readonly releaseArtifact: ReturnType<typeof vi.fn>;
   readonly session: PreviewPanelSession;
 }
 
@@ -477,10 +490,11 @@ interface RevisionFixture {
 function createFixture(execute: ReturnType<typeof vi.fn>): RevisionFixture {
   const target = createTarget('/workspace/src/SelectedCard.tsx');
   const panel = new RevisionPanel();
+  const releaseArtifact = vi.fn(() => Promise.resolve());
   const session = new PreviewPanelSession({
     buildPreview: {
       execute: execute as PreviewBuildService['execute'],
-      releaseArtifact: vi.fn(() => Promise.resolve()),
+      releaseArtifact,
     },
     callbacks: { onDidDispose: vi.fn(), onDidFocus: vi.fn() },
     initialTarget: target,
@@ -489,7 +503,7 @@ function createFixture(execute: ReturnType<typeof vi.fn>): RevisionFixture {
     renderMode: 'page-inspector',
     resolveTarget: vi.fn(() => Promise.resolve(target)),
   });
-  return { panel, session };
+  return { panel, releaseArtifact, session };
 }
 
 /** Creates one immutable source target used by every revision in this suite. */

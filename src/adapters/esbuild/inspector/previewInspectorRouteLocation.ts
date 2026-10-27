@@ -1,16 +1,6 @@
-/**
- * Infers a safe browser location for one statically proven Page Inspector render path.
- *
- * A detached application shell mounted under MemoryRouter at `/` often renders its login, error,
- * or index branch even though the target page is present deeper in that shell. This analyzer reads
- * only authored syntax and route-catalog JSON; it never imports a router, executes configuration,
- * or starts the application. Dynamic parameters receive deterministic constraint-compatible
- * preview values.
- */
+/** Coordinates RouteLocation using bounded authored-source evidence. */
 import path from 'node:path';
 import ts from 'typescript';
-import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
-import { collectPreviewRenderModuleFacts } from '../renderGraph/previewRenderModuleFacts';
 import {
   collectPreviewInspectorDirectRouteChoices,
   collectPreviewInspectorDirectRouteChoicesFromSource,
@@ -21,36 +11,61 @@ import {
   resolvePreviewInspectorDirectRouteChoices,
   type PreviewInspectorDirectRouteResolution,
 } from './previewInspectorDirectRouteResolution';
-import { referencesPreviewInspectorDirectRouteTarget } from './previewInspectorDirectRouteTargetReference';
-import {
-  collectPreviewInspectorDirectRouteRegistrySources,
-  isPreviewInspectorRouteRegistrySource,
-} from './previewInspectorRoutePathMetadata';
+import { retainPreviewInspectorNestedRouteOwnerContext } from './previewInspectorNestedRouteOwnerContext';
+import { createPreviewInspectorEarlyReturnRoutePenalty } from './previewInspectorRouteEarlyReturn';
 import { collectPreviewInspectorRouteFactoryEvidence } from './previewInspectorRouteFactory';
-import { collectPreviewInspectorRouteFactoryManifest } from './previewInspectorRouteFactoryManifest';
 import {
   collectPreviewInspectorRouteFactoryChoices,
   type PreviewInspectorRouteFactoryOwnerEvidence,
 } from './previewInspectorRouteFactoryChoices';
-import { retainPreviewInspectorNestedRouteOwnerContext } from './previewInspectorNestedRouteOwnerContext';
-import { createPreviewInspectorEarlyReturnRoutePenalty } from './previewInspectorRouteEarlyReturn';
+import { collectPreviewInspectorRouteFactoryManifest } from './previewInspectorRouteFactoryManifest';
 import {
-  addPreviewInspectorSupportingRoutePattern as addSupportingRoutePattern,
-  isPreviewInspectorRootWildcardRoutePattern as isRootWildcardRoutePattern,
-  joinPreviewInspectorRouteSegments as joinRouteSegments,
-  materializePreviewInspectorRoutePattern as materializeRoutePattern,
-  normalizePreviewInspectorRoutePattern as normalizeRoutePattern,
-} from './previewInspectorRoutePattern';
+  addRouteCandidate,
+  collectJsonCatalogCandidates,
+  collectJsonCatalogSpecifiers,
+  collectSourceRouteCandidates,
+  compareRouteCandidates,
+  compareRouteRegistryPaths,
+  normalizeComponentIdentity,
+  readCachedSource,
+  resolveRouteCatalogPath,
+} from './previewInspectorRouteLocationEvidence';
 import {
   collectPreviewInspectorRenderPathSourcePaths as collectRenderPathSourcePaths,
   createPreviewInspectorFactoryUnresolvedOccurrenceIdentity as createFactoryUnresolvedOccurrenceIdentity,
 } from './previewInspectorRouteLocationIdentity';
+import {
+  DIRECT_ROUTE_OCCURRENCE_EVIDENCE_BONUS,
+  MAX_CONTEXTUAL_FACTORY_MANIFESTS,
+  MAX_ROUTE_CANDIDATES,
+  MAX_ROUTE_CATALOGS,
+  MAX_ROUTE_REGISTRY_SOURCES,
+  type DuplicateDirectRouteChoice,
+  type ResolvedDirectRouteChoice,
+  type RouteLocationCandidate,
+} from './previewInspectorRouteLocationModel';
+import {
+  collectSelectedTargetIdentities,
+  collectTargetIdentities,
+  referencesDirectRouteTarget,
+  retargetTransparentRouteComponentLocation,
+} from './previewInspectorRouteLocationTargets';
 import type {
   CollectPreviewInspectorRouteLocationOptions,
   PreviewInspectorRouteElementWrapperEvidence,
   PreviewInspectorRouteLocation,
   PreviewInspectorRouteLocationInventory,
 } from './previewInspectorRouteLocationTypes';
+import {
+  collectPreviewInspectorDirectRouteRegistrySources,
+  isPreviewInspectorRouteRegistrySource,
+} from './previewInspectorRoutePathMetadata';
+import {
+  addPreviewInspectorSupportingRoutePattern as addSupportingRoutePattern,
+  materializePreviewInspectorRoutePattern as materializeRoutePattern,
+  normalizePreviewInspectorRoutePattern,
+} from './previewInspectorRoutePattern';
+
 export type {
   CollectPreviewInspectorRouteLocationOptions,
   PreviewInspectorRouteElementWrapperEvidence,
@@ -58,34 +73,6 @@ export type {
   PreviewInspectorRouteLocationInventory,
   PreviewInspectorRouteMountEvidence,
 } from './previewInspectorRouteLocationTypes';
-const MAX_ROUTE_REGISTRY_SOURCES = 48;
-const MAX_ROUTE_CATALOGS = 16;
-const MAX_CONTEXTUAL_FACTORY_MANIFESTS = 16;
-/*
- * Candidates are inert path/component records. The branch planner admits only one active choice to
- * the bundle corridor, so retaining a large application catalog here does not bundle every page.
- */
-const MAX_ROUTE_CANDIDATES = 4_096;
-const FACTORY_BASE_EVIDENCE_PENALTY = 25;
-const DIRECT_ROUTE_OCCURRENCE_EVIDENCE_BONUS = 30;
-const ROOT_WILDCARD_EVIDENCE_PENALTY = 100;
-const COMPONENT_IDENTITY_PATTERN = /^[$_\p{Lu}][$_\u200C\u200D\p{ID_Continue}]*$/u;
-interface RouteLocationCandidate extends Omit<PreviewInspectorRouteLocation, 'dependencyPaths'> {
-  readonly choiceOccurrenceIdentity?: string;
-  readonly dependencyPaths?: readonly string[];
-  readonly identityOrder: number;
-  readonly provenanceIdentity?: string;
-  readonly score: number;
-}
-interface ResolvedDirectRouteChoice {
-  readonly candidate: RouteLocationCandidate;
-  readonly choice: PreviewInspectorDirectRouteChoice;
-}
-interface DuplicateDirectRouteChoice extends ResolvedDirectRouteChoice {
-  readonly choice: PreviewInspectorDirectRouteChoice & {
-    readonly reference: PreviewInspectorDirectRouteComponentReference;
-  };
-}
 
 /**
  * Finds the most specific exact route for the selected component.
@@ -400,8 +387,17 @@ export async function collectPreviewInspectorRouteLocationInventory(
       options.renderChain,
     ),
   );
+  // Ancestor manifests locate a shared descendant, but do not declare this owner's children.
+  // Keep those entry choices only when the selected export has no authored router of its own;
+  // otherwise branch descent would join an ancestor's absolute path below the current child.
+  const contextualChoices =
+    factoryManifest !== undefined ||
+    factoryChoiceInventory.owner !== undefined ||
+    ownerDirectChoiceInventory.choices.length > 0
+      ? []
+      : contextualManifestLocations;
   const choices = Object.freeze(
-    [...manifestLocations, ...contextualManifestLocations, ...inferredChoices].filter(
+    [...manifestLocations, ...contextualChoices, ...inferredChoices].filter(
       (choice, index, values) =>
         values.findIndex(
           (other) =>
@@ -578,127 +574,6 @@ function createFactoryOwnerContextPattern(basePath: string): string {
   return `${normalized}/*`;
 }
 
-/** Chases an exact lazy/re-export corridor from any route barrel back to the selected file. */
-function retargetTransparentRouteComponentLocation(
-  location: PreviewInspectorRouteLocation,
-  documentPath: string,
-  exportName: string,
-  renderChain: CollectPreviewInspectorRouteLocationOptions['renderChain'],
-): PreviewInspectorRouteLocation {
-  const componentSourcePath = location.componentSourcePath;
-  if (componentSourcePath === undefined) return location;
-  const normalizedComponentPath = path.normalize(componentSourcePath);
-  const normalizedDocumentPath = path.normalize(documentPath);
-  if (normalizedComponentPath === normalizedDocumentPath) return location;
-  const proven = isTransparentRouteComponentCorridorProven(
-    normalizedComponentPath,
-    [location.componentName, location.componentExportName],
-    normalizedDocumentPath,
-    renderChain,
-  );
-  if (!proven) return location;
-  return Object.freeze({
-    ...location,
-    componentExportName: exportName,
-    componentSourcePath: normalizedDocumentPath,
-    dependencyPaths: Object.freeze(
-      [
-        ...new Set([...location.dependencyPaths, normalizedComponentPath, normalizedDocumentPath]),
-      ].sort(),
-    ),
-  });
-}
-
-/** Recognizes an exact route binding that reaches the selected file or one proven render ancestor. */
-function referencesDirectRouteTarget(
-  choice: PreviewInspectorDirectRouteChoice,
-  target: CollectPreviewInspectorRouteLocationOptions['renderChain']['target'],
-  renderChain: CollectPreviewInspectorRouteLocationOptions['renderChain'],
-): boolean {
-  if (referencesPreviewInspectorDirectRouteTarget(choice, target)) return true;
-  const components = [
-    { identities: [choice.componentName], reference: choice.reference },
-    ...(choice.elementPath ?? []).map((component) => ({
-      identities: [component.componentName],
-      reference: component.reference,
-    })),
-  ];
-  return components.some(({ identities, reference }) => {
-    if (reference === undefined) return false;
-    const componentIdentities = [...identities, reference.exportName];
-    return (
-      isTransparentRouteComponentCorridorProven(
-        reference.sourcePath,
-        componentIdentities,
-        target.sourcePath,
-        renderChain,
-      ) || isProvenTargetRenderAncestor(reference.sourcePath, componentIdentities, renderChain)
-    );
-  });
-}
-
-/**
- * Accepts an ordinary component Route only when that exact source and component identity occur on
- * a target-to-entry render path. This recovers routes such as `/project` for a modal leaf rendered
- * inside `Project` without admitting sibling or catch-all route components from the same router.
- */
-function isProvenTargetRenderAncestor(
-  componentSourcePath: string,
-  componentIdentities: readonly (string | undefined)[],
-  renderChain: CollectPreviewInspectorRouteLocationOptions['renderChain'],
-): boolean {
-  const normalizedSourcePath = path.normalize(componentSourcePath);
-  const identities = new Set(
-    componentIdentities.flatMap((identity) => {
-      const normalized = normalizeComponentIdentity(identity);
-      return normalized === undefined ? [] : [normalized];
-    }),
-  );
-  if (identities.size === 0) return false;
-  return renderChain.paths.some((renderPath) =>
-    renderPath.steps.some(
-      (step) =>
-        path.normalize(step.sourcePath) === normalizedSourcePath &&
-        identities.has(normalizeComponentIdentity(step.label) ?? ''),
-    ),
-  );
-}
-
-/** Proves target-to-route continuity without treating an ordinary component owner as transparent. */
-function isTransparentRouteComponentCorridorProven(
-  componentSourcePath: string,
-  componentIdentities: readonly (string | undefined)[],
-  documentPath: string,
-  renderChain: CollectPreviewInspectorRouteLocationOptions['renderChain'],
-): boolean {
-  const normalizedComponentPath = path.normalize(componentSourcePath);
-  const normalizedDocumentPath = path.normalize(documentPath);
-  const identities = new Set(
-    componentIdentities.flatMap((identity) => {
-      const normalized = normalizeComponentIdentity(identity);
-      return normalized === undefined ? [] : [normalized];
-    }),
-  );
-  if (identities.size === 0) return false;
-  return renderChain.paths.some((renderPath) => {
-    const targetIndex = renderPath.steps.findIndex(
-      (step) => path.normalize(step.sourcePath) === normalizedDocumentPath,
-    );
-    if (targetIndex < 0) return false;
-    const componentIndex = renderPath.steps.findIndex(
-      (step, index) =>
-        index > targetIndex &&
-        path.normalize(step.sourcePath) === normalizedComponentPath &&
-        identities.has(normalizeComponentIdentity(step.label) ?? ''),
-    );
-    return (
-      componentIndex > targetIndex &&
-      renderPath.steps
-        .slice(targetIndex, componentIndex)
-        .every((step) => step.kind === 'react-lazy' || step.kind === 're-export')
-    );
-  });
-}
 /** Converts occurrence-bound direct evidence into the shared deterministic ranking model. */
 function materializeDirectRouteResolution(
   resolution: PreviewInspectorDirectRouteResolution,
@@ -841,6 +716,18 @@ function freezeRouteLocation(
             routeMounts: Object.freeze([
               Object.freeze({
                 basePath: factoryOwner.basePath,
+                // An unresolved page map still leaves this exact factory owner's relative Routes
+                // proven. Keep its outer Router context so the authored map can choose the page.
+                ...(candidate.componentName === factoryOwner.exportName &&
+                path.normalize(candidate.sourcePath) === path.normalize(factoryOwner.sourcePath) &&
+                candidate.pattern ===
+                  normalizePreviewInspectorRoutePattern(factoryOwner.basePath) &&
+                factoryOwner.routeSlotCount > 0
+                  ? {
+                      contextOrigin: 'virtual-page-owner' as const,
+                      contextPattern: createFactoryOwnerContextPattern(factoryOwner.basePath),
+                    }
+                  : {}),
                 exportName: factoryOwner.exportName,
                 hasWildcardFallback: factoryOwner.hasWildcardFallback,
                 routeSlotCount: factoryOwner.routeSlotCount,
@@ -886,365 +773,4 @@ function collectDirectRouteElementWrappers(
       }),
     ];
   });
-}
-
-/** Builds only identities that can denote the exact selected export in its own source module. */
-function collectSelectedTargetIdentities(
-  options: CollectPreviewInspectorRouteLocationOptions,
-  targetText: string | undefined,
-): readonly string[] {
-  const identities: string[] = [];
-  const add = (candidate: string | undefined): void => {
-    const normalized = normalizeComponentIdentity(candidate);
-    if (normalized !== undefined && !identities.includes(normalized)) identities.push(normalized);
-  };
-  if (options.exportName !== 'default') add(options.exportName);
-  if (targetText !== undefined) {
-    const facts = collectPreviewRenderModuleFacts(options.documentPath, targetText);
-    for (const exportFact of facts.exports) {
-      if (exportFact.exportName !== options.exportName || exportFact.localName === undefined) {
-        continue;
-      }
-      add(exportFact.localName);
-      for (const value of facts.values) {
-        if (value.localName === exportFact.localName) add(value.label);
-      }
-    }
-  }
-  for (const renderPath of options.renderChain.paths) {
-    for (const step of renderPath.steps) {
-      if (path.normalize(step.sourcePath) !== path.normalize(options.documentPath)) continue;
-      add(step.label);
-      for (const wrapperName of step.wrapperNames) add(wrapperName);
-    }
-  }
-  add(toPascalCase(path.basename(options.documentPath).replace(/\.[^.]+$/u, '')));
-  return Object.freeze(identities);
-}
-
-/** Builds exact target aliases from the selected export, local declaration, filename, and graph. */
-function collectTargetIdentities(
-  options: CollectPreviewInspectorRouteLocationOptions,
-  targetText: string | undefined,
-): readonly string[] {
-  const identities = [...collectSelectedTargetIdentities(options, targetText)];
-  const add = (candidate: string | undefined): void => {
-    const normalized = normalizeComponentIdentity(candidate);
-    if (normalized !== undefined && !identities.includes(normalized)) identities.push(normalized);
-  };
-  if (options.exportName !== 'default') add(options.exportName);
-  if (targetText !== undefined) {
-    const facts = collectPreviewRenderModuleFacts(options.documentPath, targetText);
-    const selectedExports = facts.exports.filter(
-      (fact) => fact.exportName === options.exportName && fact.localName !== undefined,
-    );
-    for (const exportFact of selectedExports) {
-      add(exportFact.localName);
-      for (const value of facts.values) {
-        if (value.localName === exportFact.localName) add(value.label);
-      }
-    }
-    for (const value of facts.values) add(value.label);
-  }
-  for (const renderPath of options.renderChain.paths) {
-    // Render paths are stored target-to-entry (inner-to-outer). Preserve that order so a concrete
-    // page owner outranks the application shell's broad `/*` or index route.
-    for (const step of renderPath.steps) {
-      add(step.label);
-      for (const wrapperName of step.wrapperNames) add(wrapperName);
-    }
-  }
-  add(toPascalCase(path.basename(options.documentPath).replace(/\.[^.]+$/u, '')));
-  return Object.freeze(identities);
-}
-
-/** Accepts only plain component identifiers and removes graph labels around an identifier. */
-function normalizeComponentIdentity(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  const direct = value.trim();
-  if (COMPONENT_IDENTITY_PATTERN.test(direct) && /^[$_\p{Lu}]/u.test(direct)) return direct;
-  const matches = direct.match(/[$_\p{Lu}][$_\u200C\u200D\p{ID_Continue}]*/gu) ?? [];
-  return matches.find((candidate) => COMPONENT_IDENTITY_PATTERN.test(candidate));
-}
-
-/** Converts a kebab/snake/dotted source stem into the conventional component export spelling. */
-function toPascalCase(value: string): string {
-  return value
-    .split(/[^$_\p{L}\p{N}]+/u)
-    .filter(Boolean)
-    .map((segment) => segment.slice(0, 1).toUpperCase() + segment.slice(1))
-    .join('');
-}
-
-/** Counts common normalized path segments so the target's monorepo package is inspected first. */
-function scoreRouteRegistryLocality(sourcePath: string, documentPath: string): number {
-  const sourceSegments = path.normalize(sourcePath).split(path.sep).filter(Boolean);
-  const documentSegments = path.normalize(documentPath).split(path.sep).filter(Boolean);
-  let score = 0;
-  while (
-    score < sourceSegments.length &&
-    score < documentSegments.length &&
-    sourceSegments[score] === documentSegments[score]
-  ) {
-    score += 1;
-  }
-  return score;
-}
-
-/** Prefers target-local registries, then explicit maps/configs and stable path order. */
-function compareRouteRegistryPaths(left: string, right: string, documentPath: string): number {
-  const score = (sourcePath: string): number =>
-    /[-_.](?:map|paths?|config|registry)\./iu.test(path.basename(sourcePath)) ? 0 : 1;
-  return (
-    scoreRouteRegistryLocality(right, documentPath) -
-      scoreRouteRegistryLocality(left, documentPath) ||
-    score(left) - score(right) ||
-    left.localeCompare(right)
-  );
-}
-
-/** Extracts inert JSON imports while rejecting URLs, absolute paths, and Node protocol modules. */
-function collectJsonCatalogSpecifiers(sourcePath: string, sourceText: string): readonly string[] {
-  return collectPreviewRenderModuleFacts(sourcePath, sourceText)
-    .imports.map((fact) => fact.moduleSpecifier)
-    .filter((specifier) => {
-      const cleanSpecifier = specifier.split(/[?#]/u, 1)[0];
-      return (
-        cleanSpecifier !== undefined &&
-        cleanSpecifier.toLowerCase().endsWith('.json') &&
-        !path.isAbsolute(cleanSpecifier) &&
-        !/^[a-z][a-z\d+.-]*:/iu.test(cleanSpecifier)
-      );
-    });
-}
-
-/** Resolves relative or alias JSON catalogs through the caller's package-bounded module resolver. */
-function resolveRouteCatalogPath(
-  moduleSpecifier: string,
-  consumerPath: string,
-  resolveModule: ResolvePreviewRenderGraphModule | undefined,
-): string | undefined {
-  const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0];
-  if (!cleanSpecifier?.toLowerCase().endsWith('.json')) {
-    return undefined;
-  }
-  const relative = cleanSpecifier.startsWith('./') || cleanSpecifier.startsWith('../');
-  const resolved =
-    resolveModule?.(cleanSpecifier, consumerPath) ??
-    (relative ? path.resolve(path.dirname(consumerPath), cleanSpecifier) : undefined);
-  return resolved === undefined ? undefined : path.normalize(resolved);
-}
-
-/** Parses one JSON route tree and records exact string leaves matching a target identity. */
-function collectJsonCatalogCandidates(
-  sourcePath: string,
-  sourceText: string,
-  identities: readonly string[],
-  documentPath: string,
-  candidates: RouteLocationCandidate[],
-): void {
-  let catalog: unknown;
-  try {
-    catalog = JSON.parse(sourceText) as unknown;
-  } catch {
-    return;
-  }
-  walkCatalog(catalog, [], (segments, componentName) => {
-    const identityOrder = identities.indexOf(componentName);
-    if (identityOrder < 0 || candidates.length >= MAX_ROUTE_CANDIDATES) return;
-    addRouteCandidate(candidates, {
-      componentName,
-      documentPath,
-      evidenceKind: 'route-catalog',
-      identityOrder,
-      pattern: joinRouteSegments(segments),
-      sourcePath,
-    });
-  });
-}
-
-/** Walks nested path-keyed objects plus common array/object route descriptor shapes. */
-function walkCatalog(
-  value: unknown,
-  segments: readonly string[],
-  visit: (segments: readonly string[], componentName: string) => void,
-): void {
-  if (typeof value === 'string') {
-    visit(segments, value);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) walkCatalog(item, segments, visit);
-    return;
-  }
-  if (!isRecord(value)) return;
-  const routePath = typeof value.path === 'string' ? value.path : undefined;
-  const descriptorSegments = routePath === undefined ? segments : [...segments, routePath];
-  for (const key of ['component', 'element', 'page', 'pageName', 'screen'] as const) {
-    if (typeof value[key] === 'string') visit(descriptorSegments, value[key]);
-  }
-  for (const [key, child] of Object.entries(value)) {
-    if (['component', 'element', 'page', 'pageName', 'path', 'screen'].includes(key)) continue;
-    walkCatalog(child, [...segments, key], visit);
-  }
-}
-
-/**
- * Finds route evidence in one authored module without evaluating its router configuration.
- *
- * Both JSX `<Route>` trees and the object descriptors consumed by `useRoutes` are common in the
- * same application. Factory base paths are retained as supporting patterns: they need not render
- * the target directly, but often hold a stricter dynamic-parameter contract than an outer splat.
- */
-function collectSourceRouteCandidates(
-  sourcePath: string,
-  sourceText: string,
-  identities: readonly string[],
-  factoryOwnerIdentities: ReadonlySet<string>,
-  documentPath: string,
-  candidates: RouteLocationCandidate[],
-  routePatterns: string[],
-): boolean {
-  const sourceFile = ts.createSourceFile(
-    sourcePath,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    sourcePath.toLowerCase().endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-
-  let contributedRoutePattern = false;
-  for (const factory of collectPreviewInspectorRouteFactoryEvidence(sourceFile)) {
-    contributedRoutePattern =
-      addSupportingRoutePattern(routePatterns, factory.basePath) || contributedRoutePattern;
-    const identityOrder =
-      factory.componentName === undefined ? -1 : identities.indexOf(factory.componentName);
-    if (
-      identityOrder < 0 ||
-      factory.componentName === undefined ||
-      !factoryOwnerIdentities.has(factory.componentName)
-    ) {
-      continue;
-    }
-    // A nested app/module may have no direct catalog leaf. Its own absolute factory path is still
-    // exact route evidence when the render graph proves that exported owner lies on the target path.
-    addRouteCandidate(candidates, {
-      componentName: factory.componentName,
-      documentPath,
-      evidenceKind: 'route-jsx',
-      identityOrder,
-      pattern: factory.basePath,
-      scoreAdjustment: -FACTORY_BASE_EVIDENCE_PENALTY,
-      sourcePath,
-    });
-  }
-  return contributedRoutePattern;
-}
-
-/** Adds one normalized route and keeps distinct authored patterns even when paths materialize alike. */
-function addRouteCandidate(
-  candidates: RouteLocationCandidate[],
-  input: Omit<RouteLocationCandidate, 'pathname' | 'score'> & {
-    readonly documentPath: string;
-    readonly scoreAdjustment?: number;
-  },
-): void {
-  if (candidates.length >= MAX_ROUTE_CANDIDATES) return;
-  const pattern = normalizeRoutePattern(input.pattern);
-  if (pattern === undefined) return;
-  const pathname = materializeRoutePattern(pattern);
-  if (
-    candidates.some(
-      (candidate) =>
-        candidate.pattern === pattern &&
-        candidate.componentName === input.componentName &&
-        (candidate.choiceOccurrenceIdentity === input.choiceOccurrenceIdentity ||
-          (candidate.choiceOccurrenceIdentity === undefined &&
-            input.choiceOccurrenceIdentity === undefined)),
-    )
-  ) {
-    return;
-  }
-  candidates.push({
-    ...(input.choiceOccurrenceIdentity === undefined
-      ? {}
-      : { choiceOccurrenceIdentity: input.choiceOccurrenceIdentity }),
-    componentName: input.componentName,
-    ...(input.dependencyPaths === undefined ? {} : { dependencyPaths: input.dependencyPaths }),
-    ...(input.directRouteOwnerSourcePath === undefined
-      ? {}
-      : { directRouteOwnerSourcePath: path.normalize(input.directRouteOwnerSourcePath) }),
-    evidenceKind: input.evidenceKind,
-    identityOrder: input.identityOrder,
-    pathname,
-    pattern,
-    ...(input.provenanceIdentity === undefined
-      ? {}
-      : { provenanceIdentity: input.provenanceIdentity }),
-    score:
-      scoreRoutePattern(pattern, input.documentPath, input.identityOrder, input.evidenceKind) +
-      (input.scoreAdjustment ?? 0),
-    sourcePath: path.normalize(input.sourcePath),
-  });
-}
-
-/** Favors exact identities, catalog evidence, and routes whose words agree with the target path. */
-function scoreRoutePattern(
-  pattern: string,
-  documentPath: string,
-  identityOrder: number,
-  evidenceKind: PreviewInspectorRouteLocation['evidenceKind'],
-): number {
-  const documentWords = new Set(
-    documentPath
-      .toLowerCase()
-      .split(/[^\p{L}\p{N}]+/u)
-      .filter((word) => word.length > 2),
-  );
-  const routeWords = pattern
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter(Boolean);
-  const overlappingWords = routeWords.filter((word) => documentWords.has(word)).length;
-  return (
-    10_000 -
-    identityOrder * 100 +
-    overlappingWords * 25 +
-    (evidenceKind === 'route-catalog' ? 20 : 0) +
-    Math.min(routeWords.length, 20) -
-    (isRootWildcardRoutePattern(pattern) ? ROOT_WILDCARD_EVIDENCE_PENALTY : 0)
-  );
-}
-
-/** Orders by evidence score, then specificity and lexical identity for deterministic rebuilds. */
-function compareRouteCandidates(
-  left: RouteLocationCandidate,
-  right: RouteLocationCandidate,
-): number {
-  return (
-    right.score - left.score ||
-    right.pattern.length - left.pattern.length ||
-    left.pattern.localeCompare(right.pattern) ||
-    left.sourcePath.localeCompare(right.sourcePath)
-  );
-}
-
-/** Reuses bounded source reads while keeping rejected/missing files cached as absence. */
-function readCachedSource(
-  sourcePath: string,
-  readSource: (sourcePath: string) => Promise<string | undefined>,
-  cache: Map<string, Promise<string | undefined>>,
-): Promise<string | undefined> {
-  const normalizedPath = path.normalize(sourcePath);
-  let sourcePromise = cache.get(normalizedPath);
-  if (sourcePromise === undefined) {
-    sourcePromise = readSource(normalizedPath);
-    cache.set(normalizedPath, sourcePromise);
-  }
-  return sourcePromise;
-}
-
-/** Narrows parsed JSON without invoking inherited values or accessors. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

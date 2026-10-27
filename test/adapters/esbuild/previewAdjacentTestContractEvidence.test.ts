@@ -125,6 +125,61 @@ describe('collectPreviewAdjacentTestContractEvidence', () => {
     ]);
   });
 
+  /** Rejects type-escaped empty records without discarding fixtures or intentional empty states. */
+  it('ignores type-escaped empty records and keeps concrete mock fixtures', async () => {
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-test-contract-'));
+    temporaryRoots.push(projectRoot);
+    const targetPath = path.join(projectRoot, 'src/app/page.tsx');
+    const testPath = path.join(projectRoot, 'src/app/page.test.tsx');
+    const servicePath = path.join(projectRoot, 'src/modules/service.ts');
+    await Promise.all([
+      mkdir(path.dirname(targetPath), { recursive: true }),
+      mkdir(path.dirname(servicePath), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(targetPath, 'export default async function Page() { return null; }', 'utf8'),
+      writeFile(
+        servicePath,
+        'export const overview = async () => null; export const usage = async () => null; export const rows = async () => []; export const theme = async () => null; export const loose = async () => null; export const unknown = async () => null; export const organization = async () => null; export const nullable = async () => null;',
+        'utf8',
+      ),
+      writeFile(
+        testPath,
+        [
+          "import { overview, usage, rows, theme, loose, unknown, organization, nullable } from '@/modules/service';",
+          "import { vi } from 'vitest';",
+          "const ORG = { id: 'org-1', name: 'Acme' };",
+          'beforeEach(() => {',
+          '  vi.mocked(overview).mockResolvedValue({} as never);',
+          '  vi.mocked(loose).mockResolvedValue({} as any);',
+          '  vi.mocked(unknown).mockResolvedValue(({} as unknown) as Usage);',
+          '  vi.mocked(usage).mockResolvedValue(({ total: 1 } as unknown) as Usage);',
+          '  vi.mocked(rows).mockResolvedValue([] as any);',
+          '  vi.mocked(organization).mockResolvedValue(ORG as never);',
+          '  vi.mocked(nullable).mockResolvedValue(null as never);',
+          "  vi.mocked(theme).mockResolvedValue({ preset: 'minimal' } as Theme);",
+          '});',
+        ].join('\n'),
+        'utf8',
+      ),
+    ]);
+
+    const examples = await collectPreviewAdjacentTestContractEvidence({
+      projectRoot,
+      resolveModule: (moduleSpecifier) =>
+        moduleSpecifier === '@/modules/service' ? servicePath : undefined,
+      targetPath,
+    });
+
+    expect(examples.map(({ exportName, value }) => ({ exportName, value }))).toEqual([
+      { exportName: 'usage', value: { total: 1 } },
+      { exportName: 'rows', value: [] },
+      { exportName: 'organization', value: { id: 'org-1', name: 'Acme' } },
+      { exportName: 'nullable', value: null },
+      { exportName: 'theme', value: { preset: 'minimal' } },
+    ]);
+  });
+
   /** Ignores unrelated sibling stems while retaining the selected target's direct test contract. */
   it('reads the selected target stem beside the target or in its direct test directory', async () => {
     const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-test-boundary-'));

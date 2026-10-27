@@ -13,11 +13,13 @@ import {
   canonicalizePathThroughExistingAncestor,
 } from '../../shared/pathIdentity';
 import { createPreviewWorkspacePackageResolver } from './previewWorkspacePackageResolver';
+import { createPreviewResolutionFileSystem } from './previewResolutionFileSystem';
+import { createPreviewStaticTargetMatcher } from './previewStaticTargetMatcher';
 import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
 
-const SOURCE_EXTENSION_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
 const DECLARATION_EXTENSION_PATTERN = /\.d\.(?:cts|mts|ts)$/iu;
 const MAX_RESOLVED_SOURCE_ENTRIES = 4096;
+const MAX_CONFIG_DIRECTORY_ENTRIES = 4096;
 
 /** Immutable resolver inputs bounded by the trusted VS Code workspace. */
 export interface PreviewStaticModuleResolverOptions {
@@ -159,6 +161,22 @@ interface PreviewStaticResolutionContext {
   readonly options: ts.CompilerOptions;
 }
 
+/** One positive issuer answer retained by the existing bounded resolution cache. */
+interface ResolvedStaticSource {
+  /** Current canonical identity returned to graph consumers. */
+  readonly canonicalPath: string;
+  /** Exact TypeScript-selected runtime path, when this resolver owns its canonicalization. */
+  readonly physicalPath?: string;
+}
+
+/** Canonical identity shared only while at least one cached issuer answer retains it. */
+interface RetainedCanonicalSource {
+  /** Canonical spelling already computed for a positive issuer answer. */
+  readonly canonicalPath: string;
+  /** Number of positive answers currently retaining this exact physical-path identity. */
+  references: number;
+}
+
 /**
  * Creates a synchronous, cached resolver suitable for syntax-only package inventory scans.
  *
@@ -180,10 +198,11 @@ export function createPreviewStaticModuleResolver(
   );
   const contextByConfigPath = new Map<string, PreviewStaticResolutionContext>();
   const configPathByDirectory = new Map<string, string | undefined>();
-  const matchedSpecifiersByTarget = new Map<string, Set<string>>();
-  const resolvedSourceByRequest = new Map<string, string>();
+  const resolvedSourceByRequest = new Map<string, ResolvedStaticSource>();
+  const canonicalSourceByPhysicalPath = new Map<string, RetainedCanonicalSource>();
   const sideEffectContractByDirectory = new Map<string, boolean>();
   const sideEffectFreeBySourcePath = new Map<string, boolean>();
+  const resolutionFileSystem = createPreviewResolutionFileSystem();
   const fallbackContext = createResolutionContext(undefined, workspaceRoot);
   const workspacePackageResolver = createPreviewWorkspacePackageResolver(workspaceRoot);
   const managedFallbackResolvers = createManagedFallbackResolvers(
@@ -233,10 +252,16 @@ export function createPreviewStaticModuleResolver(
 
     let candidateDirectory = normalizedDirectory;
     let configPath: string | undefined;
+    const visited: string[] = [];
     while (isPathInside(boundary, candidateDirectory)) {
+      if (configPathByDirectory.has(candidateDirectory)) {
+        configPath = configPathByDirectory.get(candidateDirectory);
+        break;
+      }
+      visited.push(candidateDirectory);
       for (const configName of ['tsconfig.json', 'jsconfig.json']) {
         const candidate = path.join(candidateDirectory, configName);
-        if (ts.sys.fileExists(candidate)) {
+        if (resolutionFileSystem.fileExists(candidate)) {
           configPath = candidate;
           break;
         }
@@ -246,36 +271,74 @@ export function createPreviewStaticModuleResolver(
       }
       candidateDirectory = path.dirname(candidateDirectory);
     }
-    configPathByDirectory.set(normalizedDirectory, configPath);
+    for (const directory of visited) {
+      if (configPathByDirectory.size >= MAX_CONFIG_DIRECTORY_ENTRIES) break;
+      configPathByDirectory.set(directory, configPath);
+    }
     return configPath;
   }
 
   /** Tries authored workspace sources before immutable extension-managed dependency packages. */
-  function resolveStaticPackageFallback(moduleSpecifier: string): string | undefined {
-    return (
+  function resolveStaticPackageFallback(moduleSpecifier: string): ResolvedStaticSource | undefined {
+    const canonicalPath =
       workspacePackageResolver.resolve(moduleSpecifier) ??
-      resolveManagedFallback(moduleSpecifier, managedFallbackResolvers)
-    );
+      resolveManagedFallback(moduleSpecifier, managedFallbackResolvers);
+    return canonicalPath === undefined ? undefined : { canonicalPath };
   }
 
   /** Reuses positive exact-issuer results within this request-owned resolver, with bounded storage. */
   function resolve(moduleSpecifier: string, consumerPath: string): string | undefined {
     const cacheKey = JSON.stringify([consumerPath, moduleSpecifier]);
     const cached = resolvedSourceByRequest.get(cacheKey);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) return cached.canonicalPath;
     const resolved = resolveUncached(moduleSpecifier, consumerPath);
     if (resolved !== undefined) {
       if (resolvedSourceByRequest.size >= MAX_RESOLVED_SOURCE_ENTRIES) {
-        const oldest = resolvedSourceByRequest.keys().next().value;
-        if (oldest !== undefined) resolvedSourceByRequest.delete(oldest);
+        const oldest = resolvedSourceByRequest.entries().next().value;
+        if (oldest !== undefined) {
+          resolvedSourceByRequest.delete(oldest[0]);
+          const physicalPath = oldest[1].physicalPath;
+          const retained =
+            physicalPath === undefined
+              ? undefined
+              : canonicalSourceByPhysicalPath.get(physicalPath);
+          if (retained !== undefined && physicalPath !== undefined) {
+            retained.references -= 1;
+            if (retained.references === 0) canonicalSourceByPhysicalPath.delete(physicalPath);
+          }
+        }
       }
       resolvedSourceByRequest.set(cacheKey, resolved);
+      if (resolved.physicalPath !== undefined) {
+        const retained = canonicalSourceByPhysicalPath.get(resolved.physicalPath);
+        if (retained === undefined) {
+          canonicalSourceByPhysicalPath.set(resolved.physicalPath, {
+            canonicalPath: resolved.canonicalPath,
+            references: 1,
+          });
+        } else {
+          retained.references += 1;
+        }
+      }
     }
-    return resolved;
+    return resolved?.canonicalPath;
+  }
+
+  /** Reuses a retained positive identity after TypeScript independently selects the physical path. */
+  function resolvePhysicalSource(physicalPath: string): ResolvedStaticSource {
+    return {
+      canonicalPath:
+        canonicalSourceByPhysicalPath.get(physicalPath)?.canonicalPath ??
+        canonicalizeExistingPath(physicalPath),
+      physicalPath,
+    };
   }
 
   /** Resolves one authored import with the exact compiler options selected for its source file. */
-  function resolveUncached(moduleSpecifier: string, consumerPath: string): string | undefined {
+  function resolveUncached(
+    moduleSpecifier: string,
+    consumerPath: string,
+  ): ResolvedStaticSource | undefined {
     const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0];
     if (cleanSpecifier === undefined || cleanSpecifier.length === 0) {
       return undefined;
@@ -286,7 +349,7 @@ export function createPreviewStaticModuleResolver(
         cleanSpecifier,
         normalizeWorkspaceConsumerPath(consumerPath),
         context.options,
-        ts.sys,
+        resolutionFileSystem,
         context.cache,
       ).resolvedModule;
       if (resolution === undefined) {
@@ -296,13 +359,16 @@ export function createPreviewStaticModuleResolver(
         resolution.resolvedFileName,
         workspaceRoot,
       );
-      if (physicalPath !== undefined && ts.sys.fileExists(physicalPath)) {
-        const runtimeSibling = resolveRuntimeDeclarationSibling(physicalPath);
-        if (runtimeSibling !== undefined) return canonicalizeExistingPath(runtimeSibling);
+      if (physicalPath !== undefined && resolutionFileSystem.fileExists(physicalPath)) {
+        const runtimeSibling = resolveRuntimeDeclarationSibling(
+          physicalPath,
+          resolutionFileSystem.fileExists,
+        );
+        if (runtimeSibling !== undefined) return resolvePhysicalSource(runtimeSibling);
         if (DECLARATION_EXTENSION_PATTERN.test(physicalPath)) {
           return resolveStaticPackageFallback(cleanSpecifier);
         }
-        return canonicalizeExistingPath(physicalPath);
+        return resolvePhysicalSource(physicalPath);
       }
       return resolveStaticPackageFallback(cleanSpecifier);
     } catch {
@@ -356,13 +422,9 @@ export function createPreviewStaticModuleResolver(
   }
 
   return Object.freeze({
+    ...createPreviewStaticTargetMatcher(resolve),
     getJsxImportSource(consumerPath: string): string | undefined {
       return readConfiguredJsxImportSource(getResolutionContext(consumerPath).options);
-    },
-    getMatchedSpecifiers(targetPath: string): readonly string[] {
-      return Object.freeze(
-        [...(matchedSpecifiersByTarget.get(normalizeSourceIdentity(targetPath)) ?? [])].sort(),
-      );
     },
     isSideEffectFree(sourcePath: string): boolean {
       const canonicalSourcePath = canonicalizeExistingPath(sourcePath);
@@ -376,21 +438,6 @@ export function createPreviewStaticModuleResolver(
       sideEffectFreeBySourcePath.set(canonicalSourcePath, sideEffectFree);
       return sideEffectFree;
     },
-    matchesTarget(moduleSpecifier: string, consumerPath: string, targetPath: string): boolean {
-      const resolvedPath = resolve(moduleSpecifier, consumerPath);
-      const matches =
-        resolvedPath !== undefined &&
-        normalizeSourceIdentity(resolvedPath) ===
-          normalizeSourceIdentity(canonicalizeExistingPath(targetPath));
-      if (matches) {
-        const targetIdentity = normalizeSourceIdentity(targetPath);
-        const matchedSpecifiers =
-          matchedSpecifiersByTarget.get(targetIdentity) ?? new Set<string>();
-        matchedSpecifiers.add(moduleSpecifier.split(/[?#]/u, 1)[0] ?? moduleSpecifier);
-        matchedSpecifiersByTarget.set(targetIdentity, matchedSpecifiers);
-      }
-      return matches;
-    },
     resolve,
     resolveMissingPathAliasCandidate,
     usesAlternativeJsxRuntime(consumerPath: string): boolean {
@@ -400,7 +447,10 @@ export function createPreviewStaticModuleResolver(
 }
 
 /** Maps TypeScript's conditional `types` result to the adjacent runtime package export. */
-function resolveRuntimeDeclarationSibling(sourcePath: string): string | undefined {
+function resolveRuntimeDeclarationSibling(
+  sourcePath: string,
+  fileExists: (fileName: string) => boolean,
+): string | undefined {
   const match = /^(?<base>.*)\.d\.(?<extension>cts|mts|ts)$/iu.exec(sourcePath);
   const base = match?.groups?.base;
   const extension = match?.groups?.extension?.toLowerCase();
@@ -413,7 +463,7 @@ function resolveRuntimeDeclarationSibling(sourcePath: string): string | undefine
         : ['.js', '.mjs', '.cjs'];
   return runtimeExtensions
     .map((runtimeExtension) => base + runtimeExtension)
-    .find((candidate) => ts.sys.fileExists(candidate));
+    .find((candidate) => fileExists(candidate));
 }
 
 /** Preserves an exact configured automatic JSX owner without interpreting custom classic factories. */
@@ -638,14 +688,9 @@ function canonicalizeCachePath(filePath: string): string {
   return ts.sys.useCaseSensitiveFileNames ? filePath : filePath.toLowerCase();
 }
 
-/** Treats extensionful JS imports and their resolved TS/TSX sources as one module identity. */
-function normalizeSourceIdentity(sourcePath: string): string {
-  return path.normalize(sourcePath).replace(SOURCE_EXTENSION_PATTERN, '');
-}
-
 /** Checks workspace containment without accepting sibling-prefix lookalikes. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

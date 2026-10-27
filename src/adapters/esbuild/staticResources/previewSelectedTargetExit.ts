@@ -12,9 +12,11 @@
 import path from 'node:path';
 import ts from 'typescript';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
+import { PREVIEW_JSX_OCCURRENCE_PROP } from '../previewJsxOccurrenceIdentity';
 
 /** Component names rendered at the selected target's occurrences, per parsed module. */
 const targetNamesBySourceFile = new WeakMap<ts.SourceFile, ReadonlySet<string>>();
+const targetOccurrencesBySourceFile = new WeakMap<ts.SourceFile, ReadonlySet<string>>();
 
 /**
  * Records the target component names for one parsed module before its guards are analyzed.
@@ -27,12 +29,62 @@ export function registerPreviewSelectedTargetNames(
   names: ReadonlySet<string> | undefined,
 ): void {
   if (names !== undefined && names.size > 0) targetNamesBySourceFile.set(sourceFile, names);
+  const occurrences = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const id = readPreviewJsxOccurrenceMarker(node);
+      if (id !== undefined) occurrences.add(id);
+    }
+    ts.forEachChild(node, visit);
+  };
+  if (sourceFile.text.includes(PREVIEW_JSX_OCCURRENCE_PROP)) visit(sourceFile);
+  if (occurrences.size > 0) targetOccurrencesBySourceFile.set(sourceFile, occurrences);
+}
+
+/** Reads only an inert compiler marker attribute; expressions and spreads never qualify. */
+export function readPreviewJsxOccurrenceMarker(
+  opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement,
+): string | undefined {
+  for (const attribute of opening.attributes.properties) {
+    if (
+      ts.isJsxAttribute(attribute) &&
+      ts.isIdentifier(attribute.name) &&
+      attribute.name.text === PREVIEW_JSX_OCCURRENCE_PROP &&
+      attribute.initializer !== undefined &&
+      ts.isStringLiteral(attribute.initializer) &&
+      /^rpi:[a-f0-9]{32}$/u.test(attribute.initializer.text)
+    )
+      return attribute.initializer.text;
+  }
+  return undefined;
+}
+
+/** Chooses a branch only when one exact selected JSX site occurs on that side alone. */
+export function readPreviewSelectedTargetBranch(
+  truthy: ts.Node,
+  falsy?: ts.Node,
+): {
+  readonly targetBranch?: 'falsy' | 'truthy';
+  readonly targetBranchEvidence?: 'selected-target';
+} {
+  const sourceFile = truthy.getSourceFile();
+  if (!targetOccurrencesBySourceFile.has(sourceFile)) return {};
+  const names = targetNamesBySourceFile.get(sourceFile) ?? new Set<string>();
+  const left = referencesTarget(truthy, names);
+  const right = falsy !== undefined && referencesTarget(falsy, names);
+  return left === right
+    ? {}
+    : {
+        targetBranch: left ? 'truthy' : 'falsy',
+        targetBranchEvidence: 'selected-target',
+      };
 }
 
 /**
  * Groups the selected page path's child occurrences by owner module.
  *
  * @param edges Child-to-owner relationships of the executed page candidate.
+ * @param renderPath Exact executed value-flow path, including non-JSX helper calls.
  * @returns Occurrence offsets keyed by normalized canonical owner path.
  */
 export function createPreviewSelectedTargetOccurrences(
@@ -40,11 +92,23 @@ export function createPreviewSelectedTargetOccurrences(
     readonly occurrenceStart: number;
     readonly owner: { readonly sourcePath: string };
   }[],
+  renderPath?: {
+    readonly steps: readonly { readonly sourcePath: string; readonly occurrenceStart: number }[];
+  },
 ): ReadonlyMap<string, readonly number[]> {
   const occurrences = new Map<string, number[]>();
   for (const edge of edges) {
     const key = path.normalize(canonicalizeExistingPath(edge.owner.sourcePath));
     occurrences.set(key, [...(occurrences.get(key) ?? []), edge.occurrenceStart]);
+  }
+  for (let index = 0; index + 1 < (renderPath?.steps.length ?? 0); index += 1) {
+    const child = renderPath?.steps[index];
+    const owner = renderPath?.steps[index + 1];
+    if (child === undefined || owner === undefined || child.occurrenceStart < 0) continue;
+    const key = path.normalize(canonicalizeExistingPath(owner.sourcePath));
+    const offsets = occurrences.get(key) ?? [];
+    if (!offsets.includes(child.occurrenceStart)) offsets.push(child.occurrenceStart);
+    occurrences.set(key, offsets);
   }
   return occurrences;
 }
@@ -117,6 +181,16 @@ export function isPreviewSelectedTargetExit(exit: ts.Statement): boolean {
   return owner !== undefined && !referencesTarget(owner, names, exit);
 }
 
+/** Proves taking or bypassing one terminal exit from the exact selected site in its owner. */
+export function hasPreviewSelectedTargetExitPath(exit: ts.Statement): boolean {
+  const sourceFile = exit.getSourceFile();
+  if (!targetOccurrencesBySourceFile.has(sourceFile)) return false;
+  const owner = ts.findAncestor(exit.parent, ts.isFunctionLike);
+  if (owner === undefined) return false;
+  const names = targetNamesBySourceFile.get(sourceFile) ?? new Set<string>();
+  return referencesTarget(exit, names) !== referencesTarget(owner, names, exit);
+}
+
 /** Reads the JSX tag or identifier rendered by the node that starts at a target occurrence. */
 function readRenderedName(node: ts.Node): string | undefined {
   const element = ts.isJsxElement(node) ? node.openingElement : node;
@@ -129,14 +203,26 @@ function readRenderedName(node: ts.Node): string | undefined {
 /** Finds a JSX tag or value reference to one of the names, skipping one subtree. */
 function referencesTarget(node: ts.Node, names: ReadonlySet<string>, skipped?: ts.Node): boolean {
   if (node === skipped) return false;
+  const occurrences = targetOccurrencesBySourceFile.get(node.getSourceFile());
+  if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+    const id = readPreviewJsxOccurrenceMarker(node);
+    if (occurrences !== undefined && id !== undefined && occurrences.has(id)) return true;
+  }
   if (
+    occurrences === undefined &&
     (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
     ts.isIdentifier(node.tagName) &&
     names.has(node.tagName.text)
   ) {
     return true;
   }
-  if (ts.isIdentifier(node) && names.has(node.text) && isValueReference(node)) return true;
+  if (
+    occurrences === undefined &&
+    ts.isIdentifier(node) &&
+    names.has(node.text) &&
+    isValueReference(node)
+  )
+    return true;
   return ts.forEachChild(node, (child) => referencesTarget(child, names, skipped)) === true;
 }
 

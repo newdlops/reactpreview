@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { createPreviewStyleSheetManagerRuntimeSource } from '../../../src/adapters/esbuild/previewStyleSheetManagerRuntimeSource';
 
 describe('createPreviewStyleSheetManagerRuntimeSource', () => {
-  it('isolates legacy class managers while preserving modern document-default injection', () => {
+  it('preserves modern cold injection and owns only replacement or legacy style targets', () => {
     const source = createPreviewStyleSheetManagerRuntimeSource();
     expect(source).toContain("typeof getContext.value === 'function'");
     expect(source).toContain("'owned-legacy'");
+    expect(source).toContain("'owned-modern'");
     expect(source).toContain("'document-default'");
     expect(source).toContain('data-react-preview-styled-components-target');
     expect(source).toContain('document.head.appendChild(ownedTarget)');

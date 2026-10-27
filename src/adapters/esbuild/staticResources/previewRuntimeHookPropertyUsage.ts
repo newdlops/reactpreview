@@ -75,7 +75,10 @@ export function readPreviewRuntimeHookLiteralElementUsage(
   expression: ts.ElementAccessExpression,
   identifierName: string,
 ): PreviewRuntimeHookLiteralElementUsage | undefined {
-  if (expression.questionDotToken !== undefined || !isSafeArrayIndex(expression.argumentExpression)) {
+  if (
+    expression.questionDotToken !== undefined ||
+    !isSafeArrayIndex(expression.argumentExpression)
+  ) {
     return undefined;
   }
   const receiverNames: string[] = [];
@@ -90,16 +93,15 @@ export function readPreviewRuntimeHookLiteralElementUsage(
   }
   const itemNames: string[] = [];
   let current: ts.Expression = expression;
-  while (
-    ts.isPropertyAccessExpression(current.parent) &&
-    current.parent.expression === current
-  ) {
+  while (ts.isPropertyAccessExpression(current.parent) && current.parent.expression === current) {
     if (current.parent.questionDotToken !== undefined) return undefined;
     itemNames.push(current.parent.name.text);
     current = current.parent;
   }
   const itemValueExpression =
-    itemNames.length === 0 ? readPreviewRuntimeHookLiteralElementScalarExpression(current) : undefined;
+    itemNames.length === 0
+      ? readPreviewRuntimeHookLiteralElementScalarExpression(current)
+      : undefined;
   if (itemNames.length === 0 && itemValueExpression === undefined) return undefined;
   return {
     itemCalled: ts.isCallExpression(current.parent) && current.parent.expression === current,
@@ -130,7 +132,8 @@ function readPreviewRuntimeHookLiteralElementScalarExpression(
     ts.isJsxExpression(parent) &&
     (!ts.isJsxAttribute(parent.parent) ||
       (ts.isIdentifier(parent.parent.name) && parent.parent.name.text === 'children'))
-  ) return '0';
+  )
+    return '0';
   return undefined;
 }
 
@@ -138,8 +141,7 @@ function readPreviewRuntimeHookLiteralElementScalarExpression(
 function isSafeArrayIndex(argument: ts.Expression | undefined): boolean {
   if (argument === undefined) return false;
   const value = unwrapPreviewRuntimeExpression(argument);
-  const text =
-    ts.isNumericLiteral(value) || ts.isStringLiteralLike(value) ? value.text : undefined;
+  const text = ts.isNumericLiteral(value) || ts.isStringLiteralLike(value) ? value.text : undefined;
   if (text === undefined || !/^(?:0|[1-9]\d{0,5})$/u.test(text)) return false;
   const index = Number(text);
   return Number.isSafeInteger(index) && index >= 0;

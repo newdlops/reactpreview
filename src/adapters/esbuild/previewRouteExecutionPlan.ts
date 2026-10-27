@@ -75,7 +75,9 @@ export function createPreviewRouteExecutionPlanningContext(
   const sourceSnapshots = [
     {
       documentPath: path.normalize(request.documentPath),
-      ...(request.documentVersion === undefined ? {} : { documentVersion: request.documentVersion }),
+      ...(request.documentVersion === undefined
+        ? {}
+        : { documentVersion: request.documentVersion }),
       language: request.language,
       sourceDigest: digestText(request.sourceText),
     },
@@ -311,9 +313,7 @@ export function assertPreviewRouteExecutionPlanArtifact(
   observedResolution: 'automatic' | 'exact' | 'fallback' | undefined,
 ): void {
   const routeId = boundedText(readRecordValue(expected, 'routeId'), '<invalid-route>');
-  const expectedContextDigest = boundedDigest(
-    readRecordValue(expected, 'planningContextDigest'),
-  );
+  const expectedContextDigest = boundedDigest(readRecordValue(expected, 'planningContextDigest'));
   const expectedPlanDigest = boundedDigest(readRecordValue(expected, 'digest'));
   const expectedPolicyDigest = boundedDigest(readRecordValue(expected, 'policyDigest'));
   const observedCandidateId = boundedText(observed.executionCandidateId);
@@ -349,7 +349,10 @@ export function assertPreviewRouteExecutionPlanArtifact(
   if (expected.planningContextDigest !== digestCanonical(expected.planningContext))
     fail('planningContextDigest', 'the frozen planning-context digest is invalid');
   if (observedResolution !== 'exact')
-    fail('routeSelectionResolution', 'the current fast planner did not recreate an exact selection');
+    fail(
+      'routeSelectionResolution',
+      'the current fast planner did not recreate an exact selection',
+    );
   const expectedPayload = stripArtifactDigest(expected);
   const observedPayload = stripArtifactDigest(observed);
   const mismatch =
@@ -367,9 +370,7 @@ export function createPreviewRouteExecutionPlanStructuralInvariantError(
   options: CreatePreviewRouteExecutionPlanStructuralInvariantErrorOptions,
 ): PreviewRouteExecutionPlanInvariantError {
   const expected = options.expectedArtifact;
-  const expectedContextDigest = boundedDigest(
-    readRecordValue(expected, 'planningContextDigest'),
-  );
+  const expectedContextDigest = boundedDigest(readRecordValue(expected, 'planningContextDigest'));
   const expectedPlanDigest = boundedDigest(readRecordValue(expected, 'digest'));
   const expectedPolicyDigest = boundedDigest(readRecordValue(expected, 'policyDigest'));
   return createInvariantError({
@@ -402,10 +403,7 @@ export function stablePreviewRouteExecutionPlanJson(value: unknown): string {
     return `{${Object.entries(value as Record<string, unknown>)
       .filter(([, item]) => item !== undefined)
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(
-        ([key, item]) =>
-          `${JSON.stringify(key)}:${stablePreviewRouteExecutionPlanJson(item)}`,
-      )
+      .map(([key, item]) => `${JSON.stringify(key)}:${stablePreviewRouteExecutionPlanJson(item)}`)
       .join(',')}}`;
   }
   return JSON.stringify(value);
@@ -453,17 +451,16 @@ function findFirstMismatch(left: unknown, right: unknown, prefix = ''): string |
     if (!Array.isArray(left) || !Array.isArray(right)) return prefix || 'artifact';
     if (left.length !== right.length) return `${prefix}.length`;
     for (let index = 0; index < left.length; index += 1) {
-      const mismatch = findFirstMismatch(left[index], right[index], `${prefix}[${index.toString()}]`);
+      const mismatch = findFirstMismatch(
+        left[index],
+        right[index],
+        `${prefix}[${index.toString()}]`,
+      );
       if (mismatch !== undefined) return mismatch;
     }
     return undefined;
   }
-  if (
-    left !== null &&
-    right !== null &&
-    typeof left === 'object' &&
-    typeof right === 'object'
-  ) {
+  if (left !== null && right !== null && typeof left === 'object' && typeof right === 'object') {
     const leftRecord = left as Record<string, unknown>;
     const rightRecord = right as Record<string, unknown>;
     const keys = [...new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)])].sort();

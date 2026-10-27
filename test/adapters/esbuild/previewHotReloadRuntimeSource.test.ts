@@ -3,6 +3,59 @@ import { describe, expect, it } from 'vitest';
 import { createPreviewHotReloadRuntimeSource } from '../../../src/adapters/esbuild/previewHotReloadRuntimeSource';
 
 describe('createPreviewHotReloadRuntimeSource', () => {
+  it('reads only a bounded opaque input frontier from a cold document', () => {
+    const source = createPreviewHotReloadRuntimeSource('');
+    const prefix = source.slice(0, source.indexOf('/** Replaces one module-owned'));
+    for (const [value, expected] of [
+      ['input-frontier-1', 'input-frontier-1'],
+      ['bad<id', undefined],
+      ['', undefined],
+      [42, undefined],
+    ]) {
+      const context = vm.createContext({
+        mountNode: { dataset: { reactPreviewPageContextFrontierId: value } },
+      });
+      expect(vm.runInContext(prefix + '\npreviewHotRuntime.pageContextFrontierId;', context)).toBe(
+        expected,
+      );
+    }
+  });
+
+  it('validates hot frontier metadata while preserving legacy message shape', () => {
+    const source = createPreviewHotReloadRuntimeSource('');
+    const prefix = source.slice(0, source.indexOf('/** Replaces one module-owned'));
+    const parser = source.slice(
+      source.indexOf('function readHotReloadMessage('),
+      source.indexOf('/** Accepts only a cancellation'),
+    );
+    const context = vm.createContext({ mountNode: { dataset: {} } });
+    vm.runInContext(
+      prefix +
+        '\nfunction readPreviewEntryScriptUri() { return { revision: 4 }; }\nfunction isPreviewStylesheetUri() { return true; }\n' +
+        parser,
+      context,
+    );
+    const base = {
+      type: 'react-preview-hot-reload',
+      revision: 4,
+      scriptUri: 'private-entry',
+      token: '4:token',
+    };
+    for (const [value, accepted] of [
+      ['frontier-four', true],
+      ['bad/id', false],
+      ['x'.repeat(129), false],
+      [null, false],
+    ]) {
+      context.message = { ...base, pageContextFrontierId: value };
+      const result: unknown = vm.runInContext('readHotReloadMessage(message);', context);
+      expect(result !== undefined).toBe(accepted);
+    }
+    context.message = base;
+    const legacy = vm.runInContext('readHotReloadMessage(message);', context) as object;
+    expect(Object.hasOwn(legacy, 'pageContextFrontierId')).toBe(false);
+  });
+
   it.each([
     ['1', undefined, 1, false],
     ['12', undefined, 12, false],

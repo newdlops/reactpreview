@@ -7,6 +7,9 @@
  */
 import ts from 'typescript';
 import { collectPreviewInspectorRouteElementPath } from './previewInspectorRouteElementPath';
+import { readRouteFactoryRenderContract } from './previewInspectorRouteFactoryRenderContract';
+import { collectPreviewInspectorUnstableRouteFactoryAggregates } from './previewInspectorRouteFactoryAggregateUses';
+import { collectPreviewInspectorRouteFactoryPageChoices } from './previewInspectorRouteFactoryPageChoices';
 
 const ROUTE_FACTORY_NAME_PATTERN =
   /^(?:create|define)[$_\p{L}\p{N}]*(?:App|Application|Module|Router|Routes)$/u;
@@ -22,6 +25,8 @@ export interface PreviewInspectorRouteFactoryEvidence {
   readonly basePath: string;
   /** Page-map keys and submodule bindings offered as mutually exclusive route choices. */
   readonly choices: readonly PreviewInspectorRouteFactoryChoiceEvidence[];
+  /** Unknown runtime keys/accessors prevent projecting this page map as pinned inert choices. */
+  readonly pageChoicesOpaque: boolean;
   /** Statically proven callback bindings inserted directly beneath a Routes boundary. */
   readonly routeSlots: readonly PreviewInspectorRouteFactorySlotEvidence[];
   /** Whether the same Routes boundary contains a literal wildcard fallback. */
@@ -66,122 +71,44 @@ export interface PreviewInspectorRouteFactoryChoiceEvidence {
 export function collectPreviewInspectorRouteFactoryEvidence(
   sourceFile: ts.SourceFile,
 ): readonly PreviewInspectorRouteFactoryEvidence[] {
-  const evidence: PreviewInspectorRouteFactoryEvidence[] = [];
+  const calls: { readonly expression: ts.CallExpression; readonly basePath: string }[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const basePath = readPreviewInspectorRouteFactoryBasePath(node, sourceFile);
       if (basePath !== undefined) {
-        const componentName = readDirectFactoryResultName(node);
-        const renderContract = readRouteFactoryRenderContract(node, sourceFile);
-        evidence.push({
-          basePath,
-          choices: readRouteFactoryChoices(node, sourceFile),
-          hasWildcardFallback: renderContract.hasWildcardFallback,
-          routeSlots: renderContract.routeSlots,
-          ...(componentName === undefined ? {} : { componentName }),
-          occurrenceStart: node.getStart(sourceFile),
-        });
+        calls.push({ expression: node, basePath });
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return Object.freeze(evidence);
-}
-
-/**
- * Finds callback bindings that are demonstrably supplied to a local Routes element.
- *
- * The reader stays syntax-only: it follows neither callback values nor component implementations,
- * so executable route configuration remains outside extension-host analysis.
- */
-function readRouteFactoryRenderContract(
-  callExpression: ts.CallExpression,
-  sourceFile: ts.SourceFile,
-): {
-  readonly routeSlots: readonly PreviewInspectorRouteFactorySlotEvidence[];
-  readonly hasWildcardFallback: boolean;
-} {
-  const callback = callExpression.arguments
-    .slice(3)
-    .find(
-      (argument): argument is ts.ArrowFunction | ts.FunctionExpression =>
-        ts.isArrowFunction(argument) || ts.isFunctionExpression(argument),
-    );
-  const parameter = callback?.parameters[0];
-  if (
-    callback === undefined ||
-    parameter === undefined ||
-    !ts.isObjectBindingPattern(parameter.name)
-  ) {
-    return Object.freeze({ hasWildcardFallback: false, routeSlots: Object.freeze([]) });
-  }
-  const bindings = new Map<string, string>();
-  for (const element of parameter.name.elements) {
-    if (!ts.isIdentifier(element.name)) continue;
-    const propertyName =
-      element.propertyName === undefined
-        ? element.name.text
-        : readStaticPropertyName(element.propertyName);
-    if (propertyName !== undefined) bindings.set(element.name.text, propertyName);
-  }
-  const slots: PreviewInspectorRouteFactorySlotEvidence[] = [];
-  let hasWildcardFallback = false;
-  const inspectRoutes = (node: ts.Node): void => {
-    if (ts.isJsxElement(node) && readJsxTagName(node.openingElement.tagName) === 'Routes') {
-      for (const child of node.children) {
-        if (
-          ts.isJsxExpression(child) &&
-          child.expression !== undefined &&
-          ts.isIdentifier(child.expression)
-        ) {
-          const propertyName = bindings.get(child.expression.text);
-          if (propertyName !== undefined) {
-            slots.push(
-              Object.freeze({
-                localName: child.expression.text,
-                occurrenceStart: child.getStart(sourceFile),
-                propertyName,
-              }),
-            );
-          }
-        }
-        if (ts.isJsxElement(child) && readJsxTagName(child.openingElement.tagName) === 'Route') {
-          hasWildcardFallback ||= child.openingElement.attributes.properties.some(
-            isWildcardRoutePathAttribute,
-          );
-        }
-        if (ts.isJsxSelfClosingElement(child) && readJsxTagName(child.tagName) === 'Route') {
-          hasWildcardFallback ||= child.attributes.properties.some(isWildcardRoutePathAttribute);
-        }
-      }
-    }
-    ts.forEachChild(node, inspectRoutes);
-  };
-  inspectRoutes(callback.body);
-  const routeSlots = slots
-    .filter(
-      (slot, index, values) =>
-        values.findIndex((value) => value.occurrenceStart === slot.occurrenceStart) === index,
-    )
-    .sort((left, right) => left.occurrenceStart - right.occurrenceStart);
-  return Object.freeze({ hasWildcardFallback, routeSlots: Object.freeze(routeSlots) });
-}
-
-/** Reads the terminal tag spelling without resolving JSX component values. */
-function readJsxTagName(tagName: ts.JsxTagNameExpression): string {
-  return tagName.getText().split('.').at(-1) ?? '';
-}
-
-/** Accepts only a literal `path="*"` attribute on a Route element. */
-function isWildcardRoutePathAttribute(attribute: ts.JsxAttributeLike): boolean {
-  return (
-    ts.isJsxAttribute(attribute) &&
-    ts.isIdentifier(attribute.name) &&
-    attribute.name.text === 'path' &&
-    attribute.initializer !== undefined &&
-    ts.isStringLiteral(attribute.initializer) &&
-    attribute.initializer.text === '*'
+  if (calls.length === 0) return Object.freeze([]);
+  const unstableAggregates = collectPreviewInspectorUnstableRouteFactoryAggregates(
+    sourceFile,
+    new Set(calls.map((call) => call.expression)),
+    (identifier) => hasNestedBinding(identifier, sourceFile),
+  );
+  return Object.freeze(
+    calls.map(({ expression, basePath }) => {
+      const componentName = readDirectFactoryResultName(expression);
+      const renderContract = readRouteFactoryRenderContract(expression, sourceFile);
+      const pages = collectPreviewInspectorRouteFactoryPageChoices({
+        expression: expression.arguments[1],
+        sourceFile,
+        unstableAggregates,
+        readInitializer: (identifier) => readPriorTopLevelConstInitializer(identifier, sourceFile),
+        readComposition: (value, name) => readComposedRouteChoicePath(value, name, sourceFile),
+      });
+      return {
+        basePath,
+        choices: readRouteFactoryChoices(expression, sourceFile, unstableAggregates, pages.choices),
+        pageChoicesOpaque: pages.opaque,
+        hasWildcardFallback: renderContract.hasWildcardFallback,
+        routeSlots: renderContract.routeSlots,
+        ...(componentName === undefined ? {} : { componentName }),
+        occurrenceStart: expression.getStart(sourceFile),
+      };
+    }),
   );
 }
 
@@ -191,21 +118,23 @@ function isWildcardRoutePathAttribute(attribute: ts.JsxAttributeLike): boolean {
  * The factory implementation commonly turns the second object argument into `<Route>` elements
  * and the third array into nested module routes. Object keys are the route catalog identities, so
  * aliases such as `{ AccountPage: LazyAccount }` deliberately retain `AccountPage`. Only direct
- * literals and previously declared top-level `const` aggregates are followed; executable values,
- * computed names, mutation, and imported configuration remain untouched.
+ * literals and previously declared top-level `const` aggregates are followed. Mutated/escaped
+ * aggregates retain declared labels without component references. Object construction keeps only
+ * the effective last property; opaque spreads/computed keys invalidate earlier references without
+ * executing their values. Imported configuration remains untouched.
  */
 function readRouteFactoryChoices(
   callExpression: ts.CallExpression,
   sourceFile: ts.SourceFile,
+  unstableAggregates: ReadonlySet<string>,
+  pageChoices: readonly PreviewInspectorRouteFactoryChoiceEvidence[],
 ): readonly PreviewInspectorRouteFactoryChoiceEvidence[] {
-  const choices: PreviewInspectorRouteFactoryChoiceEvidence[] = [];
+  const choices: PreviewInspectorRouteFactoryChoiceEvidence[] = [...pageChoices];
   const visited = new Set<ts.Expression>();
   const add = (
     componentName: string | undefined,
-    mode: 'pages' | 'submodules',
     occurrenceStart: number,
     localName?: string,
-    wrapperLocalNames?: readonly string[],
   ): void => {
     if (
       componentName !== undefined &&
@@ -213,7 +142,7 @@ function readRouteFactoryChoices(
       !choices.some(
         (choice) =>
           choice.componentName === componentName &&
-          choice.kind === (mode === 'pages' ? 'page' : 'submodule') &&
+          choice.kind === 'submodule' &&
           choice.occurrenceStart === occurrenceStart,
       ) &&
       choices.length < MAXIMUM_ROUTE_FACTORY_CHOICES
@@ -221,69 +150,51 @@ function readRouteFactoryChoices(
       choices.push(
         Object.freeze({
           componentName,
-          kind: mode === 'pages' ? 'page' : 'submodule',
+          kind: 'submodule',
           occurrenceStart,
           ...(localName === undefined ? {} : { localName }),
-          ...(wrapperLocalNames === undefined || wrapperLocalNames.length === 0
-            ? {}
-            : { wrapperLocalNames: Object.freeze([...wrapperLocalNames]) }),
         }),
       );
     }
   };
 
-  /** Traverses only aggregate syntax whose values cannot execute during inspection. */
-  const visit = (expression: ts.Expression | undefined, mode: 'pages' | 'submodules'): void => {
+  /** Retains the existing ordered submodule-array proof without interpreting array values. */
+  const visit = (expression: ts.Expression | undefined): void => {
     if (expression === undefined || choices.length >= MAXIMUM_ROUTE_FACTORY_CHOICES) return;
     const unwrapped = unwrapExpression(expression);
     if (visited.has(unwrapped)) return;
     visited.add(unwrapped);
     if (ts.isIdentifier(unwrapped)) {
       const aggregate = readPriorTopLevelConstInitializer(unwrapped, sourceFile);
-      if (aggregate === undefined) {
-        if (mode === 'submodules') {
-          add(unwrapped.text, mode, unwrapped.getStart(sourceFile), unwrapped.text);
+      const value = aggregate === undefined ? undefined : unwrapExpression(aggregate);
+      if (value !== undefined && (ts.isIdentifier(value) || ts.isArrayLiteralExpression(value))) {
+        const firstChoice = choices.length;
+        visit(value);
+        if (unstableAggregates.has(unwrapped.text)) {
+          for (let index = firstChoice; index < choices.length; index += 1) {
+            const choice = choices[index];
+            if (choice === undefined) continue;
+            choices[index] = Object.freeze({
+              componentName: choice.componentName,
+              kind: choice.kind,
+              occurrenceStart: choice.occurrenceStart,
+            });
+          }
         }
       } else {
-        visit(aggregate, mode);
+        add(unwrapped.text, unwrapped.getStart(sourceFile), unwrapped.text);
       }
       return;
     }
-    if (mode === 'pages' && ts.isObjectLiteralExpression(unwrapped)) {
-      for (const property of unwrapped.properties) {
-        if (ts.isShorthandPropertyAssignment(property)) {
-          add(property.name.text, mode, property.getStart(sourceFile), property.name.text);
-          continue;
-        }
-        if (ts.isPropertyAssignment(property)) {
-          const value = unwrapExpression(property.initializer);
-          const componentName = readStaticPropertyName(property.name);
-          const composition = ts.isIdentifier(value)
-            ? undefined
-            : readComposedRouteChoicePath(value, componentName, sourceFile);
-          add(
-            componentName,
-            mode,
-            property.getStart(sourceFile),
-            ts.isIdentifier(value) ? value.text : composition?.localName,
-            composition?.wrapperLocalNames,
-          );
-          continue;
-        }
-        if (ts.isSpreadAssignment(property)) visit(property.expression, mode);
-      }
-      return;
-    }
-    if (mode === 'submodules' && ts.isArrayLiteralExpression(unwrapped)) {
+    if (ts.isArrayLiteralExpression(unwrapped)) {
       for (const element of unwrapped.elements) {
-        if (ts.isSpreadElement(element)) visit(element.expression, mode);
-        else visit(element, mode);
+        if (ts.isSpreadElement(element)) visit(element.expression);
+        else visit(element);
       }
     }
   };
 
-  visit(callExpression.arguments[1], 'pages');
-  visit(callExpression.arguments[2], 'submodules');
+  visit(callExpression.arguments[2]);
   return Object.freeze(choices);
 }
 
@@ -305,9 +216,9 @@ function readComposedRouteChoicePath(
   if (leaf !== undefined) {
     return Object.freeze({
       localName: leaf.localName,
-      wrapperLocalNames: Object.freeze(
-        [...new Set(elementPath.slice(0, -1).map((item) => item.localName))],
-      ),
+      wrapperLocalNames: Object.freeze([
+        ...new Set(elementPath.slice(0, -1).map((item) => item.localName)),
+      ]),
     });
   }
   if (!ts.isCallExpression(expression)) return undefined;
@@ -340,12 +251,6 @@ function readComposedRouteChoicePath(
   return uniqueCandidates.length === 1 && uniqueCandidates[0] !== undefined
     ? Object.freeze({ localName: uniqueCandidates[0], wrapperLocalNames: Object.freeze([]) })
     : undefined;
-}
-
-/** Reads an identifier/string object key while rejecting computed route catalog identities. */
-function readStaticPropertyName(name: ts.PropertyName): string | undefined {
-  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
-  return undefined;
 }
 
 /**
@@ -387,7 +292,7 @@ export function readPreviewInspectorStaticAbsolutePathArgument(
 }
 
 /**
- * Returns the direct immutable variable or default export that owns one factory result.
+ * Returns only a module-level immutable variable or default export owning one factory result.
  *
  * A default factory expression has no PascalCase local binding, but it is still an exact selected
  * export and can safely expose its inert page-map choices.
@@ -402,7 +307,11 @@ function readDirectFactoryResultName(callExpression: ts.CallExpression): string 
   ) {
     current = current.parent;
   }
-  if (ts.isExportAssignment(current.parent) && current.parent.expression === current) {
+  if (
+    ts.isExportAssignment(current.parent) &&
+    current.parent.expression === current &&
+    ts.isSourceFile(current.parent.parent)
+  ) {
     return 'default';
   }
   const declaration = current.parent;
@@ -410,6 +319,8 @@ function readDirectFactoryResultName(callExpression: ts.CallExpression): string 
     declaration.initializer === current &&
     ts.isIdentifier(declaration.name) &&
     ts.isVariableDeclarationList(declaration.parent) &&
+    ts.isVariableStatement(declaration.parent.parent) &&
+    ts.isSourceFile(declaration.parent.parent.parent) &&
     (declaration.parent.flags & ts.NodeFlags.Const) !== 0
     ? declaration.name.text
     : undefined;
@@ -472,6 +383,12 @@ function readPriorTopLevelConstInitializer(
 function hasNestedBinding(identifier: ts.Identifier, sourceFile: ts.SourceFile): boolean {
   let current: ts.Node = identifier.parent;
   while (current !== sourceFile) {
+    if (
+      (ts.isFunctionExpression(current) || ts.isClassExpression(current)) &&
+      current.name?.text === identifier.text
+    ) {
+      return true;
+    }
     if (
       ts.isFunctionLike(current) &&
       current.parameters.some((parameter) => bindingNameContains(parameter.name, identifier.text))

@@ -135,4 +135,44 @@ describe('rankPreviewInspectorPageCandidates', () => {
       rankPreviewInspectorPageCandidates([app, companyApp, page], 2).map((item) => item.id),
     ).toEqual(['app', 'page']);
   });
+
+  it('prefers authored containment when a generated sibling has equal shell coverage', () => {
+    const authored = createCandidate({ id: 'authored' });
+    const detached = createCandidate({
+      ...authored,
+      id: 'detached',
+      detachedTargetPlacement: 'overlay-sibling',
+    });
+    expect(
+      rankPreviewInspectorPageCandidates([detached, authored]).map((candidate) => candidate.id),
+    ).toEqual(['authored', 'detached']);
+  });
+
+  it('retains stronger page coverage ahead of a nearer contained component', () => {
+    const page = createCandidate({
+      id: 'complete-page',
+      detachedTargetPlacement: 'overlay-sibling',
+    });
+    const nearer = createCandidate({
+      id: 'nearer',
+      complete: false,
+      root: {
+        exportName: 'Panel',
+        sourcePath: '/workspace/Panel.tsx',
+      },
+    });
+    expect(
+      rankPreviewInspectorPageCandidates([nearer, page]).map((candidate) => candidate.id),
+    ).toEqual(['complete-page', 'nearer']);
+  });
+
+  it('preserves discovery order and every choice when score and placement both match', () => {
+    const candidates = [
+      createCandidate({ id: 'second-discovered' }),
+      createCandidate({ id: 'first-discovered' }),
+    ];
+    expect(rankPreviewInspectorPageCandidates(candidates).map((candidate) => candidate.id)).toEqual(
+      ['second-discovered', 'first-discovered'],
+    );
+  });
 });

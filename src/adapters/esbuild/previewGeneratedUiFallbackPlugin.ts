@@ -13,6 +13,7 @@ import {
   canonicalizeExistingPath,
   canonicalizePathThroughExistingAncestor,
 } from '../../shared/pathIdentity';
+import { readCachedPreviewAnalysisSourceFile } from './previewAnalysisSourceFile';
 import { createPreviewGeneratedUiSemanticStyleRuntimeSource } from './previewGeneratedUiSemanticStyles';
 import { PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
 import type { PreviewStaticModuleResolver } from './previewStaticModuleResolver';
@@ -77,6 +78,9 @@ interface PreviewGeneratedUiMutableExportRequest {
   forwardsAllExports: boolean;
 }
 
+/** Existing authored parent edges; export demand is parsed only if a generated UI is missing. */
+type PreviewGeneratedUiParentRequests = Map<string, Map<string, Set<string>>>;
+
 /**
  * Creates a fail-closed fallback for missing generated UI source reached through tsconfig aliases.
  *
@@ -90,7 +94,7 @@ export function createPreviewGeneratedUiFallbackPlugin(
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
   /** Marker discovery depends on a missing candidate's parent, not its individual leaf name. */
   const markerByCandidateDirectory = new Map<string, PreviewGeneratedUiMarker | null>();
-  const requestedExportsBySource = new Map<string, Set<string>>();
+  const parentsBySource: PreviewGeneratedUiParentRequests = new Map();
   const warnedMarkerPaths = new Set<string>();
   return {
     name: 'react-preview-generated-ui-fallback',
@@ -100,7 +104,7 @@ export function createPreviewGeneratedUiFallbackPlugin(
       build.onStart(() => {
         markerByCandidateDirectory.clear();
         requestByImporter.clear();
-        requestedExportsBySource.clear();
+        parentsBySource.clear();
       });
 
       /** Proves a missing generated alias lexically without recursively resolving every import. */
@@ -126,35 +130,14 @@ export function createPreviewGeneratedUiFallbackPlugin(
         );
         if (lexicalCandidatePath === undefined) {
           if (!isRelativeModuleSpecifier(arguments_.path)) return undefined;
-          propagateRequestedExportsToAuthoredModule(
+          recordAuthoredModuleParent(
             arguments_.path,
             importerPath,
-            new Set(
-              readRequestedExports(
-                importerPath,
-                arguments_.path,
-                options.readSource,
-                requestByImporter,
-              ).exportNames,
-            ),
-            requestedExportsBySource,
+            parentsBySource,
             options.staticModuleResolver,
             workspaceRoot,
           );
           return undefined;
-        }
-        const request = readRequestedExports(
-          importerPath,
-          arguments_.path,
-          options.readSource,
-          requestByImporter,
-        );
-        const exportNames = new Set(request.exportNames);
-        if (request.forwardsAllExports) {
-          for (const exportName of requestedExportsBySource.get(sourceIdentity(importerPath)) ??
-            []) {
-            if (exportName !== 'default') exportNames.add(exportName);
-          }
         }
         const candidatePath = canonicalizePathThroughExistingAncestor(lexicalCandidatePath);
         if (!isPathInside(workspaceRoot, candidatePath)) {
@@ -167,6 +150,22 @@ export function createPreviewGeneratedUiFallbackPlugin(
           markerByCandidateDirectory.set(candidateDirectory, marker);
         }
         if (marker === null) return undefined;
+        const request = readRequestedExports(
+          importerPath,
+          arguments_.path,
+          options.readSource,
+          requestByImporter,
+        );
+        const exportNames = new Set(request.exportNames);
+        if (request.forwardsAllExports) {
+          for (const name of readForwardedExportNames(
+            importerPath,
+            parentsBySource,
+            options.readSource,
+            requestByImporter,
+          ))
+            exportNames.add(name);
+        }
         options.registerWatchDirectory?.(marker.directoryPath);
         const moduleLabel = formatWorkspacePath(candidatePath, workspaceRoot);
         return {
@@ -485,9 +484,9 @@ function readRequestedExports(
 }
 
 /**
- * Parses and traverses one importer once to index every static import and re-export specifier.
- * Property accesses are collected by identifier during that same traversal, then associated with
- * namespace imports afterward so valid but unusually late import declarations remain supported.
+ * Indexes static module declarations without walking unrelated component/function bodies. Only
+ * namespace imports need a property-use traversal; collecting all declarations first also keeps
+ * unusually late imports and nested namespace/module declarations independent of source order.
  */
 function collectRequestedExportsBySpecifier(
   importerPath: string,
@@ -496,7 +495,12 @@ function collectRequestedExportsBySpecifier(
   let sourceFile: ts.SourceFile;
   try {
     const sourceText = readSource?.(importerPath) ?? readFileSync(importerPath, 'utf8');
-    sourceFile = ts.createSourceFile(importerPath, sourceText, ts.ScriptTarget.Latest, false);
+    sourceFile =
+      readCachedPreviewAnalysisSourceFile(
+        importerPath,
+        sourceText,
+        readGeneratedUiSourceScriptKind(importerPath),
+      ) ?? ts.createSourceFile(importerPath, sourceText, ts.ScriptTarget.Latest, false);
   } catch {
     return new Map();
   }
@@ -520,7 +524,7 @@ function collectRequestedExportsBySpecifier(
     index.set(key, values);
   }
 
-  const visit = (node: ts.Node): void => {
+  const readDeclaration = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
       const moduleSpecifier = node.moduleSpecifier.text;
       const request = getRequest(moduleSpecifier);
@@ -548,12 +552,26 @@ function collectRequestedExportsBySpecifier(
         }
       }
     }
-    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
-      addIndexedValue(propertyNamesByBinding, node.expression.text, node.name.text);
+    if (ts.isSourceFile(node) || ts.isModuleBlock(node)) {
+      for (const statement of node.statements) readDeclaration(statement);
+    } else if (ts.isModuleDeclaration(node) && node.body !== undefined) {
+      readDeclaration(node.body);
     }
-    ts.forEachChild(node, visit);
   };
-  visit(sourceFile);
+  readDeclaration(sourceFile);
+  if (namespaceSpecifiersByBinding.size > 0) {
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        namespaceSpecifiersByBinding.has(node.expression.text)
+      ) {
+        addIndexedValue(propertyNamesByBinding, node.expression.text, node.name.text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
 
   for (const [bindingName, moduleSpecifiers] of namespaceSpecifiersByBinding) {
     const propertyNames = propertyNamesByBinding.get(bindingName) ?? [];
@@ -573,6 +591,16 @@ function collectRequestedExportsBySpecifier(
   );
 }
 
+/** Matches TypeScript's inferred filename grammar so only identical read-only syntax is shared. */
+function readGeneratedUiSourceScriptKind(sourcePath: string): ts.ScriptKind {
+  const extension = path.extname(sourcePath).toLowerCase();
+  if (extension === '.tsx') return ts.ScriptKind.TSX;
+  if (extension === '.jsx') return ts.ScriptKind.JSX;
+  if (extension === '.js' || extension === '.mjs' || extension === '.cjs') return ts.ScriptKind.JS;
+  if (extension === '.json') return ts.ScriptKind.JSON;
+  return ts.ScriptKind.TS;
+}
+
 /** Limits barrel-demand tracking to explicit relative authored edges. */
 function isRelativeModuleSpecifier(moduleSpecifier: string): boolean {
   const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0];
@@ -586,29 +614,52 @@ function isDependencyStorePath(sourcePath: string, workspaceRoot: string): boole
 }
 
 /**
- * Carries named demand across an existing relative barrel before esbuild loads its dependencies.
- * This avoids a workspace scan: a downstream `import { Button } from './barrel'` records `Button`
- * on that exact authored file, and its later `export *` can make the missing generated proxy expose
- * a statically enumerable property. Package imports are intentionally excluded from this fast path.
+ * Records a reached relative edge without reading or parsing the importing module. Its names are
+ * needed only after a missing generated UI has passed the strong marker/confinement checks.
  */
-function propagateRequestedExportsToAuthoredModule(
+function recordAuthoredModuleParent(
   moduleSpecifier: string,
   importerPath: string,
-  exportNames: ReadonlySet<string>,
-  requestedExportsBySource: Map<string, Set<string>>,
+  parentsBySource: PreviewGeneratedUiParentRequests,
   staticModuleResolver: Pick<PreviewStaticModuleResolver, 'resolve'>,
   workspaceRoot: string,
 ): void {
   const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0];
-  if (exportNames.size === 0 || cleanSpecifier === undefined || !/^\.\.?\//u.test(cleanSpecifier)) {
-    return;
-  }
+  if (cleanSpecifier === undefined || !/^\.\.?\//u.test(cleanSpecifier)) return;
   const resolvedPath = staticModuleResolver.resolve(cleanSpecifier, importerPath);
   if (resolvedPath === undefined || !isPathInside(workspaceRoot, resolvedPath)) return;
-  const targetNames =
-    requestedExportsBySource.get(sourceIdentity(resolvedPath)) ?? new Set<string>();
-  for (const exportName of exportNames) targetNames.add(exportName);
-  requestedExportsBySource.set(sourceIdentity(resolvedPath), targetNames);
+  const target = sourceIdentity(resolvedPath);
+  const parent = sourceIdentity(importerPath);
+  if (!isPathInside(workspaceRoot, target) || !isPathInside(workspaceRoot, parent)) return;
+  const parents = parentsBySource.get(target) ?? new Map<string, Set<string>>();
+  const specifiers = parents.get(parent) ?? new Set<string>();
+  specifiers.add(moduleSpecifier);
+  parents.set(parent, specifiers);
+  parentsBySource.set(target, parents);
+}
+
+/** Follows only reached star barrels, preserving source-side names and terminating cycles. */
+function readForwardedExportNames(
+  sourcePath: string,
+  parentsBySource: PreviewGeneratedUiParentRequests,
+  readSource: PreviewGeneratedUiFallbackOptions['readSource'],
+  requestByImporter: Map<string, Map<string, PreviewGeneratedUiExportRequest>>,
+): readonly string[] {
+  const names = new Set<string>();
+  const pending = [sourceIdentity(sourcePath)];
+  const visited = new Set<string>();
+  for (const source of pending) {
+    if (visited.has(source)) continue;
+    visited.add(source);
+    for (const [parent, specifiers] of parentsBySource.get(source) ?? []) {
+      for (const specifier of specifiers) {
+        const request = readRequestedExports(parent, specifier, readSource, requestByImporter);
+        for (const name of request.exportNames) if (name !== 'default') names.add(name);
+        if (request.forwardsAllExports) pending.push(parent);
+      }
+    }
+  }
+  return [...names].sort();
 }
 
 /** Uses one canonical key for disk, snapshot, and Yarn-linked authored source identities. */
@@ -645,7 +696,7 @@ function isDirectory(candidatePath: string): boolean {
 
 /** Checks workspace containment without accepting sibling-prefix lookalikes. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

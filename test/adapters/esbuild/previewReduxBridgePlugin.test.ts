@@ -3,11 +3,11 @@
  * Every behavior executes from a real esbuild bundle in a VM, avoiding extension-owned Redux
  * dependencies while proving Provider identity, state selection, and read-only dispatch semantics.
  */
+import { build } from 'esbuild';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { createContext, runInContext, type Context } from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { createContext, runInContext, type Context } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewReduxBridgePlugin } from '../../../src/adapters/esbuild/previewReduxBridgePlugin';
 import { createPreviewSampleDateApiExpression } from '../../../src/adapters/esbuild/previewSampleDateRuntimeSource';
@@ -173,6 +173,39 @@ describe('createPreviewReduxBridgePlugin', () => {
         createdAt: '2026-10-06T09:00:00.000Z',
         dataAggregatedAt: { value: Date.parse('2026-10-06T09:00:00.000Z') },
         name: '2026-01-15 release',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Year/month leaves holding the canonical day's parts move to the current calendar by key. */
+  it('places canonical year and month leaves in automatic state on the current month', async () => {
+    const projectRoot = await createTemporaryProject('redux-automatic-year-month-preview-');
+
+    try {
+      await installFakeReactReduxPackage(projectRoot);
+      const context = await executeReduxBridgeFixture(
+        projectRoot,
+        [
+          "import { createReduxPreviewElement } from 'react-preview:redux';",
+          "const element = createReduxPreviewElement('target', { configuration: undefined });",
+          'globalThis.__reduxBridgeResult = element.props.store.getState().driveReport;',
+        ].join('\n'),
+        {
+          driveReport: {
+            currentYearMonth: { month: 1, year: 2026 },
+            stats: { currentYear: 2026, monthCount: 1, target_month: 1, years: 2026, yearMonth: 1 },
+            other: { year: 1999 },
+          },
+        },
+        `${createPreviewSampleDateApiExpression()}.baseOverride = new Date(2027, 2, 6, 12);`,
+      );
+
+      expect(JSON.parse(JSON.stringify(context.__reduxBridgeResult))).toEqual({
+        currentYearMonth: { month: 3, year: 2027 },
+        stats: { currentYear: 2027, monthCount: 1, target_month: 3, yearMonth: 1, years: 2026 },
+        other: { year: 1999 },
       });
     } finally {
       await rm(projectRoot, { force: true, recursive: true });

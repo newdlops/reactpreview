@@ -168,17 +168,20 @@ function createStyleSheetManagerElement(StyleSheetManager, child, target, plan) 
   return element;
 }
 
-/** Replays authored options and supplies only legacy managers with an isolated required target. */
+/** Preserves cold modern injection and owns only replacement styles until that revision unmounts. */
 export function preparePreviewStyleSheetBoundary(options) {
   const StyleSheetManager = readStyleSheetManager();
   const selected = chooseStyleSheetPlan(options?.configuration, options?.configurationStatus, options?.plan);
-  const targetMode = requiresOwnedLegacyTarget(StyleSheetManager) ? 'owned-legacy' : 'document-default';
+  const previousBoundary = globalThis[Symbol.for('newdlops.react-file-preview.hot-runtime')]?.activeStyleSheetBoundary;
+  const targetMode = requiresOwnedLegacyTarget(StyleSheetManager)
+    ? 'owned-legacy'
+    : previousBoundary === undefined ? 'document-default' : 'owned-modern';
   let target;
   let activated = false;
   let disposed = false;
   let committed = false;
   const makeTarget = () => {
-    if (targetMode !== 'owned-legacy') return undefined;
+    if (targetMode === 'document-default') return undefined;
     if (target !== undefined) return target;
     if (typeof document === 'undefined' || document.head === null || document.head === undefined) return undefined;
     target = document.createElement('div');
@@ -197,8 +200,8 @@ export function preparePreviewStyleSheetBoundary(options) {
     activate() {
       if (disposed || activated || identity) return;
       const ownedTarget = makeTarget();
-      if (targetMode === 'owned-legacy' && ownedTarget === undefined) {
-        previewStyleSheetRuntimeStatus = 'unavailable: document.head is not available for legacy StyleSheetManager';
+      if (targetMode !== 'document-default' && ownedTarget === undefined) {
+        previewStyleSheetRuntimeStatus = 'unavailable: document.head is not available for StyleSheetManager';
         return;
       }
       if (ownedTarget !== undefined) document.head.appendChild(ownedTarget);

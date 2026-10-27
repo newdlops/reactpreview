@@ -74,19 +74,22 @@ function isPreviewInspectorRegisteredVirtualPageSource(candidate, sourcePath) {
  * already proven both the exact shell module and the branch that continues through the component,
  * so selecting that continuation is deterministic and does not require a user-authored payload.
  *
- * Manual and render-outcome choices retain precedence. Ordinary page components, ternaries, modal
- * visibility, and files outside the selected recipe are never changed by this bootstrap decision.
+ * Manual and render-outcome choices retain precedence. A logical/ternary gate additionally needs
+ * one exact compiler-marked JSX site on the active path; other branches keep authored behavior.
  */
 function readPreviewInspectorVirtualPageShellContinuation(
   metadata,
   manualOrOutcomeOverride,
   autoOverride,
+  authoredValue,
 ) {
+  const selectedJsxBranch = metadata?.targetBranchEvidence === 'selected-target' &&
+    ['early-return', 'logical-and', 'ternary'].includes(metadata?.kind) && metadata?.requiresAuthoredState !== true;
   if (
     manualOrOutcomeOverride !== undefined ||
     autoOverride !== undefined ||
     previewInspectorSession.fallbackValuesEnabled !== true ||
-    metadata?.kind !== 'early-return' ||
+    metadata?.kind !== 'early-return' && !selectedJsxBranch ||
     !['truthy', 'falsy'].includes(metadata?.targetBranch)
   ) {
     return undefined;
@@ -103,6 +106,27 @@ function readPreviewInspectorVirtualPageShellContinuation(
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   const shells = candidate?.virtualPage?.shells;
   if (typeof metadata.sourcePath !== 'string') return undefined;
+  if (selectedJsxBranch && (candidate?.selectedJsxOccurrenceIds?.length ?? 0) > 0) {
+    const provenOwner = (candidate?.renderPath?.steps ?? []).some((step) =>
+      step?.invocation?.mode === 'jsx' && step.invocation.sourcePath === metadata.sourcePath);
+    return provenOwner ? metadata.targetBranch === 'truthy' : undefined;
+  }
+  if (metadata.kind !== 'early-return') return undefined;
+  if (metadata.renderValueHelper === true) {
+    if (
+      typeof authoredValue !== 'boolean' ||
+      metadata.targetBranchEvidence !== 'selected-target' ||
+      typeof metadata.targetCallName !== 'string' ||
+      metadata.targetCallName.length === 0 ||
+      !Array.isArray(candidate?.renderPath?.steps)
+    ) return undefined;
+    const steps = candidate.renderPath.steps;
+    const ownsReturn = steps.some((step, index) =>
+      index > 0 && step?.sourcePath === metadata.sourcePath &&
+      step?.label === metadata.ownerName && steps[index - 1]?.label === metadata.targetCallName,
+    );
+    return ownsReturn ? metadata.targetBranch === 'truthy' : undefined;
+  }
   const ownsGuard =
     (Array.isArray(shells) && shells.some(
       (shell) =>

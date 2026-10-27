@@ -1,8 +1,9 @@
 import { createPreviewInspectorHostContainmentRuntimeSource } from './previewInspectorHostContainmentRuntimeSource';
 
 /**
- * Generates bounded viewport activation for exact targets behind authored scroll animations, and
- * a one-time scroll to a reached target that authored page chrome left outside the window.
+ * Generates bounded viewport activation for exact targets behind authored scroll animations.
+ * Each committed target host is revealed once, without retaining released DOM, so an async or
+ * prepared-page replacement receives its own activation. Human control changes cancel the epoch.
  */
 export function createPreviewInspectorTargetViewportRevealRuntimeSource(): string {
   return String.raw`
@@ -14,7 +15,7 @@ ${createPreviewInspectorHostContainmentRuntimeSource()}
  * transition. Positive geometry keeps this separate from intentionally empty and display-hidden
  * targets, while exact compiler boundaries prevent an unrelated page host from moving the page.
  */
-function readPreviewInspectorTargetViewportRevealElement(state) {
+function readPreviewInspectorTargetViewportRevealElement(state, attemptedElements) {
   const viewportWidth = Number(globalThis.innerWidth);
   const viewportHeight = Number(globalThis.innerHeight);
   const readStyle = (element) => {
@@ -27,6 +28,7 @@ function readPreviewInspectorTargetViewportRevealElement(state) {
     for (const element of elements) {
       if (
         element?.nodeType !== 1 || element.isConnected !== true || element.hidden === true ||
+        attemptedElements?.has(element) === true ||
         isPreviewInspectorUiElement(element) || typeof element.scrollIntoView !== 'function' ||
         typeof element.getBoundingClientRect !== 'function'
       ) continue;
@@ -103,33 +105,50 @@ function readPreviewInspectorTargetViewportRevealElement(state) {
   return undefined;
 }
 
-/** Scrolls an exact mounted target once, allowing its authored IntersectionObserver to reveal it. */
+/** Reveals each exact committed host once; replacing a loading host does not consume its successor. */
 function revealPreviewInspectorMountedTargetViewport(descriptor, candidate, state) {
+  const controlRevision = previewInspectorSession.neuralHumanControlRevision;
   if (
-    state.viewportRevealAttempted === true || state.directTarget === true ||
+    state.viewportRevealPending === true || state.directTarget === true ||
+    state.viewportRevealAttempted === true &&
+      state.viewportRevealControlRevision !== controlRevision ||
     state.pageRootCommitted !== true || previewInspectorSession.activeTargetReachabilityKey !== state.key
   ) return false;
-  state.viewportRevealAttempted = true;
-  const element = readPreviewInspectorTargetViewportRevealElement(state);
+  const attemptedElements = state.viewportRevealAttempted === true &&
+    state.viewportRevealAttemptedElements instanceof WeakSet
+    ? state.viewportRevealAttemptedElements : new WeakSet();
+  const element = readPreviewInspectorTargetViewportRevealElement(state, attemptedElements);
   if (element === undefined) return false;
+  // An async target can have no measurable host yet; consume the one shot only for a real scroll.
+  state.viewportRevealAttempted = true;
+  state.viewportRevealAttemptedElements = attemptedElements;
+  state.viewportRevealControlRevision = controlRevision;
+  attemptedElements.add(element);
+  const entryRevision = typeof previewEntryRevision === 'number' ? previewEntryRevision : undefined;
   try {
     element.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
   } catch {
     return false;
   }
   state.viewportRevealPending = true;
+  const pendingToken = {};
+  state.viewportRevealPendingToken = pendingToken;
   state.status = 'revealing-target-viewport';
   state.probeRevision += 1;
   notifyPreviewInspector();
   schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorCommitRefresh();
   globalThis.setTimeout(() => {
+    if (state.viewportRevealPendingToken !== pendingToken) return;
+    delete state.viewportRevealPendingToken;
+    state.viewportRevealPending = false;
     if (
-      state.viewportRevealPending !== true || state.directTarget === true ||
+      state.directTarget === true ||
+      previewInspectorSession.neuralHumanControlRevision !== controlRevision ||
+      (typeof previewEntryRevision === 'number' ? previewEntryRevision : undefined) !== entryRevision ||
       previewInspectorSession.activeTargetReachabilityKey !== state.key ||
       previewInspectorSession.targetReachabilityByKey?.get(state.key) !== state
     ) return;
-    state.viewportRevealPending = false;
     const selectedDescriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
       ? findSelectedPreviewInspectorDescriptor()
       : undefined;

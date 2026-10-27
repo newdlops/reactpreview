@@ -237,7 +237,7 @@ function normalizeWorkspaceBoundary(projectRoot: string, workspaceRoot: string):
 
 /** Reports inclusive containment without accepting sibling paths with a common text prefix. */
 function isPathInsideOrEqual(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

@@ -1,16 +1,22 @@
 /** Verifies that incremental Page Inspector entries and their host receive one stable private key. */
+import { stop } from 'esbuild';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
-import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
+
+import { createPreviewCompilerTestScope } from './support/previewCompilerTestScope';
 
 const FIXTURE_PATH = fileURLToPath(new URL('../../fixtures/SamplePreview.tsx', import.meta.url));
 const PROJECT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
+const compilerScope = createPreviewCompilerTestScope();
+afterEach(() => compilerScope.shutdown());
+afterAll(async () => stop());
+
 describe('EsbuildPreviewCompiler Inspector gesture key', () => {
   /** Retains one unpredictable key across compatible native rebuilds and embeds it in the entry. */
   it('returns the same target-scoped key used by the generated browser signer', async () => {
-    const compiler = new EsbuildPreviewCompiler();
+    const compiler = compilerScope.create();
     const sourceText = await readFile(FIXTURE_PATH, 'utf8');
     const request = {
       dependencySnapshots: [],
@@ -34,8 +40,7 @@ describe('EsbuildPreviewCompiler Inspector gesture key', () => {
       await compiler.shutdown();
     }
   } /*
-   * The complete suite intentionally runs many native esbuild fixtures in parallel. This test
-   * performs two real compiler passes, so allow cold CI contention without relaxing production
-   * preview watchdogs or the focused test's ordinary ~3 second runtime.
-   */, 15_000);
+   * This test performs two real compiler passes. Give each pass the ordinary 15 second test
+   * budget under cold native-build contention; production preview watchdogs are independent.
+   */, 30_000);
 });

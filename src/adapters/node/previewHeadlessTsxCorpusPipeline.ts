@@ -14,13 +14,23 @@ export const PREVIEW_TSX_CORPUS_PIPELINE_SCHEMA = 12;
 export const PREVIEW_TSX_CORPUS_SPOOL_LIMIT_BYTES = 2 * 1024 * 1024 * 1024;
 
 export interface PreviewTsxCorpusSpoolIdentity {
-  readonly attemptId: string; readonly campaignId: string; readonly candidate: string;
-  readonly engineDigest: string; readonly generationId: string; readonly laneId: number;
-  readonly policyDigest: string; readonly row: number; readonly sourceDigest: string;
+  readonly attemptId: string;
+  readonly campaignId: string;
+  readonly candidate: string;
+  readonly engineDigest: string;
+  readonly generationId: string;
+  readonly laneId: number;
+  readonly policyDigest: string;
+  readonly row: number;
+  readonly sourceDigest: string;
 }
 export interface PreviewTsxCorpusSpoolDescriptor extends PreviewTsxCorpusSpoolIdentity {
-  readonly absoluteDeadlineEpochMs: number; readonly bundleBytes: number; readonly bundleSha256: string;
-  readonly compiledAtEpochMs: number; readonly descriptorSha256: string; readonly schema: 12;
+  readonly absoluteDeadlineEpochMs: number;
+  readonly bundleBytes: number;
+  readonly bundleSha256: string;
+  readonly compiledAtEpochMs: number;
+  readonly descriptorSha256: string;
+  readonly schema: 12;
   readonly sharedChunks: readonly PreviewTsxCorpusSharedChunkDescriptor[];
   readonly spoolPath: string;
 }
@@ -71,23 +81,52 @@ export type PreviewTsxCorpusCompilerLaneMessage =
       readonly version: 12;
     }
   | { readonly kind: 'drained'; readonly version: 12 };
-interface Envelope { readonly bundle: PreviewBundle; readonly identity: PreviewTsxCorpusSpoolIdentity; readonly request: PreviewBuildRequest; readonly schema: 12; }
+interface Envelope {
+  readonly bundle: PreviewBundle;
+  readonly identity: PreviewTsxCorpusSpoolIdentity;
+  readonly request: PreviewBuildRequest;
+  readonly schema: 12;
+}
 
 const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
-const descriptorBytes = (value: Omit<PreviewTsxCorpusSpoolDescriptor, 'descriptorSha256'>): Buffer => Buffer.from(`${JSON.stringify(value)}\n`);
+const descriptorBytes = (
+  value: Omit<PreviewTsxCorpusSpoolDescriptor, 'descriptorSha256'>,
+): Buffer => Buffer.from(`${JSON.stringify(value)}\n`);
 
 /** Atomically persists and independently verifies a lossless compiler handoff. */
 export async function writePreviewTsxCorpusSpool(
-  root: string, identity: PreviewTsxCorpusSpoolIdentity, bundle: PreviewBundle, request: PreviewBuildRequest, absoluteDeadlineEpochMs: number,
+  root: string,
+  identity: PreviewTsxCorpusSpoolIdentity,
+  bundle: PreviewBundle,
+  request: PreviewBuildRequest,
+  absoluteDeadlineEpochMs: number,
 ): Promise<PreviewTsxCorpusSpoolDescriptor> {
   const shared = await persistSharedVendorChunks(root, bundle);
-  const encoded = serialize({ bundle: shared.bundle, identity, request, schema: PREVIEW_TSX_CORPUS_PIPELINE_SCHEMA } satisfies Envelope);
+  const encoded = serialize({
+    bundle: shared.bundle,
+    identity,
+    request,
+    schema: PREVIEW_TSX_CORPUS_PIPELINE_SCHEMA,
+  } satisfies Envelope);
   // Detect unsupported values before a render worker ever sees the handoff.
-  const roundTrip = deserialize(encoded) as Envelope;
-  if (roundTrip.schema !== 12 || !isDeepStrictEqual(roundTrip.bundle, shared.bundle)) {
+  const roundTrip: unknown = deserialize(encoded);
+  if (
+    typeof roundTrip !== 'object' ||
+    roundTrip === null ||
+    !('schema' in roundTrip) ||
+    roundTrip.schema !== 12 ||
+    !('bundle' in roundTrip) ||
+    !isDeepStrictEqual(roundTrip.bundle, shared.bundle)
+  ) {
     throw new Error('PreviewBundle failed exact v8 spool round trip.');
   }
-  const directory = path.join(root, 'spool', identity.engineDigest, identity.policyDigest, identity.candidate);
+  const directory = path.join(
+    root,
+    'spool',
+    identity.engineDigest,
+    identity.policyDigest,
+    identity.candidate,
+  );
   await mkdir(directory, { recursive: true });
   const stem = `${identity.row.toString().padStart(4, '0')}-${identity.attemptId}`;
   const spoolPath = path.join(directory, `${stem}.v8`);
@@ -96,7 +135,16 @@ export async function writePreviewTsxCorpusSpool(
   await rename(temporary, spoolPath);
   const committed = await readFile(spoolPath);
   if (!committed.equals(encoded)) throw new Error(`Spool atomic verification failed: ${spoolPath}`);
-  const bare = { ...identity, absoluteDeadlineEpochMs, bundleBytes: committed.byteLength, bundleSha256: digest(committed), compiledAtEpochMs: Date.now(), schema: 12 as const, sharedChunks: shared.descriptors, spoolPath };
+  const bare = {
+    ...identity,
+    absoluteDeadlineEpochMs,
+    bundleBytes: committed.byteLength,
+    bundleSha256: digest(committed),
+    compiledAtEpochMs: Date.now(),
+    schema: 12 as const,
+    sharedChunks: shared.descriptors,
+    spoolPath,
+  };
   const descriptor = { ...bare, descriptorSha256: digest(descriptorBytes(bare)) };
   const descriptorPath = `${spoolPath}.descriptor.json`;
   const descriptorTemporary = `${descriptorPath}.${randomUUID()}.tmp`;
@@ -106,41 +154,97 @@ export async function writePreviewTsxCorpusSpool(
 }
 
 /** Validates identity, byte length, checksums, then and only then deserializes. */
-export async function readPreviewTsxCorpusSpool(descriptor: PreviewTsxCorpusSpoolDescriptor, expected: PreviewTsxCorpusSpoolIdentity): Promise<Envelope> {
+export async function readPreviewTsxCorpusSpool(
+  descriptor: PreviewTsxCorpusSpoolDescriptor,
+  expected: PreviewTsxCorpusSpoolIdentity,
+): Promise<Envelope> {
   const verified = await readVerifiedPreviewTsxCorpusSpool(descriptor, expected);
-  if (Date.now() > verified.descriptor.absoluteDeadlineEpochMs) throw new Error('Row deadline expired while waiting in the render queue.');
-  const value = deserialize(verified.spoolBytes) as Envelope;
-  if (value.schema !== 12 || JSON.stringify(value.identity) !== JSON.stringify(expected)) throw new Error('Spool envelope identity mismatch.');
+  if (Date.now() > verified.descriptor.absoluteDeadlineEpochMs)
+    throw new Error('Row deadline expired while waiting in the render queue.');
+  const decoded: unknown = deserialize(verified.spoolBytes);
+  if (
+    typeof decoded !== 'object' ||
+    decoded === null ||
+    !('schema' in decoded) ||
+    decoded.schema !== 12 ||
+    !('identity' in decoded) ||
+    JSON.stringify(decoded.identity) !== JSON.stringify(expected)
+  )
+    throw new Error('Spool envelope identity mismatch.');
+  const value = decoded as Envelope;
   return { ...value, bundle: restoreSharedVendorChunks(value.bundle, verified.sharedChunks) };
 }
 
-export async function verifyPreviewTsxCorpusSpool(descriptor: PreviewTsxCorpusSpoolDescriptor, expected: PreviewTsxCorpusSpoolIdentity): Promise<PreviewTsxCorpusSpoolDescriptor> {
+/** Reads and verifies every persisted spool identity and payload before accepting it for browser rendering. */
+export async function verifyPreviewTsxCorpusSpool(
+  descriptor: PreviewTsxCorpusSpoolDescriptor,
+  expected: PreviewTsxCorpusSpoolIdentity,
+): Promise<PreviewTsxCorpusSpoolDescriptor> {
   return (await readVerifiedPreviewTsxCorpusSpool(descriptor, expected)).descriptor;
 }
 
+/** Loads a spool descriptor and validates its digest, schema, and shared vendor payloads. */
 async function readVerifiedPreviewTsxCorpusSpool(
   descriptor: PreviewTsxCorpusSpoolDescriptor,
   expected: PreviewTsxCorpusSpoolIdentity,
 ): Promise<VerifiedPreviewTsxCorpusSpoolRead> {
-  if (descriptor.schema !== 12 || JSON.stringify(pickIdentity(descriptor)) !== JSON.stringify(expected)) throw new Error('Spool descriptor identity mismatch.');
-  const { descriptorSha256: _descriptorSha256, ...bare } = descriptor;
-  if (digest(descriptorBytes(bare)) !== descriptor.descriptorSha256) throw new Error('Spool descriptor checksum mismatch.');
+  const schema: unknown = descriptor.schema;
+  if (schema !== 12 || JSON.stringify(pickIdentity(descriptor)) !== JSON.stringify(expected))
+    throw new Error('Spool descriptor identity mismatch.');
+  const { descriptorSha256, ...bare } = descriptor;
+  if (digest(descriptorBytes(bare)) !== descriptorSha256)
+    throw new Error('Spool descriptor checksum mismatch.');
   const metadata = await stat(descriptor.spoolPath);
   const spoolBytes = await readFile(descriptor.spoolPath);
-  if (metadata.size !== descriptor.bundleBytes || spoolBytes.byteLength !== descriptor.bundleBytes || digest(spoolBytes) !== descriptor.bundleSha256) throw new Error('Spool bundle checksum or length mismatch.');
-  const sharedChunks = await Promise.all(descriptor.sharedChunks.map(readVerifiedSharedVendorChunk));
+  if (
+    metadata.size !== descriptor.bundleBytes ||
+    spoolBytes.byteLength !== descriptor.bundleBytes ||
+    digest(spoolBytes) !== descriptor.bundleSha256
+  )
+    throw new Error('Spool bundle checksum or length mismatch.');
+  const sharedChunks = await Promise.all(
+    descriptor.sharedChunks.map(readVerifiedSharedVendorChunk),
+  );
   return { descriptor, sharedChunks, spoolBytes };
 }
 
-export async function removePreviewTsxCorpusSpool(descriptor: PreviewTsxCorpusSpoolDescriptor): Promise<void> {
-  await Promise.all([rm(descriptor.spoolPath, { force: false }), rm(`${descriptor.spoolPath}.descriptor.json`, { force: false })]);
+/** Removes a verified campaign-owned spool after its consumer finishes. */
+export async function removePreviewTsxCorpusSpool(
+  descriptor: PreviewTsxCorpusSpoolDescriptor,
+): Promise<void> {
+  await Promise.all([
+    rm(descriptor.spoolPath, { force: false }),
+    rm(`${descriptor.spoolPath}.descriptor.json`, { force: false }),
+  ]);
 }
 
+/** Projects only the compiler and campaign identity fields that bind a spool descriptor. */
 function pickIdentity(value: PreviewTsxCorpusSpoolIdentity): PreviewTsxCorpusSpoolIdentity {
-  const { attemptId, campaignId, candidate, engineDigest, generationId, laneId, policyDigest, row, sourceDigest } = value;
-  return { attemptId, campaignId, candidate, engineDigest, generationId, laneId, policyDigest, row, sourceDigest };
+  const {
+    attemptId,
+    campaignId,
+    candidate,
+    engineDigest,
+    generationId,
+    laneId,
+    policyDigest,
+    row,
+    sourceDigest,
+  } = value;
+  return {
+    attemptId,
+    campaignId,
+    candidate,
+    engineDigest,
+    generationId,
+    laneId,
+    policyDigest,
+    row,
+    sourceDigest,
+  };
 }
 
+/** Replaces eligible inline vendor chunks with verified shared content-addressed payload references. */
 async function persistSharedVendorChunks(
   root: string,
   bundle: PreviewBundle,
@@ -171,6 +275,7 @@ async function persistSharedVendorChunks(
   return { bundle: { ...bundle, chunks: retained }, descriptors };
 }
 
+/** Commits one immutable vendor payload and verifies its content digest before returning its reference. */
 async function persistSharedVendorChunk(
   sharedPath: string,
   contents: Uint8Array,
@@ -195,6 +300,7 @@ async function persistSharedVendorChunk(
   }
 }
 
+/** Reads a shared vendor payload only after checking its confined path, byte count, and digest. */
 async function readVerifiedSharedVendorChunk(
   descriptor: PreviewTsxCorpusSharedChunkDescriptor,
 ): Promise<VerifiedPreviewTsxCorpusSharedChunk> {
@@ -205,6 +311,7 @@ async function readVerifiedSharedVendorChunk(
   return { bytes, descriptor };
 }
 
+/** Restores verified shared payload bytes into the browser bundle’s original chunk paths. */
 function restoreSharedVendorChunks(
   bundle: PreviewBundle,
   sharedChunks: readonly VerifiedPreviewTsxCorpusSharedChunk[],
@@ -213,7 +320,11 @@ function restoreSharedVendorChunks(
   const chunkCount = bundle.chunks.length + sharedChunks.length;
   const chunks = new Array<PreviewBundle['chunks'][number] | undefined>(chunkCount);
   for (const { bytes, descriptor } of sharedChunks) {
-    if (descriptor.index < 0 || descriptor.index >= chunkCount || chunks[descriptor.index] !== undefined) {
+    if (
+      descriptor.index < 0 ||
+      descriptor.index >= chunkCount ||
+      chunks[descriptor.index] !== undefined
+    ) {
       throw new Error('Shared vendor chunk index is invalid or duplicated.');
     }
     chunks[descriptor.index] = {
@@ -228,6 +339,7 @@ function restoreSharedVendorChunks(
     if (retained === undefined) throw new Error('Shared vendor chunk restoration underflowed.');
     chunks[index] = retained;
   }
-  if (retainedIndex !== bundle.chunks.length) throw new Error('Shared vendor chunk restoration overflowed.');
+  if (retainedIndex !== bundle.chunks.length)
+    throw new Error('Shared vendor chunk restoration overflowed.');
   return { ...bundle, chunks: chunks as PreviewBundle['chunks'] };
 }

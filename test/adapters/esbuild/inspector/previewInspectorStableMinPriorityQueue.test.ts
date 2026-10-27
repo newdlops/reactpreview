@@ -134,7 +134,8 @@ describe('createPreviewInspectorStableMinPriorityQueue', () => {
     const directoryCount = 3_000;
     const directories = Array.from(
       { length: directoryCount },
-      (_, index) => `/workspace/src/${String(directoryCount - index).padStart(4, '0')}-${index % 2 === 0 ? 'é' : '🙂'}`,
+      (_, index) =>
+        `/workspace/src/${String(directoryCount - index).padStart(4, '0')}-${index % 2 === 0 ? 'é' : '🙂'}`,
     );
     let comparisonCount = 0;
     const queue = createPreviewInspectorStableMinPriorityQueue(['/workspace'], (left, right) => {

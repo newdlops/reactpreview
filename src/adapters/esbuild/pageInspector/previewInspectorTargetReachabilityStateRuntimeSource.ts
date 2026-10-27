@@ -254,6 +254,20 @@ function readPreviewInspectorStandaloneTargetReachabilityState(descriptor) {
   if (state.targetMounted) {
     state.targetHasOutput = hasPreviewInspectorTargetHostOutput(state);
   }
+  state.status = state.targetHasOutput
+    ? 'reached'
+    : state.targetMounted
+      ? 'target-mounted-no-output'
+      : 'probing';
+  state.exhausted = state.targetHasOutput;
+  return state;
+}
+/** Observes current standalone output only after the toolbar commits, never during snapshot reads. */
+function observePreviewInspectorStandaloneTargetReachability() {
+  const state = readPreviewInspectorStandaloneTargetReachabilityState(
+    findSelectedPreviewInspectorDescriptor(),
+  );
+  if (state === undefined) return;
   if (
     state.targetHasOutput === true &&
     typeof recordPreviewInspectorNeuralSuccessfulPath === 'function'
@@ -262,13 +276,6 @@ function readPreviewInspectorStandaloneTargetReachabilityState(descriptor) {
   } else if (typeof handlePreviewInspectorNeuralSuccessfulPathRestorationFailure === 'function') {
     handlePreviewInspectorNeuralSuccessfulPathRestorationFailure(state);
   }
-  state.status = state.targetHasOutput
-    ? 'reached'
-    : state.targetMounted
-      ? 'target-mounted-no-output'
-      : 'probing';
-  state.exhausted = state.targetHasOutput;
-  return state;
 }
 /** Returns the retained traversal state, creating it before the candidate's first render. */
 function readPreviewInspectorTargetReachabilityState(descriptor, candidate) {
@@ -280,6 +287,56 @@ function readPreviewInspectorTargetReachabilityState(descriptor, candidate) {
     previewInspectorSession.targetReachabilityByKey.set(key, state);
   }
   return state;
+}
+`;
+}
+
+/** Creates output observation separately so standalone state readers keep their existing bindings. */
+export function createPreviewInspectorTargetOutputObservationRuntimeSource(): string {
+  return String.raw`
+/**
+ * Updates the output result and its classification together for every independent ownership probe.
+ * A HOC boundary alone is insufficient: it must own connected authored output and remain error-free.
+ * Compiler-proven navigation is the existing exception after its exact boundary leaves the route.
+ * Neural verification and requirement continuations can call this outside the main traversal;
+ * leaving targetHasOutput unchanged would publish stale failure or success beside the new kind.
+ */
+function hasPreviewInspectorTargetHostOutput(state) {
+  const boundaries = readPreviewInspectorTargetResolutionBoundaries(state);
+  state.targetHasOutput = false;
+  state.targetHasAnyHostOutput = false;
+  state.targetDeferredCallbackPending = false;
+  state.targetOutputKind = 'none';
+  state.targetOutputRecoveryPending = false;
+  state.targetEffectControllerOutput = false;
+  state.targetRenderedEmpty = false;
+  if (!(boundaries instanceof Set)) return false;
+  for (const boundary of boundaries) {
+    if (boundary?.state?.error !== undefined) continue;
+    const hasOutput = typeof hasPreviewInspectorResolvedTargetOutput === 'function'
+      ? hasPreviewInspectorResolvedTargetOutput(boundary, state)
+      : collectPreviewInspectorFiberElements(boundary).length > 0;
+    if (hasOutput) {
+      state.targetHasOutput = true;
+      return true;
+    }
+  }
+  const activeError = typeof readPreviewInspectorRuntimeHealthTargetError === 'function'
+    ? readPreviewInspectorRuntimeHealthTargetError(state.targetExportName)
+    : undefined;
+  if (
+    state.targetWasMounted === true &&
+    activeError === undefined &&
+    hasPreviewInspectorIntentionalNavigationTargetOutput(state)
+  ) {
+    state.targetHasOutput = true;
+    state.targetOutputError = undefined;
+    state.targetOutputKind = 'target-output';
+    state.targetOutputRecoveryPending = false;
+    state.targetRenderedEmpty = true;
+    return true;
+  }
+  return false;
 }
 `;
 }

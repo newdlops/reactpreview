@@ -295,7 +295,7 @@ function isAdmittedProjectSourcePath(
 
 /** Segment-aware containment prevents sibling path prefixes from crossing a trusted boundary. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

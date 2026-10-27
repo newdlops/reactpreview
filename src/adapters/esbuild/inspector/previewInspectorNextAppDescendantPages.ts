@@ -17,6 +17,7 @@ import {
   type PreviewInspectorNextAppLayoutChain,
 } from './previewInspectorNextAppLayoutChain';
 import { collectRefinedPreviewInspectorNextAppLayoutChain } from './previewInspectorNextAppParameterEvidence';
+import { readPreviewInspectorNextAppRedirectDestination } from './previewInspectorNextAppRedirectEvidence';
 
 const NEXT_APP_SHELL_PATTERN = /^(?:layout|template)\.[cm]?[jt]sx?$/iu;
 const NEXT_APP_PAGE_PATTERN = /^page\.[cm]?[jt]sx?$/iu;
@@ -36,6 +37,8 @@ export interface CollectPreviewInspectorNextAppDescendantPagesOptions {
   readonly base: PreviewInspectorPageCandidate;
   /** Optional caller cap; omitted by Page Inspector so every proven consuming page stays visible. */
   readonly maximumCount?: number;
+  /** Adds at most four uniquely proven literal redirect destinations to a cold shell shortlist. */
+  readonly includeRedirectDestinations?: boolean;
   /** Reads a bounded cost shortlist plus selected `generateStaticParams` evidence. */
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
   /** Project-aware resolver for imported static route parameter registries. */
@@ -142,6 +145,25 @@ export async function collectPreviewInspectorNextAppDescendantPages(
     )
     .slice(0, maximumCount);
 
+  if (options.includeRedirectDestinations) {
+    const initialCount = evidence.length;
+    for (let index = 0; index < evidence.length && index < initialCount + 4; index += 1) {
+      const current = evidence[index];
+      if (current === undefined || evidence.length >= initialCount + 4) break;
+      const destination = readPreviewInspectorNextAppRedirectDestination(
+        current.pagePath,
+        await readSource(current.pagePath),
+      );
+      if (destination === undefined) continue;
+      const matches = nearbyEvidence.filter(
+        (item) => item.shell.routeLocation.pathname === destination,
+      );
+      const next = matches.length === 1 ? matches[0] : undefined;
+      if (next !== undefined && !evidence.some((item) => item.pagePath === next.pagePath))
+        evidence.push(next);
+    }
+  }
+
   return Object.freeze(
     await Promise.all(
       evidence.map(async ({ pagePath, shell: initialShell }) => {
@@ -156,6 +178,10 @@ export async function collectPreviewInspectorNextAppDescendantPages(
             : { staticParameterSourceBoundary: options.staticParameterSourceBoundary }),
         });
         const shell = refinement?.shell ?? initialShell;
+        const redirectDestination = readPreviewInspectorNextAppRedirectDestination(
+          pagePath,
+          await readSource(pagePath),
+        );
         const dependencies = new Set(options.base.dependencyPaths);
         dependencies.add(pagePath);
         for (const dependencyPath of refinement?.dependencyPaths ?? []) {
@@ -171,6 +197,9 @@ export async function collectPreviewInspectorNextAppDescendantPages(
           root: Object.freeze({ exportName: 'default', sourcePath: pagePath }),
           rootAutomaticProps: Object.freeze({}),
           nextAppLayoutChain: shell.layouts,
+          ...(redirectDestination === undefined
+            ? {}
+            : { nextAppRedirectDestination: redirectDestination }),
           rootOwnsRouter: false,
           routeLocation: shell.routeLocation,
           stopReason: 'root-reached',

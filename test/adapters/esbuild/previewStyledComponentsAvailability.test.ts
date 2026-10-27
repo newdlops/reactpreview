@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
@@ -44,6 +44,34 @@ describe('discoverPreviewStyledComponentsAvailability', () => {
       });
       expect(result).toMatchObject({ available: false, staticResolutionPath: declaration });
       expect(result.dependencyPaths).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /** A package may publish index.d.ts beside a differently named browser/runtime entry. */
+  it('finds installed runtime evidence when the source resolver cannot map its declarations', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'preview-styled-runtime-'));
+    const packageRoot = path.join(root, 'node_modules/styled-components');
+    const entry = path.join(packageRoot, 'dist/styled-components.cjs.js');
+    try {
+      await mkdir(path.dirname(entry), { recursive: true });
+      await writeFile(
+        path.join(packageRoot, 'package.json'),
+        JSON.stringify({ name: 'styled-components', main: './dist/styled-components.cjs.js' }),
+      );
+      await writeFile(entry, 'throw new Error("Availability must never execute this entry");');
+      const result = await discoverPreviewStyledComponentsAvailability({
+        importerPath: path.join(root, 'src/App.tsx'),
+        resolveModule: () => undefined,
+      });
+      expect(result).toMatchObject({
+        available: true,
+        staticResolutionPath: await realpath(entry),
+      });
+      expect(result.dependencyPaths).toEqual([
+        await realpath(path.join(packageRoot, 'package.json')),
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

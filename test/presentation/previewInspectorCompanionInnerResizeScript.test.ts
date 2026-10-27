@@ -20,6 +20,7 @@ interface InnerResizeRuntime {
   ) => number;
   readonly normalizeCard: (value: unknown, maximum?: number) => number | undefined;
   readonly normalizeRatio: (value: unknown) => number;
+  readonly updateToggle: (button: FakeResizableElement, collapsed: boolean) => void;
   readonly readState: () => {
     readonly cardHeights: Record<string, number>;
     readonly collapsedSections: Record<string, boolean>;
@@ -39,10 +40,26 @@ interface FakeResizableElement {
     setProperty(name: string, value: string): void;
   };
   closest(): { readonly clientHeight: number } | null;
+  getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
 }
 
 describe('Preview Inspector companion inner resize script', () => {
+  it('keeps local accordion state and its help text aligned in both directions', () => {
+    const { runtime } = evaluateInnerResizeRuntime({});
+    const button = createFakeResizableElement(28, 0);
+    button.attributes.set('title', 'Collapse Page context · 1 path');
+    runtime.updateToggle(button, true);
+    expect(button.attributes.get('aria-expanded')).toBe('false');
+    expect(button.attributes.get('title')).toBe('Expand Page context · 1 path');
+    runtime.updateToggle(button, false);
+    expect(button.attributes.get('aria-expanded')).toBe('true');
+    expect(button.attributes.get('title')).toBe('Collapse Page context · 1 path');
+    const unlabeled = createFakeResizableElement(28, 0);
+    runtime.updateToggle(unlabeled, true);
+    expect(unlabeled.attributes.has('title')).toBe(false);
+  });
+
   /** Ensures the nonce-embedded source remains valid standalone JavaScript. */
   it('emits syntactically valid companion browser source', () => {
     expect(() => new vm.Script(createPreviewInspectorCompanionInnerResizeScript())).not.toThrow();
@@ -143,6 +160,7 @@ function evaluateInnerResizeRuntime(initialState: {
       ' applySection: applyPreviewInspectorCompanionSectionRatio,' +
       ' normalizeCard: normalizePreviewInspectorCompanionCardHeight,' +
       ' normalizeRatio: normalizePreviewInspectorCompanionSectionRatio,' +
+      ' updateToggle: updatePreviewInspectorCompanionAccordionToggle,' +
       ' readState: () => previewInspectorCompanionInnerState' +
       '};',
     context,
@@ -177,6 +195,7 @@ function createFakeResizableElement(
     attributes,
     clientHeight,
     closest: () => (viewportHeight > 0 ? { clientHeight: viewportHeight } : null),
+    getAttribute: (name) => attributes.get(name) ?? null,
     setAttribute: (name, value) => attributes.set(name, value),
     style,
   };

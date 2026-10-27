@@ -102,8 +102,8 @@ describe('EsbuildPreviewCompiler fast generic page context', () => {
 
       expect(javascript).toContain('COMPANY_LIST_PAGE');
       expect(bundle.dependencies).toContain(path.join(projectRoot, 'src/CompanyListPage.tsx'));
-      expect(javascript).toContain('previewInspectorRoutePath = "/company"');
-      expect(javascript).toContain('path: "/company"');
+      expect(javascript).toMatch(/previewInspectorRoutePath\s*=\s*"\/company"/u);
+      expect(javascript).toMatch(/path:\s*"\/company"/u);
       expect(bundle.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual(
         [],
       );
@@ -202,8 +202,8 @@ describe('EsbuildPreviewCompiler fast generic page context', () => {
       ]).toString('utf8');
 
       expect(javascript).toContain('NESTED_ROUTE_TARGET');
-      expect(javascript).toContain('initialEntries: ["/root/child"]');
-      expect(javascript).toContain('path: "/root/*"');
+      expect(javascript).toMatch(/initialEntries:\s*\["\/root\/child"\]/u);
+      expect(javascript).toMatch(/path:\s*"\/root\/\*"/u);
       expect(javascript).not.toContain(
         'path: "/root/child", element: React.createElement(NestedOwner',
       );

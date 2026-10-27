@@ -6,6 +6,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 import { joinPreviewInspectorRouteSegments } from './previewInspectorRoutePattern';
 
@@ -54,8 +55,7 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
         const values = collisionPolicy === 'last' ? [] : (patterns.get(node) ?? []);
         if (!values.includes(pattern)) values.push(pattern);
         patterns.set(node, values);
-        const evidence =
-          collisionPolicy === 'last' ? [] : (entries.get(node) ?? []);
+        const evidence = collisionPolicy === 'last' ? [] : (entries.get(node) ?? []);
         if (
           !evidence.some(
             (entry) =>
@@ -103,11 +103,9 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
       }
       return;
     }
-    const sourceFile = ts.createSourceFile(
+    const sourceFile = readPreviewAnalysisSourceFile(
       normalizedPath,
       sourceText,
-      ts.ScriptTarget.Latest,
-      true,
       normalizedPath.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
     );
     const imports = collectImports(sourceFile);
@@ -115,7 +113,11 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
       requestedName === undefined || requestedKind === 'local'
         ? undefined
         : readExportedBinding(sourceFile, requestedName);
-    if (requestedKind === 'export' && requestedName !== undefined && exportedBinding === undefined) {
+    if (
+      requestedKind === 'export' &&
+      requestedName !== undefined &&
+      exportedBinding === undefined
+    ) {
       return;
     }
     if (exportedBinding?.reexport !== undefined) {
@@ -126,12 +128,7 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
         normalizedPath,
       );
       if (resolved !== undefined)
-        await walk(
-          resolved,
-          exportedBinding.reexport.exportName,
-          'export',
-          collisionPolicy,
-        );
+        await walk(resolved, exportedBinding.reexport.exportName, 'export', collisionPolicy);
       return;
     }
     const requestedLocalName =
@@ -185,11 +182,7 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
     }
   };
 
-  await walk(
-    options.sourcePath,
-    options.catalogBindingName,
-    options.catalogBindingKind ?? 'local',
-  );
+  await walk(options.sourcePath, options.catalogBindingName, options.catalogBindingKind ?? 'local');
   return Object.freeze({
     dependencyPaths: Object.freeze([...dependencies].sort()),
     entriesByComponentName: new Map(
@@ -232,9 +225,7 @@ function readLodashInvertInput(
     return undefined;
   }
   const receiverName = callee.expression.text;
-  const receiver = imports.find(
-    (candidate) => candidate.localName === receiverName,
-  );
+  const receiver = imports.find((candidate) => candidate.localName === receiverName);
   return receiver?.moduleSpecifier === 'lodash' && receiver.exportName === 'default'
     ? input.text
     : undefined;
@@ -289,7 +280,10 @@ function readExportedBinding(
       for (const element of statement.exportClause.elements) {
         if (element.name.text !== exportName) continue;
         const localOrExportName = (element.propertyName ?? element.name).text;
-        if (statement.moduleSpecifier !== undefined && ts.isStringLiteralLike(statement.moduleSpecifier)) {
+        if (
+          statement.moduleSpecifier !== undefined &&
+          ts.isStringLiteralLike(statement.moduleSpecifier)
+        ) {
           matches.push({
             reexport: {
               exportName: localOrExportName,
@@ -308,9 +302,8 @@ function readExportedBinding(
 /** Checks authored `export` without treating `default` as a separate value edge. */
 function hasExportModifier(node: ts.Node): boolean {
   return ts.canHaveModifiers(node)
-    ? (ts.getModifiers(node)?.some(
-        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-      ) ?? false)
+    ? (ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ??
+        false)
     : false;
 }
 

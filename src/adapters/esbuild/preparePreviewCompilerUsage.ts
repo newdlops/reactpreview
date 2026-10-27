@@ -439,6 +439,7 @@ export async function preparePreviewCompilerUsage(
               sourcePaths: corridor.sourcePaths,
             })
           : await createPreviewInspectorAncestorPlan({
+              ...options.cache.renderSourceAnalysis,
               acceptedImportSpecifiers: (target) =>
                 options.resolver.getMatchedSpecifiers(target.sourcePath),
               documentPath: request.documentPath,
@@ -463,6 +464,7 @@ export async function preparePreviewCompilerUsage(
               sourcePaths: readonly string[],
             ): Promise<PreviewInspectorAncestorPlan> =>
               createPreviewInspectorAncestorPlan({
+                ...options.cache.renderSourceAnalysis,
                 acceptedImportSpecifiers: (target) =>
                   options.resolver.getMatchedSpecifiers(target.sourcePath),
                 documentPath: request.documentPath,
@@ -801,7 +803,7 @@ function mergeInventorySnapshots(
 
 /** Segment-aware containment prevents sibling path prefixes from crossing the trusted boundary. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (!relativePath.startsWith(`..${path.sep}`) &&

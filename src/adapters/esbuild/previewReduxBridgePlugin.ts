@@ -3,15 +3,15 @@
  * Projects without React Redux receive a no-op wrapper, while installed projects use their own
  * package instance so selectors and the automatic Provider share the same context identity.
  */
-import path from 'node:path';
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
+import path from 'node:path';
 import {
   PREVIEW_REDUX_BRIDGE_NAMESPACE,
   PREVIEW_REDUX_SPECIFIER,
   PREVIEW_RESOLVE_GUARD,
 } from './previewPluginProtocol';
-import { createPreviewReduxRuntimeSource } from './previewReduxRuntimeSource';
 import type { PreviewReduxStaticState } from './previewReduxRuntimeSource';
+import { createPreviewReduxRuntimeSource } from './previewReduxRuntimeSource';
 
 const REACT_REDUX_SPECIFIER = 'react-redux';
 const REDUX_BRIDGE_DATA_KIND = 'react-preview-redux-bridge-data';
@@ -20,6 +20,8 @@ const REDUX_BRIDGE_DATA_KIND = 'react-preview-redux-bridge-data';
 export interface PreviewReduxBridgePluginOptions {
   /** Lowest-priority neutral state inferred from reachable selector property paths. */
   readonly automaticState?: PreviewReduxStaticState;
+  /** Absent-receiver fields shown over an application's own store where it has no value. */
+  readonly absentReceiverOverlay?: PreviewReduxStaticState;
   /** Nearest package root from which the target itself resolves React Redux. */
   readonly projectRoot: string;
 }
@@ -82,6 +84,9 @@ export function createPreviewReduxBridgePlugin(options: PreviewReduxBridgePlugin
               'export function registerPreviewReduxStateContainerPaths(_paths) {}',
               '/** Describes why the automatic Redux boundary is unavailable. */',
               "export function readPreviewRuntimeStatus() { return 'unavailable: react-redux was not resolved from the target project'; }",
+              '/** Leaves page-execution children unchanged when React Redux is absent. */',
+              'export function wrapPreviewReduxOverlayElement(element) { return element; }',
+              "export function readPreviewReduxOverlayStatus() { return 'unavailable: react-redux was not resolved from the target project'; }",
             ].join('\n'),
             loader: 'js',
           };
@@ -92,6 +97,9 @@ export function createPreviewReduxBridgePlugin(options: PreviewReduxBridgePlugin
             ...(options.automaticState === undefined
               ? {}
               : { automaticState: options.automaticState }),
+            ...(options.absentReceiverOverlay === undefined
+              ? {}
+              : { absentReceiverOverlay: options.absentReceiverOverlay }),
             reactReduxModulePath: pluginData.reactReduxModulePath,
           }),
           loader: 'js',

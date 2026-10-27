@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PreviewInspectorBundleDiagnostics } from '../../../src/adapters/esbuild/inspector/previewInspectorBundleDiagnostics';
 import {
   createPreviewCompleteRouteInventoryTelemetryEmitter,
   type PreviewCompleteRouteInventoryTelemetryEvent,
@@ -9,7 +10,6 @@ import {
   emitPreviewRouteExecutionTelemetry,
   preparePreviewRouteExecutionPlanner,
 } from '../../../src/adapters/esbuild/preparePreviewRouteExecutionPlanner';
-import type { PreviewInspectorBundleDiagnostics } from '../../../src/adapters/esbuild/inspector/previewInspectorBundleDiagnostics';
 
 type InternalStage =
   | 'execution-frontier-artifact'
@@ -62,6 +62,8 @@ vi.mock('../../../src/adapters/esbuild/inspector', () => {
   const candidate = {
     browserCandidate: {
       id: 'browser-candidate',
+      root: { exportName: 'default', sourcePath: '/workspace/root.tsx' },
+      rootInference: { props: {} },
       target: { sourcePath: '/workspace/leaf.tsx' },
     },
     executionRootContract: {
@@ -70,6 +72,8 @@ vi.mock('../../../src/adapters/esbuild/inspector', () => {
       surfaceId: 'root-surface',
     },
     id: 'execution-candidate',
+    compositionEdges: [],
+    criticalSurfaces: [],
   };
   const activePlan = {
     dependencyPaths: [],
@@ -104,6 +108,7 @@ vi.mock('../../../src/adapters/esbuild/inspector', () => {
       }
       return { digest: 'target-contract' };
     },
+    resolvePreviewInspectorRuntimeTargetMode: () => 'selected-route-leaf',
     resolvePreviewInspectorRuntimeOwnershipTarget: () => {
       plannerStageAudit.calls.push('ownership');
       if (plannerStageAudit.failAt === 'execution-frontier-ownership') {
@@ -132,6 +137,8 @@ vi.mock('../../../src/adapters/esbuild/preparePreviewInspectorBundleExecution', 
           surfaceId: 'root-surface',
         },
         id: 'execution-candidate',
+        compositionEdges: [],
+        criticalSurfaces: [],
       },
       prepared: { frontier: { identity: 'frontier' } },
       throwIfRejected: () => undefined,
@@ -222,8 +229,7 @@ describe('preparePreviewRouteExecutionPlanner telemetry', () => {
       expect(new Set(routeEvents.map((event) => event.phase))).toEqual(new Set(phases));
       expect(
         routeEvents.filter(
-          (event) =>
-            event.phase === 'execution-frontier-bundle' && event.transition === 'complete',
+          (event) => event.phase === 'execution-frontier-bundle' && event.transition === 'complete',
         ),
       ).toMatchObject([{ bundleDiagnostics: ZERO_BUNDLE_DIAGNOSTICS }]);
       expect(
@@ -304,8 +310,7 @@ describe('preparePreviewRouteExecutionPlanner telemetry', () => {
     expect(events.slice(0, -1).every((event) => event.executionPlanCompleted === 0)).toBe(true);
     expect(events.at(-1)?.executionPlanCompleted).toBe(1);
     const bundleComplete = events.find(
-      (event) =>
-        event.phase === 'execution-frontier-bundle' && event.transition === 'complete',
+      (event) => event.phase === 'execution-frontier-bundle' && event.transition === 'complete',
     );
     expect(bundleComplete?.bundleDiagnostics).toEqual({
       ...ZERO_BUNDLE_DIAGNOSTICS,

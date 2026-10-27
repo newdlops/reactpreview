@@ -19,6 +19,13 @@ import type {
   PreviewInspectorRouteFactoryManifest,
 } from './previewInspectorRouteFactoryManifestTypes';
 import { relativizePreviewInspectorRoutePattern } from './previewInspectorRoutePatternMatch';
+import { readRouteFactoryRenderContract } from './previewInspectorRouteFactoryRenderContract';
+import {
+  readJsxExpressionAttribute,
+  readJsxRouteChildExpression,
+} from './previewInspectorDirectRouteSyntax';
+import { collectPreviewInspectorRouteElementPath } from './previewInspectorRouteElementPath';
+import { collectPreviewInspectorRouteFactoryLocalExports } from './previewInspectorRouteFactoryLocalExports';
 
 /**
  *
@@ -247,13 +254,16 @@ function findExportCall(
   sourceFile: ts.SourceFile,
   exportName: string,
 ): ts.CallExpression | undefined {
+  const localName =
+    collectPreviewInspectorRouteFactoryLocalExports(sourceFile).get(exportName)?.localName ??
+    exportName;
   let expression: ts.Expression | undefined;
   for (const statement of sourceFile.statements) {
-    if (exportName === 'default' && ts.isExportAssignment(statement))
+    if (localName === 'default' && ts.isExportAssignment(statement))
       expression = statement.expression;
     if (!ts.isVariableStatement(statement)) continue;
     for (const declaration of statement.declarationList.declarations)
-      if (ts.isIdentifier(declaration.name) && declaration.name.text === exportName)
+      if (ts.isIdentifier(declaration.name) && declaration.name.text === localName)
         expression = declaration.initializer;
   }
   return expression !== undefined && ts.isCallExpression(unwrap(expression))
@@ -261,42 +271,42 @@ function findExportCall(
     : undefined;
 }
 
-/**
- *
- */
-/** Retains literal wildcard diagnostics separately from normal selectable routes. */
+/** Retains only the exact returned fallback occurrences proved by the shared render contract. */
 function readFallbacks(
   call: ts.CallExpression,
   sourceFile: ts.SourceFile,
 ): PreviewInspectorFactoryFallbackEntry[] {
   const fallbacks: PreviewInspectorFactoryFallbackEntry[] = [];
+  const returnedFallbacks = new Map(
+    readRouteFactoryRenderContract(call, sourceFile).wildcardFallbacks.map((fallback) => [
+      fallback.occurrenceStart,
+      fallback,
+    ]),
+  );
   const visit = (node: ts.Node): void => {
     const opening = ts.isJsxElement(node)
       ? node.openingElement
       : ts.isJsxSelfClosingElement(node)
         ? node
         : undefined;
-    if (
-      opening?.tagName.getText(sourceFile) === 'Route' &&
-      opening.attributes.properties.some(
-        (attribute) =>
-          ts.isJsxAttribute(attribute) &&
-          ts.isIdentifier(attribute.name) &&
-          attribute.name.text === 'path' &&
-          attribute.initializer !== undefined &&
-          ts.isStringLiteral(attribute.initializer) &&
-          attribute.initializer.text === '*',
-      )
-    ) {
-      const match = /element=\{<([$_\p{L}][$_\p{L}\p{N}]*)/u.exec(opening.getText(sourceFile));
-      if (match?.[1] !== undefined)
+    const syntax = returnedFallbacks.get(node.getStart(sourceFile));
+    if (opening !== undefined && node.end === syntax?.occurrenceEnd) {
+      const expression =
+        readJsxExpressionAttribute(opening.attributes, ['element', 'Component', 'component']) ??
+        (ts.isJsxElement(node) ? readJsxRouteChildExpression(node) : undefined);
+      const componentName =
+        expression === undefined
+          ? undefined
+          : collectPreviewInspectorRouteElementPath(expression, sourceFile).at(-1)?.componentName;
+      if (componentName !== undefined)
         fallbacks.push(
           Object.freeze({
-            componentName: match[1],
-            occurrenceStart: node.getStart(sourceFile),
-            pattern: '*',
+            componentName,
+            occurrenceStart: syntax.occurrenceStart,
+            pattern: syntax.pattern,
           }),
         );
+      return;
     }
     ts.forEachChild(node, visit);
   };

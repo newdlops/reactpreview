@@ -6,15 +6,21 @@
  * Passive HTTPS images remain available because authored page visuals often live on a CDN, and
  * ready documents may load HTTPS stylesheets (web fonts, CDN CSS) unless the user turns that off.
  */
-import type { PreviewProgressStage } from '../../domain/previewProgress';
+import { randomBytes } from 'node:crypto';
+import type { PreviewProgressStage, PreviewProgressTiming } from '../../domain/previewProgress';
+import { createPreviewProgressSnapshot, type PreviewProgressSnapshot } from '../previewProgress';
 import {
-  createPreviewProgressSnapshot,
-  PREVIEW_PROGRESS_STEPS,
-  type PreviewProgressSnapshot,
-} from '../previewProgress';
+  PREVIEW_PROGRESS_TIMING_STYLES,
+  createPreviewProgressTimingMarkup,
+  createPreviewProgressTimingRuntimeSource,
+} from './previewProgressTiming';
 
 /** UI state rendered while the current component is being bundled. */
 export interface LoadingPreviewState {
+  /** Current host revision, used to keep timing ownership across document replacements. */
+  readonly revision?: number;
+  /** Measured preparation intervals carried into this loading document. */
+  readonly progressTiming?: PreviewProgressTiming;
   /** Discriminant used for exhaustive state rendering. */
   readonly kind: 'loading';
   /** Safe display name of the active source document. */
@@ -25,6 +31,8 @@ export interface LoadingPreviewState {
 
 /** UI state rendered after a preview bundle has been published. */
 export interface ReadyPreviewState {
+  /** Measured preparation intervals continued while browser modules and React load. */
+  readonly progressTiming?: PreviewProgressTiming;
   /** Discriminant used for exhaustive state rendering. */
   readonly kind: 'ready';
   /** Browser import-map bindings for shared package modules loaded before the preview entry. */
@@ -46,6 +54,8 @@ export interface ReadyPreviewState {
   readonly runtimeToken?: string;
   /** Session revision correlated with the startup token without changing shared bundle bytes. */
   readonly runtimeRevision?: number;
+  /** Host-owned input identity retained through page selections and replaced by an ordinary refresh. */
+  readonly pageContextFrontierId?: string;
   /** Optional webview URI for generated component CSS. */
   readonly stylesheetUri?: string;
   /**
@@ -88,13 +98,14 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   const retryNonce =
     state.kind === 'error' && state.retry !== undefined ? createRetryNonce(state) : undefined;
   const readyScriptNonce = state.kind === 'ready' ? createReadyScriptNonce(state) : undefined;
+  const loadingScriptNonce = state.kind === 'loading' ? randomBytes(16).toString('hex') : undefined;
   const publicApplicationOrigin =
     state.kind === 'ready'
       ? normalizePreviewPublicApplicationOrigin(state.publicApplicationOrigin)
       : undefined;
   const csp = [
     "default-src 'none'",
-    `script-src ${cspSource}${retryNonce === undefined ? '' : ` 'nonce-${retryNonce}'`}${readyScriptNonce === undefined ? '' : ` 'nonce-${readyScriptNonce}'`}`,
+    `script-src ${cspSource}${retryNonce === undefined ? '' : ` 'nonce-${retryNonce}'`}${readyScriptNonce === undefined ? '' : ` 'nonce-${readyScriptNonce}'`}${loadingScriptNonce === undefined ? '' : ` 'nonce-${loadingScriptNonce}'`}`,
     `style-src ${cspSource} 'unsafe-inline'${state.kind === 'ready' && state.remoteStylesheets === true ? ' https:' : ''}`,
     `img-src ${cspSource} data: blob: https:`,
     `font-src ${cspSource} data: https:`,
@@ -116,23 +127,24 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(getDocumentTitle(state))}</title>
   <style>
-    :root { color-scheme: light dark; }
+    @layer react-preview-defaults {
+      :root { color-scheme: light dark; }
+      :where(body[data-react-preview-state='ready']) { color: #111; background: #fff; }
+    }
     html, body { box-sizing: border-box; min-height: 100%; }
     #react-preview-root { box-sizing: border-box; display: flex; flex-direction: column; height: 100vh; min-height: 100vh; }
     body { margin: 0; }
     body:not([data-react-preview-state='ready']) { color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); }
-    :where(body[data-react-preview-state='ready']) { color: #111; background: #fff; }
     .react-preview-status { display: grid; min-height: 100vh; box-sizing: border-box; padding: 32px; place-content: center; text-align: center; }
     .react-preview-progress-card { display: grid; width: min(520px, calc(100vw - 48px)); gap: 10px; }
     .react-preview-progress-kicker { margin: 0; color: var(--vscode-descriptionForeground); font: 600 11px/1.4 var(--vscode-font-family); letter-spacing: .08em; text-transform: uppercase; }
     .react-preview-status h1 { margin: 0 0 8px; font: 600 18px/1.4 var(--vscode-font-family); }
     .react-preview-status p { margin: 0; color: var(--vscode-descriptionForeground); font: 13px/1.6 var(--vscode-font-family); }
+    .react-preview-status h1, .react-preview-status p { min-width: 0; overflow-wrap: anywhere; }
     .react-preview-progress-track { position: relative; height: 3px; overflow: hidden; border-radius: 999px; background: var(--vscode-progressBar-background, var(--vscode-button-background)); opacity: .35; }
     .react-preview-progress-track > span { position: absolute; inset: 0 auto 0 -35%; width: 35%; border-radius: inherit; background: var(--vscode-progressBar-background, var(--vscode-button-background)); animation: react-preview-progress-slide 1.2s ease-in-out infinite; opacity: 1; }
     .react-preview-progress-active { color: var(--vscode-editor-foreground) !important; font-weight: 600 !important; }
-    .react-preview-progress-steps { display: grid; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; gap: 5px; margin: 8px 0 0; padding: 0; list-style: none; }
-    .react-preview-progress-steps li { height: 3px; overflow: hidden; border-radius: 999px; background: var(--vscode-panel-border); text-indent: -9999px; }
-    .react-preview-progress-steps li[data-state='complete'], .react-preview-progress-steps li[aria-current='step'] { background: var(--vscode-progressBar-background, var(--vscode-button-background)); }
+    ${PREVIEW_PROGRESS_TIMING_STYLES}
     .react-preview-status pre { max-width: min(900px, 90vw); overflow: auto; padding: 16px; border: 1px solid var(--vscode-panel-border); text-align: left; white-space: pre-wrap; }
     [data-react-preview-mount] .react-preview-runtime-error { all: initial !important; display: block !important; box-sizing: border-box !important; max-width: min(1100px, calc(100vw - 32px)) !important; max-height: calc(100vh - 32px) !important; margin: 16px !important; overflow: auto !important; padding: 16px !important; border: 1px solid var(--vscode-panel-border) !important; border-radius: 4px !important; color: var(--vscode-errorForeground) !important; background: var(--vscode-editor-background) !important; font: 12px/1.55 var(--vscode-editor-font-family) !important; text-align: left !important; white-space: pre-wrap !important; }
     .react-preview-gallery { display: grid; gap: 24px; min-width: 0; counter-reset: react-preview-export; }
@@ -147,7 +159,7 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   ${createStylesheetElement(state)}
 </head>
 <body data-react-preview-state="${state.kind}">
-  ${createBody(state, retryNonce, readyScriptNonce, publicApplicationOrigin)}
+  ${createBody(state, retryNonce, readyScriptNonce, publicApplicationOrigin, loadingScriptNonce)}
 </body>
 </html>`;
 }
@@ -187,20 +199,21 @@ function createBody(
   retryNonce: string | undefined,
   readyScriptNonce: string | undefined,
   publicApplicationOrigin: string | undefined,
+  loadingScriptNonce: string | undefined,
 ): string {
   switch (state.kind) {
     case 'loading': {
       const progress = createPreviewProgressSnapshot(state.stage);
-      return `<main class="react-preview-status" aria-busy="true">
+      return `<main id="react-preview-loading-progress" class="react-preview-status" aria-busy="true">
   <section class="react-preview-progress-card" role="status" aria-live="polite">
     <p class="react-preview-progress-kicker">Preparing React Preview</p>
     <h1>${escapeHtml(state.documentName)}</h1>
     ${createProgressTrack(progress)}
     <p class="react-preview-progress-active">Step ${progress.step.toString()} of ${progress.total.toString()} · ${escapeHtml(progress.label)}</p>
     <p>${escapeHtml(progress.detail)}</p>
-    ${createProgressSteps(progress)}
+    ${createPreviewProgressTimingMarkup(progress.stage, state.progressTiming)}
   </section>
-</main>`;
+</main>${createProgressTimingBootstrap(state, loadingScriptNonce)}`;
     }
     case 'error': {
       const details = state.details === undefined ? '' : `<pre>${escapeHtml(state.details)}</pre>`;
@@ -213,7 +226,7 @@ function createBody(
 </main>`;
     }
     case 'ready':
-      return `${createReadyProgressHost(createPreviewProgressSnapshot('loading-preview'))}
+      return `${createReadyProgressHost(createPreviewProgressSnapshot('loading-preview'), state.progressTiming)}${createProgressTimingBootstrap(state, readyScriptNonce)}
 <div id="react-preview-root" data-react-preview-mount aria-busy="true"${createRuntimeHandshakeAttributes(state)}></div>
 ${createModuleImportMapElement(state, readyScriptNonce)}${createPublicAssetCompatibilityScriptElement(state, readyScriptNonce)}${createApplicationFrameCompatibilityScriptElement(publicApplicationOrigin, readyScriptNonce)}${createGlobalCompatibilityScriptElement(readyScriptNonce)}${createNavigationGuardScriptElement(readyScriptNonce)}${createHostBridgeScriptElement(state)}<script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
   }
@@ -617,7 +630,11 @@ function createRuntimeHandshakeAttributes(state: ReadyPreviewState): string {
     state.runtimeRevision === undefined
       ? ''
       : ` data-react-preview-runtime-revision="${state.runtimeRevision.toString()}"`;
-  return tokenAttribute + revisionAttribute;
+  const frontierAttribute =
+    state.pageContextFrontierId === undefined
+      ? ''
+      : ` data-react-preview-page-context-frontier-id="${escapeHtml(state.pageContextFrontierId)}"`;
+  return tokenAttribute + revisionAttribute + frontierAttribute;
 }
 
 /** Creates an indeterminate accessible activity bar without inventing time-based completion. */
@@ -625,41 +642,59 @@ function createProgressTrack(progress: PreviewProgressSnapshot): string {
   return `<div class="react-preview-progress-track" role="progressbar" aria-label="${escapeHtml(progress.label)}"><span></span></div>`;
 }
 
-/** Creates one compact marker per real preparation milestone for full-screen loading documents. */
-function createProgressSteps(progress: PreviewProgressSnapshot): string {
-  const steps = PREVIEW_PROGRESS_STEPS.map((step, index) => {
-    const position = index + 1;
-    const state =
-      position < progress.step ? 'complete' : position === progress.step ? 'active' : 'pending';
-    const current = state === 'active' ? ' aria-current="step"' : '';
-    return `<li data-state="${state}"${current}>${escapeHtml(step.label)}</li>`;
-  }).join('');
-  return `<ol class="react-preview-progress-steps" aria-label="Preview preparation steps">${steps}</ol>`;
+/** Starts the same local clock before modules load, retaining host time through HTML replacement. */
+function createProgressTimingBootstrap(
+  state: LoadingPreviewState | ReadyPreviewState,
+  nonce: string | undefined,
+): string {
+  if (nonce === undefined) return '';
+  const message = {
+    revision: state.kind === 'loading' ? (state.revision ?? 0) : (state.runtimeRevision ?? 0),
+    stage: state.kind === 'loading' ? state.stage : 'loading-preview',
+    timing: state.progressTiming,
+  };
+  const hostId =
+    state.kind === 'loading' ? 'react-preview-loading-progress' : 'react-preview-progress-host';
+  return `<script nonce="${nonce}">${createPreviewProgressTimingRuntimeSource()}
+(() => {
+  const host = document.getElementById('${hostId}');
+  let root = host?.shadowRoot;
+  const template = host?.querySelector('template[shadowrootmode]');
+  if (!root && template?.content && typeof host.attachShadow === 'function') {
+    root = host.attachShadow({ mode: 'open' }); root.append(template.content.cloneNode(true)); template.remove();
+  }
+  globalThis.__reactPreviewProgressClock.apply(root ?? host, ${JSON.stringify(message)});
+})();</script>`;
 }
 
 /**
  * Creates extension-owned ready-document chrome inside declarative Shadow DOM. Project CSS cannot
  * restyle the panel while the generated module is still loading; the runtime removes it on mount.
  */
-function createReadyProgressHost(progress: PreviewProgressSnapshot): string {
+function createReadyProgressHost(
+  progress: PreviewProgressSnapshot,
+  timing?: PreviewProgressTiming,
+): string {
   return `<aside id="react-preview-progress-host">
   <template shadowrootmode="open">
     <style>
       :host { all: initial !important; position: fixed !important; inset: 12px 12px auto auto !important; z-index: 2147483647 !important; max-width: min(360px, calc(100vw - 24px)) !important; color-scheme: light dark !important; }
       :host([hidden]) { display: none !important; }
-      #react-preview-progress-panel { display: grid; box-sizing: border-box; min-width: 260px; gap: 6px; padding: 10px 12px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; color: var(--vscode-editor-foreground); background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); box-shadow: 0 6px 20px rgba(0,0,0,.18); font: 12px/1.45 var(--vscode-font-family); }
+      #react-preview-progress-panel { display: grid; box-sizing: border-box; min-width: min(260px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; gap: 6px; padding: 10px 12px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; color: var(--vscode-editor-foreground); background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); box-shadow: 0 6px 20px rgba(0,0,0,.18); font: 12px/1.45 var(--vscode-font-family); }
       #react-preview-progress-label { font-weight: 600; }
       #react-preview-progress-detail, #react-preview-progress-step { color: var(--vscode-descriptionForeground); }
       #react-preview-progress-track { position: relative; height: 2px; overflow: hidden; border-radius: 999px; background: var(--vscode-panel-border); }
       #react-preview-progress-track > span { position: absolute; inset: 0 auto 0 -35%; width: 35%; border-radius: inherit; background: var(--vscode-progressBar-background, var(--vscode-button-background)); animation: slide 1.2s ease-in-out infinite; }
       @keyframes slide { 0% { transform: translateX(0); } 50% { transform: translateX(285%); } 100% { transform: translateX(0); } }
       @media (prefers-reduced-motion: reduce) { #react-preview-progress-track > span { animation: none; inset-inline-start: 32.5%; } }
+      ${PREVIEW_PROGRESS_TIMING_STYLES}
     </style>
-    <section id="react-preview-progress-panel" role="status" aria-atomic="true" aria-busy="true" aria-live="polite">
+    <section id="react-preview-progress-panel" role="status" aria-atomic="false" aria-busy="true" aria-live="polite">
       <div id="react-preview-progress-label">${escapeHtml(progress.label)}</div>
       <div id="react-preview-progress-detail">${escapeHtml(progress.detail)}</div>
       <div id="react-preview-progress-track" role="progressbar" aria-label="${escapeHtml(progress.label)}"><span></span></div>
       <div id="react-preview-progress-step">Step ${progress.step.toString()} of ${progress.total.toString()}</div>
+      ${createPreviewProgressTimingMarkup(progress.stage, timing)}
     </section>
   </template>
 </aside>`;

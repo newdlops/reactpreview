@@ -9,6 +9,13 @@
  */
 import ts from 'typescript';
 
+/** Syntax-only answers do not keep parsed files alive or retain filesystem observations. */
+const evidenceBySourceFile = new WeakMap<
+  ts.SourceFile,
+  { readonly sourcePath: string; readonly evidence: readonly PreviewEntryPointEvidence[] }
+>();
+const EMPTY_ENTRY_EVIDENCE: readonly PreviewEntryPointEvidence[] = Object.freeze([]);
+
 /** ReactDOM mounting APIs that are safe to identify from import-backed syntax alone. */
 export type PreviewEntryPointEvidenceKind = 'create-root' | 'hydrate-root' | 'legacy-render';
 
@@ -105,7 +112,21 @@ export function collectPreviewEntryPointEvidence(
   sourcePath: string,
   sourceFile: ts.SourceFile,
 ): readonly PreviewEntryPointEvidence[] {
+  const cached = evidenceBySourceFile.get(sourceFile);
+  if (cached?.sourcePath === sourcePath) return cached.evidence;
+  // A decoded exact package name needs either these literal bytes or a string escape. Keeping
+  // every escaped file eligible also preserves unusual import spelling and nested parser input.
+  if (!sourceFile.text.includes('react-dom') && !sourceFile.text.includes('\\')) {
+    return retainEntryEvidence(sourceFile, sourcePath, EMPTY_ENTRY_EVIDENCE);
+  }
   const registry = createBindingRegistry(sourceFile);
+  if (
+    ![...registry.recordsByName.values()].some((records) =>
+      records.some((record) => record.reactDomKind !== undefined),
+    )
+  ) {
+    return retainEntryEvidence(sourceFile, sourcePath, EMPTY_ENTRY_EVIDENCE);
+  }
   classifyConstRootBindings(registry);
   const evidence: PreviewEntryPointEvidence[] = [];
 
@@ -134,7 +155,17 @@ export function collectPreviewEntryPointEvidence(
 
   visit(sourceFile);
   evidence.sort((left, right) => left.occurrenceStart - right.occurrenceStart);
-  return Object.freeze(evidence);
+  return retainEntryEvidence(sourceFile, sourcePath, Object.freeze(evidence));
+}
+
+/** Retains inert answers only while their exact, immutable parsed source remains reachable. */
+function retainEntryEvidence(
+  sourceFile: ts.SourceFile,
+  sourcePath: string,
+  evidence: readonly PreviewEntryPointEvidence[],
+): readonly PreviewEntryPointEvidence[] {
+  evidenceBySourceFile.set(sourceFile, { sourcePath, evidence });
+  return evidence;
 }
 
 /**

@@ -1,6 +1,7 @@
 /** Static package evidence for styled-components. No project code is evaluated here. */
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { MAX_STYLE_SHEET_MANAGER_SOURCE_BYTES } from './previewStyledComponentsPlan';
 import type { PreviewStaticModuleResolver } from './previewStaticModuleResolver';
 
@@ -25,8 +26,11 @@ export interface DiscoverPreviewStyledComponentsAvailabilityOptions {
 export async function discoverPreviewStyledComponentsAvailability(
   options: DiscoverPreviewStyledComponentsAvailabilityOptions,
 ): Promise<PreviewStyledComponentsAvailability> {
-  const staticResolutionPath = options.resolveModule('styled-components', options.importerPath);
+  const staticResolutionPath =
+    options.resolveModule('styled-components', options.importerPath) ??
+    resolveInstalledRuntime(options.importerPath);
   if (staticResolutionPath === undefined) return absent();
+  if (/\.d\.(?:cts|mts|ts)$/iu.test(staticResolutionPath)) return absent(staticResolutionPath);
   const manifestPath = await findOwningManifest(staticResolutionPath);
   if (manifestPath === undefined) return absent(staticResolutionPath);
   const manifest = await readManifest(manifestPath);
@@ -37,6 +41,18 @@ export async function discoverPreviewStyledComponentsAvailability(
     packageManifestPath: path.normalize(manifestPath),
     staticResolutionPath: path.normalize(staticResolutionPath),
   });
+}
+
+/**
+ * Resolves package metadata when TypeScript exposes declarations without an adjacent JS sibling.
+ * Node resolution reads manifests only; the selected package entry is never evaluated here.
+ */
+function resolveInstalledRuntime(importerPath: string): string | undefined {
+  try {
+    return createRequire(path.resolve(importerPath)).resolve('styled-components');
+  } catch {
+    return undefined;
+  }
 }
 
 /** Builds the canonical unavailable result while retaining only resolved-path evidence. */

@@ -13,22 +13,22 @@ import {
 } from '../../domain/preview';
 import {
   isPreviewBuildCancellation,
-  isPreviewFrontierMismatchEvidence,
   isPreviewBuildStall,
+  isPreviewFrontierMismatchEvidence,
   PreviewBuildCancelledError,
   PreviewBuildStalledError,
   type PreviewBuildStallReason,
   type PreviewFrontierMismatchEvidence,
 } from '../../domain/previewBuildExecution';
-import type { PreviewProgressStage } from '../../domain/previewProgress';
 import type { PreviewCompilerActivity } from '../../domain/previewCompilerActivity';
+import type { PreviewProgressStage } from '../../domain/previewProgress';
+import type { PreviewInspectorBundleDiagnostics } from '../esbuild/inspector/previewInspectorBundleDiagnostics';
+import { PREVIEW_INSPECTOR_BUNDLE_DIAGNOSTIC_FIELD_NAMES } from '../esbuild/inspector/previewInspectorBundleDiagnostics';
 import type {
   PreviewCompleteRouteInventoryTelemetryEvent,
   PreviewInspectorCompleteRouteInventory,
   PreviewInspectorCompleteRouteInventoryLimits,
 } from '../esbuild/inspector/previewInspectorCompleteRouteInventory';
-import { PREVIEW_INSPECTOR_BUNDLE_DIAGNOSTIC_FIELD_NAMES } from '../esbuild/inspector/previewInspectorBundleDiagnostics';
-import type { PreviewInspectorBundleDiagnostics } from '../esbuild/inspector/previewInspectorBundleDiagnostics';
 import {
   PREVIEW_COMPLETE_ROUTE_INVENTORY_TELEMETRY_MAXIMUM_EVENTS,
   PREVIEW_COMPLETE_ROUTE_INVENTORY_TELEMETRY_POLICY_VERSION,
@@ -429,10 +429,7 @@ export function isPreviewCompleteRouteInventoryTelemetryEvent(
   const prefixCounters = selectTelemetryPrefixCounterValues(event);
   if (
     (phase === 'enumerate-branches' || phase === 'replay-branches') &&
-    (prefixCounters === undefined ||
-      prefixCounters[0] !== prefixCounters[1] + prefixCounters[2] ||
-      prefixCounters[3] > prefixCounters[1] ||
-      (transition === 'start' && prefixCounters.some((counter) => counter !== 0)))
+    !isValidTelemetryPrefixCounterRelation(prefixCounters, transition)
   ) {
     return false;
   }
@@ -480,7 +477,10 @@ export function isPreviewCompleteRouteInventoryTelemetryEvent(
     const previousPrefixCounters = selectTelemetryPrefixCounterValues(previousEvent);
     if (
       previousPrefixCounters === undefined ||
-      prefixCounters.some((counter, index) => counter < previousPrefixCounters[index]!)
+      prefixCounters.some((counter, index) => {
+        const previous = previousPrefixCounters[index];
+        return previous === undefined || counter < previous;
+      })
     ) {
       return false;
     }
@@ -516,6 +516,7 @@ export function isPreviewCompleteRouteInventoryTelemetryEvent(
 /** Rejects every non-canonical nested key, scalar, version, and counter relationship. */
 function isPreviewInspectorBundleDiagnostics(value: unknown): boolean {
   if (!isRecord(value)) return false;
+  if (value.diagnosticsVersion !== 1) return false;
   const names = Object.keys(value);
   if (
     names.length !== PREVIEW_INSPECTOR_BUNDLE_DIAGNOSTIC_FIELD_NAMES.length ||
@@ -533,7 +534,6 @@ function isPreviewInspectorBundleDiagnostics(value: unknown): boolean {
   }
   const diagnostics = value as unknown as PreviewInspectorBundleDiagnostics;
   return (
-    diagnostics.diagnosticsVersion === 1 &&
     diagnostics.sliceRequestCount ===
       diagnostics.sliceComputationCount + diagnostics.sliceHitCount &&
     diagnostics.inventoryRequestCount ===
@@ -605,6 +605,19 @@ function selectTelemetryPrefixCounterValues(
   return values?.every(isNonNegativeSafeInteger) === true
     ? (values as unknown as readonly [number, number, number, number])
     : undefined;
+}
+
+/** Requires complete prefix counters, conserved requests, bounded entries, and an empty start state. */
+function isValidTelemetryPrefixCounterRelation(
+  counters: readonly [number, number, number, number] | undefined,
+  transition: unknown,
+): boolean {
+  if (counters === undefined) return false;
+  return (
+    counters[0] === counters[1] + counters[2] &&
+    counters[3] <= counters[1] &&
+    (transition !== 'start' || counters.every((counter) => counter === 0))
+  );
 }
 
 /** Limits start/checkpoint/complete to the transitions defined for each phase family. */

@@ -13,6 +13,10 @@ import path from 'node:path';
 import ts from 'typescript';
 import { createPreviewDeferredUiPropFlowAnalyzer } from './previewDeferredUiPropFlow';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
+import {
+  createPreviewRuntimeSourceSyntax,
+  type PreviewRuntimeSourceSyntax,
+} from './previewRuntimeSourceSyntax';
 
 const PREVIEW_INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
 const MAX_DEFERRED_UI_TRIGGERS_PER_MODULE = 64;
@@ -100,15 +104,14 @@ type LocalHandlerExpression = Exclude<LocalHandlerDeclaration, ts.FunctionDeclar
 export function instrumentPreviewDeferredUiTriggers(
   sourcePath: string,
   sourceText: string,
+  syntax?: PreviewRuntimeSourceSyntax,
 ): PreviewDeferredUiTriggerInstrumentation {
   if (!isJavaScriptLikeSource(sourcePath) || !sourceText.includes('on')) {
     return { registrations: [], replacements: [] };
   }
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = (syntax ?? createPreviewRuntimeSourceSyntax()).readSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     selectScriptKind(sourcePath),
   );
   const parseDiagnostics = (

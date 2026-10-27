@@ -7,6 +7,7 @@ import {
   PREVIEW_PROGRESS_MESSAGE_TYPE,
   PREVIEW_PROGRESS_STAGES,
 } from '../../domain/previewProgress';
+import { createPreviewProgressTimingRuntimeSource } from '../../presentation/webview/previewProgressTiming';
 
 /**
  * Creates self-contained JavaScript interpolated into the generated preview entry.
@@ -21,6 +22,7 @@ export function createPreviewProgressRuntimeSource(): string {
   const encodedMessageType = JSON.stringify(PREVIEW_PROGRESS_MESSAGE_TYPE);
   const encodedStages = JSON.stringify(PREVIEW_PROGRESS_STAGES);
   return `
+${createPreviewProgressTimingRuntimeSource()}
 const PREVIEW_PROGRESS_MESSAGE_TYPE = ${encodedMessageType};
 const PREVIEW_PROGRESS_STAGES = ${encodedStages};
 const PREVIEW_PROGRESS_HOST_ID = 'react-preview-progress-host';
@@ -31,7 +33,7 @@ function readPreviewProgressMessage(value) {
   if (value === null || typeof value !== 'object') {
     return undefined;
   }
-  const { complete, detail, label, revision, stage, step, total, type } = value;
+  const { complete, detail, label, revision, stage, step, total, type, timing } = value;
   const stageIndex = PREVIEW_PROGRESS_STAGES.indexOf(stage);
   const expectedTotal = PREVIEW_PROGRESS_STAGES.length - 1;
   const expectedStep = Math.min(stageIndex + 1, expectedTotal);
@@ -56,11 +58,12 @@ function readPreviewProgressMessage(value) {
     step > total ||
     total !== expectedTotal ||
     step !== expectedStep ||
-    complete !== (stage === 'ready')
+    complete !== (stage === 'ready') ||
+    globalThis.__reactPreviewProgressClock.readTiming(timing, stage) === null
   ) {
     return undefined;
   }
-  return { complete, detail, label, revision, stage, step, total };
+  return { complete, detail, label, revision, stage, step, total, timing };
 }
 
 /** Builds isolated fallback chrome when a complete document did not provide declarative Shadow DOM. */
@@ -70,7 +73,7 @@ function createPreviewProgressShadowContent(shadowRoot) {
     ':host { all: initial !important; position: fixed !important; inset: 12px 12px auto auto !important; ' +
     'z-index: 2147483647 !important; max-width: min(360px, calc(100vw - 24px)) !important; color-scheme: light dark !important; } ' +
     ':host([hidden]) { display: none !important; } ' +
-    '#react-preview-progress-panel { display: grid; box-sizing: border-box; min-width: 260px; gap: 6px; padding: 10px 12px; ' +
+    '#react-preview-progress-panel { display: grid; box-sizing: border-box; min-width: min(260px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; gap: 6px; padding: 10px 12px; ' +
     'border: 1px solid var(--vscode-panel-border); border-radius: 6px; color: var(--vscode-editor-foreground); ' +
     'background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); box-shadow: 0 6px 20px rgba(0,0,0,.18); ' +
     'font: 12px/1.45 var(--vscode-font-family); } ' +
@@ -84,7 +87,7 @@ function createPreviewProgressShadowContent(shadowRoot) {
   const panel = document.createElement('section');
   panel.id = PREVIEW_PROGRESS_PANEL_ID;
   panel.setAttribute('role', 'status');
-  panel.setAttribute('aria-atomic', 'true');
+  panel.setAttribute('aria-atomic', 'false');
   panel.setAttribute('aria-busy', 'true');
   panel.setAttribute('aria-live', 'polite');
   const label = document.createElement('div');
@@ -171,6 +174,7 @@ function applyPreviewProgressMessage(message) {
   if (typeof mountNode.setAttribute === 'function') {
     mountNode.setAttribute('aria-busy', 'true');
   }
+  globalThis.__reactPreviewProgressClock.apply(shadowRoot, message);
 }
 
 /** Updates browser-bootstrap detail while retaining the extension-owned build milestone title. */
@@ -194,6 +198,7 @@ function completePreviewProgress(revision) {
   if (completedRevision < currentRevision) {
     return;
   }
+  globalThis.__reactPreviewProgressClock.stop();
   previewHotRuntime.progressRevision = completedRevision;
   previewHotRuntime.progressStep = PREVIEW_PROGRESS_STAGES.length - 1;
   previewHotRuntime.progressCompletedRevision = Math.max(

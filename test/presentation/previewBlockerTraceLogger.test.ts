@@ -158,7 +158,9 @@ describe('Preview blocker trace logger', () => {
         targetPath: TARGET_PATH,
       }),
     ).toBe(true);
-    await vi.waitFor(() => expect(log.info).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => {
+      expect(log.info).toHaveBeenCalledTimes(1);
+    });
   });
 
   /** Requires a producer-owned command and never substitutes the panel expectation. */
@@ -226,7 +228,9 @@ describe('Preview blocker trace logger', () => {
         targetPath: TARGET_PATH,
       }),
     ).toBe(true);
-    await vi.waitFor(() => expect(log.info).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => {
+      expect(log.info).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

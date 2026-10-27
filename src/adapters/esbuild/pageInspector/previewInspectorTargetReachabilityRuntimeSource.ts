@@ -7,7 +7,10 @@
  * target in one corridor. Direct rendering remains an explicit diagnostic mode.
  */
 import { createPreviewInspectorTargetContextualBoundaryRuntimeSource } from './previewInspectorTargetContextualBoundaryRuntimeSource';
-import { createPreviewInspectorTargetReachabilityStateRuntimeSource } from './previewInspectorTargetReachabilityStateRuntimeSource';
+import {
+  createPreviewInspectorTargetOutputObservationRuntimeSource,
+  createPreviewInspectorTargetReachabilityStateRuntimeSource,
+} from './previewInspectorTargetReachabilityStateRuntimeSource';
 import { createPreviewInspectorTargetGateSelectionRuntimeSource } from './previewInspectorTargetGateSelectionRuntimeSource';
 import { createPreviewInspectorTargetRequirementTraversalRuntimeSource } from './previewInspectorTargetRequirementTraversalRuntimeSource';
 import { createPreviewInspectorRequirementFrontierRuntimeSource } from './previewInspectorRequirementFrontierRuntimeSource';
@@ -46,6 +49,7 @@ ${targetPathEvidenceRuntimeSource}
 ${targetViewportRevealRuntimeSource}
 ${createPreviewInspectorTargetContextualBoundaryRuntimeSource()}
 ${createPreviewInspectorTargetReachabilityStateRuntimeSource()}
+${createPreviewInspectorTargetOutputObservationRuntimeSource()}
 ${createPreviewInspectorTargetGateSelectionRuntimeSource()}
 ${createPreviewInspectorTargetRequirementTraversalRuntimeSource()}
 /** Lazily initializes ephemeral traversal state retained only by the pinned preview webview. */
@@ -170,7 +174,7 @@ function rememberPreviewInspectorTargetMountedOwnerChain(exportName, boundary) {
   return names;
 }
 /**
- * Latches a selected target commit before a redirect or navigation effect can remove its boundary.
+ * Latches an exact source/export target commit before navigation can remove its boundary.
  * A guard commonly renders Navigate, commits, and changes the MemoryRouter location well before the
  * delayed DFS evaluation. Remembering that short-lived commit lets the traversal examine the
  * already registered off-graph HOC condition without mistaking unrelated pre-target gates for it.
@@ -182,6 +186,7 @@ function markPreviewInspectorTargetReachabilityMount(exportName) {
   const state = previewInspectorSession.targetReachabilityByKey.get(key);
   if (state === undefined || state.targetExportName !== exportName) return;
   state.targetMounted = hasMountedPreviewInspectorTarget(state);
+  if (state.targetMounted !== true) return;
   state.targetWasMounted = true;
   if (typeof settlePreviewInspectorNeuralRenderStateTarget === 'function') {
     settlePreviewInspectorNeuralRenderStateTarget(state);
@@ -212,44 +217,6 @@ function readPreviewInspectorTargetResolutionBoundaries(state) {
     hasPreviewInspectorNeuralRenderStateForSource(state.targetSourcePath)
   ) return exactBoundaries;
   return new Set([readPreviewInspectorContextualTargetBoundary(state)].filter(Boolean));
-}
-/**
- * Requires the selected boundary to own connected host output and to remain error-free.
- * A HOC can mount the facade boundary and immediately return Navigate/null before invoking the
- * authored visual component; treating that boundary alone as success stops DFS on a blank page.
- * A compiler-proven navigation-only export is the narrow exception: its authored output changes
- * the route and therefore cannot retain either a host node or its boundary at settled observation.
- */
-function hasPreviewInspectorTargetHostOutput(state) {
-  const boundaries = readPreviewInspectorTargetResolutionBoundaries(state);
-  state.targetHasAnyHostOutput = false;
-  state.targetDeferredCallbackPending = false;
-  state.targetOutputKind = 'none';
-  state.targetOutputRecoveryPending = false;
-  state.targetEffectControllerOutput = false;
-  state.targetRenderedEmpty = false;
-  if (!(boundaries instanceof Set)) return false;
-  for (const boundary of boundaries) {
-    if (boundary?.state?.error !== undefined) continue;
-    if (typeof hasPreviewInspectorResolvedTargetOutput === 'function'
-      ? hasPreviewInspectorResolvedTargetOutput(boundary, state)
-      : collectPreviewInspectorFiberElements(boundary).length > 0) return true;
-  }
-  const activeError = typeof readPreviewInspectorRuntimeHealthTargetError === 'function'
-    ? readPreviewInspectorRuntimeHealthTargetError(state.targetExportName)
-    : undefined;
-  if (
-    state.targetWasMounted === true &&
-    activeError === undefined &&
-    hasPreviewInspectorIntentionalNavigationTargetOutput(state)
-  ) {
-    state.targetOutputError = undefined;
-    state.targetOutputKind = 'target-output';
-    state.targetOutputRecoveryPending = false;
-    state.targetRenderedEmpty = true;
-    return true;
-  }
-  return false;
 }
 /** Stops automatic branch traversal while the selected target owns a contained render failure. */
 function hasPreviewInspectorTargetRenderError(state) {
@@ -294,6 +261,13 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   state.targetHasOutput = targetRenderError
     ? false
     : hasPreviewInspectorTargetHostOutput(state);
+  if (!targetRenderError && typeof isPreviewInspectorTargetHiddenByPageTabInteraction === 'function' &&
+    isPreviewInspectorTargetHiddenByPageTabInteraction(state)) {
+    state.status = 'target-hidden-by-page-tab';
+    state.viewportRevealPending = false;
+    schedulePreviewInspectorTreeRefresh();
+    return;
+  }
   // Real application CSS can make a shell fill the window above a target mounted after it.
   if (state.targetHasOutput === true) revealPreviewInspectorReachedTargetViewport(state);
   if (
@@ -489,6 +463,9 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
       return;
     }
     state.status = 'awaiting-authored-state';
+    if (typeof schedulePreviewInspectorNeuralPageAuthoredStateContinuation === 'function') {
+      schedulePreviewInspectorNeuralPageAuthoredStateContinuation(descriptor, candidate, state);
+    }
     schedulePreviewInspectorTreeRefresh();
     return;
   }

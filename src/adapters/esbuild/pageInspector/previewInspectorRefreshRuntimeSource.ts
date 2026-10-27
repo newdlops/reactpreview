@@ -39,9 +39,18 @@ function readPreviewInspectorRefreshClock() {
 /** Reconciles host outlines at most once per browser frame and never rebuilds the Fiber tree. */
 function schedulePreviewInspectorHighlight() {
   if (previewInspectorSession.highlightFrame !== undefined) return;
-  const schedule = globalThis.requestAnimationFrame ?? ((callback) => setTimeout(callback, 16));
+  const requestFrame = globalThis.requestAnimationFrame;
+  const cancelFrame = globalThis.cancelAnimationFrame;
+  const useFrame = typeof requestFrame === 'function' && typeof cancelFrame === 'function';
+  const schedule = useFrame ? requestFrame.bind(globalThis) : ((callback) => setTimeout(callback, 16));
+  // Animation frames and timers have separate ID pools that can contain the same number.
+  // Capture the matching cancellation API so disposal cannot cancel unrelated page work.
+  previewInspectorSession.cancelHighlightFrame = useFrame
+    ? cancelFrame.bind(globalThis)
+    : globalThis.clearTimeout.bind(globalThis);
   previewInspectorSession.highlightFrame = schedule(() => {
     previewInspectorSession.highlightFrame = undefined;
+    previewInspectorSession.cancelHighlightFrame = undefined;
     refreshPreviewInspectorHighlight();
   });
 }
@@ -107,9 +116,9 @@ function handlePreviewInspectorMutations(records) {
 /** Cancels scheduler handles so a replaced hot bundle cannot keep work alive in the pinned tab. */
 function cancelPreviewInspectorRefreshScheduling() {
   if (previewInspectorSession.highlightFrame !== undefined) {
-    globalThis.cancelAnimationFrame?.(previewInspectorSession.highlightFrame);
-    clearTimeout(previewInspectorSession.highlightFrame);
+    previewInspectorSession.cancelHighlightFrame?.(previewInspectorSession.highlightFrame);
     previewInspectorSession.highlightFrame = undefined;
+    previewInspectorSession.cancelHighlightFrame = undefined;
   }
   if (previewInspectorSession.treeRefreshTimer !== undefined) {
     clearTimeout(previewInspectorSession.treeRefreshTimer);
@@ -125,6 +134,10 @@ function cancelPreviewInspectorRefreshScheduling() {
 function installPreviewInspectorDomObservers() {
   window.addEventListener('pointermove', handlePreviewInspectorPointerMove, true);
   window.addEventListener('click', handlePreviewInspectorPick, true);
+  if (typeof handlePreviewInspectorPageTabInteraction === 'function') {
+    window.addEventListener('click', handlePreviewInspectorPageTabInteraction, true);
+    window.addEventListener('keydown', handlePreviewInspectorPageTabInteraction, true);
+  }
   document.addEventListener('visibilitychange', handlePreviewInspectorVisibilityChange);
   const mutationObserver = typeof MutationObserver === 'function'
     ? new MutationObserver(handlePreviewInspectorMutations)
@@ -133,6 +146,10 @@ function installPreviewInspectorDomObservers() {
   return () => {
     window.removeEventListener('pointermove', handlePreviewInspectorPointerMove, true);
     window.removeEventListener('click', handlePreviewInspectorPick, true);
+    if (typeof handlePreviewInspectorPageTabInteraction === 'function') {
+      window.removeEventListener('click', handlePreviewInspectorPageTabInteraction, true);
+      window.removeEventListener('keydown', handlePreviewInspectorPageTabInteraction, true);
+    }
     document.removeEventListener('visibilitychange', handlePreviewInspectorVisibilityChange);
     mutationObserver?.disconnect();
     cancelPreviewInspectorRefreshScheduling();

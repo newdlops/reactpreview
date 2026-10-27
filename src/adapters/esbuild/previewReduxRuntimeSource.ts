@@ -9,12 +9,22 @@
 import {
   createPreviewSampleDateApiExpression,
   PREVIEW_CANONICAL_SAMPLE_EPOCH_MILLIS,
+  PREVIEW_CANONICAL_SAMPLE_MONTH,
+  PREVIEW_CANONICAL_SAMPLE_YEAR,
+  PREVIEW_SAMPLE_MONTH_NAME_PATTERN,
+  PREVIEW_SAMPLE_YEAR_NAME_PATTERN,
 } from './previewSampleDateRuntimeSource';
+
+/** Global through which generated page-execution modules reach the Redux overlay boundary. */
+export const PREVIEW_REDUX_OVERLAY_ELEMENT_KEY =
+  'newdlops.react-file-preview.redux-overlay-element';
 
 /** Resolved project module required to build the optional Redux preview boundary. */
 export interface PreviewReduxRuntimeSourceOptions {
   /** Syntax-derived neutral state for selector paths reached from the active target graph. */
   readonly automaticState?: PreviewReduxStaticState;
+  /** Absent-receiver fields shown over an application's own store where it has no value. */
+  readonly absentReceiverOverlay?: PreviewReduxStaticState;
   /** Absolute browser-resolved entry for the target project's react-redux package. */
   readonly reactReduxModulePath: string;
 }
@@ -46,6 +56,7 @@ export type PreviewReduxStaticState = Readonly<PreviewReduxStaticObject>;
 export function createPreviewReduxRuntimeSource(options: PreviewReduxRuntimeSourceOptions): string {
   const encodedModulePath = JSON.stringify(normalizeImportPath(options.reactReduxModulePath));
   const encodedAutomaticState = JSON.stringify(options.automaticState ?? {});
+  const encodedOverlay = JSON.stringify(options.absentReceiverOverlay ?? {});
   return `
 import * as React from 'react';
 import * as ReactRedux from ${encodedModulePath};
@@ -62,8 +73,20 @@ const MAX_STATE_KEY_LENGTH = 128;
 const registeredStatePaths = new Map();
 let cachedAutomaticState = HOST_AUTOMATIC_STATE;
 let previewRuntimeStatus = 'available: static Redux provider has not been composed yet';
+const ABSENT_RECEIVER_OVERLAY = freezeStaticValue(rebaseStaticSampleDates(${encodedOverlay}, 0));
+const HAS_ABSENT_RECEIVER_OVERLAY = Object.keys(ABSENT_RECEIVER_OVERLAY).length > 0;
+const STATIC_STORE_MARK = Symbol('react-preview static Redux store');
+const OVERLAY_STORE_MARK = Symbol('react-preview Redux overlay store');
+const ReduxContext = ReactRedux.ReactReduxContext ?? ReactRedux.default?.ReactReduxContext;
+let previewOverlayStatus = HAS_ABSENT_RECEIVER_OVERLAY
+  ? 'available: no page has been mounted yet'
+  : 'inactive: no absent receiver fields';
 
-/** Moves canonical sample dates (ISO text or epoch milliseconds) onto the current day. */
+/**
+ * Moves canonical sample dates (ISO text or epoch milliseconds) onto the current day. Numbers are
+ * otherwise matched by value alone; a year or month leaf is the one place a number is rebased by its
+ * key, because only the key tells the canonical year or month apart from an ordinary count.
+ */
 function rebaseStaticSampleDates(value, depth) {
   if (typeof value === 'string') return previewReduxSampleDates.rebase(value);
   if (value === ${String(PREVIEW_CANONICAL_SAMPLE_EPOCH_MILLIS)}) {
@@ -73,9 +96,21 @@ function rebaseStaticSampleDates(value, depth) {
   if (Array.isArray(value)) return value.map((item) => rebaseStaticSampleDates(item, depth + 1));
   const result = {};
   for (const [key, nestedValue] of Object.entries(value)) {
-    if (!BLOCKED_STATE_KEYS.has(key)) result[key] = rebaseStaticSampleDates(nestedValue, depth + 1);
+    if (BLOCKED_STATE_KEYS.has(key)) continue;
+    result[key] = rebaseStaticSampleDatePart(key, nestedValue) ?? rebaseStaticSampleDates(nestedValue, depth + 1);
   }
   return result;
+}
+
+/** Moves the canonical day's year or month to the sample-date API's current calendar. */
+function rebaseStaticSampleDatePart(key, value) {
+  if (value === ${String(PREVIEW_CANONICAL_SAMPLE_YEAR)} && ${String(PREVIEW_SAMPLE_YEAR_NAME_PATTERN)}.test(key)) {
+    return previewReduxSampleDates.base().getFullYear();
+  }
+  if (value === ${String(PREVIEW_CANONICAL_SAMPLE_MONTH)} && ${String(PREVIEW_SAMPLE_MONTH_NAME_PATTERN)}.test(key)) {
+    return previewReduxSampleDates.base().getMonth() + 1;
+  }
+  return undefined;
 }
 
 /** Recursively freezes host-generated JSON so target dispatch and mutation cannot change it. */
@@ -207,6 +242,7 @@ function readStaticState(configuration) {
 function createStaticStore(configuration) {
   const listeners = new Set();
   return {
+    [STATIC_STORE_MARK]: true,
     dispatch(action) {
       return action;
     },
@@ -258,6 +294,110 @@ export function createReduxPreviewElement(children, options) {
     { store: createStaticStore(configuration) },
     children,
   );
+}
+
+/** Recognizes a plain state object; class instances and immutable collections are left alone. */
+function isPlainStateObject(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/** Fills only paths the application state leaves undefined; untouched subtrees keep identity. */
+function fillAbsentStatePaths(value, overlay, depth) {
+  if (!isPlainStateObject(value) || !isPlainStateObject(overlay) || depth > MAX_STATE_PATH_DEPTH) {
+    return value;
+  }
+  let result = value;
+  for (const [key, overlayValue] of Object.entries(overlay)) {
+    if (BLOCKED_STATE_KEYS.has(key)) continue;
+    const current = value[key];
+    const next =
+      current === undefined ? overlayValue : fillAbsentStatePaths(current, overlayValue, depth + 1);
+    if (next !== current) {
+      if (result === value) result = { ...value };
+      result[key] = next;
+    }
+  }
+  return result;
+}
+
+/**
+ * Wraps an application store so reads see absent-receiver fields where the real state has none.
+ * One filled object is kept per real state object, so useSelector snapshots and Reselect inputs stay
+ * stable; dispatch, subscription, and reducer replacement go to the real store unchanged.
+ */
+function createOverlayStore(store) {
+  const filled = new WeakMap();
+  const overlayStore = {
+    [OVERLAY_STORE_MARK]: true,
+    dispatch: (action) => store.dispatch(action),
+    getState() {
+      const state = store.getState();
+      if (state === null || typeof state !== 'object') return state;
+      let result = filled.get(state);
+      if (result === undefined) {
+        result = fillAbsentStatePaths(state, ABSENT_RECEIVER_OVERLAY, 0);
+        filled.set(state, result);
+      }
+      return result;
+    },
+    replaceReducer: (nextReducer) => store.replaceReducer?.(nextReducer),
+    subscribe: (listener) => store.subscribe(listener),
+  };
+  const observableKey = typeof Symbol.observable === 'symbol' ? Symbol.observable : '@@observable';
+  if (typeof store[observableKey] === 'function') {
+    overlayStore[observableKey] = () => store[observableKey]();
+  }
+  return overlayStore;
+}
+
+/**
+ * Re-provides the nearest application store with absent-receiver fields filled for reads. The
+ * preview's own static store already holds those fields, and an outer boundary's overlay store is
+ * passed through, so only the boundary right below an application Provider takes effect.
+ */
+function PreviewReduxOverlayBoundary({ children }) {
+  const Provider = ReactRedux.Provider ?? ReactRedux.default?.Provider;
+  const context = ReduxContext === undefined ? undefined : React.useContext(ReduxContext);
+  const store = context?.store;
+  const isApplicationStore =
+    store !== null &&
+    typeof store?.getState === 'function' &&
+    store[STATIC_STORE_MARK] !== true &&
+    store[OVERLAY_STORE_MARK] !== true;
+  const overlayStore = React.useMemo(
+    () => (isApplicationStore ? createOverlayStore(store) : undefined),
+    [isApplicationStore, store],
+  );
+  if (overlayStore !== undefined) {
+    previewOverlayStatus = 'active: absent receiver fields shown over the application store';
+  } else if (store?.[OVERLAY_STORE_MARK] !== true) {
+    previewOverlayStatus =
+      store?.[STATIC_STORE_MARK] === true
+        ? 'inactive: the page reads the preview static store'
+        : 'inactive: no application Provider above the page';
+  }
+  return overlayStore === undefined || typeof Provider !== 'function'
+    ? children
+    : React.createElement(Provider, { store: overlayStore }, children);
+}
+
+/**
+ * Places one page-execution child below an overlay boundary when absent-receiver fields exist;
+ * otherwise returns the element itself, so pages without such fields keep their exact tree.
+ */
+export function wrapPreviewReduxOverlayElement(element) {
+  return HAS_ABSENT_RECEIVER_OVERLAY
+    ? React.createElement(PreviewReduxOverlayBoundary, null, element)
+    : element;
+}
+// Page-execution modules are built without importing this bridge, so they read it from here.
+globalThis[Symbol.for(${JSON.stringify(PREVIEW_REDUX_OVERLAY_ELEMENT_KEY)})] = wrapPreviewReduxOverlayElement;
+
+/** Describes whether the latest page read its application store through the overlay. */
+export function readPreviewReduxOverlayStatus() {
+  return previewOverlayStatus;
 }
 `;
 }

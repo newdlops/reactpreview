@@ -8,6 +8,7 @@ export interface PreviewTsxCorpusArtifactReference {
   readonly sha256: string;
 }
 
+/** Returns the SHA-256 of the exact artifact bytes or UTF-8 source supplied by a campaign phase. */
 export function previewTsxCorpusDigest(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -29,6 +30,7 @@ export async function writePreviewTsxCorpusArtifactAtomic(
   return reference;
 }
 
+/** Serializes one campaign record canonically and commits it through the verified atomic artifact writer. */
 export async function writePreviewTsxCorpusJsonAtomic(
   filePath: string,
   value: unknown,
@@ -40,9 +42,7 @@ export async function writePreviewTsxCorpusJsonAtomic(
 }
 
 /** Verifies an atomic JSON artifact against its separately persisted checksum. */
-export async function readPreviewTsxCorpusChecksummedJson<T>(
-  filePath: string,
-): Promise<T> {
+export async function readPreviewTsxCorpusChecksummedJson<T>(filePath: string): Promise<T> {
   const [value, checksum] = await Promise.all([
     readFile(filePath),
     readFile(`${filePath}.checksum.json`, 'utf8'),

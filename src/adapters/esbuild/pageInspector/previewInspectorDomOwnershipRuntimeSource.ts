@@ -36,7 +36,28 @@ function registerPreviewInspectorOwnedHost(token, node) {
     if (typeof schedulePreviewInspectorCommitRefresh === 'function') schedulePreviewInspectorCommitRefresh();
   };
 }
-function registerPreviewInspectorOwnershipBoundary(token, boundary) { const record = previewInspectorOwnershipByToken.get(token); if (record === undefined) return undefined; record.boundary = boundary; return () => { if (record.boundary === boundary) record.boundary = undefined; record.nodes.clear(); }; }
+/** Revokes access immediately while allowing React StrictMode's synchronous effect replay to retain connected refs. */
+function registerPreviewInspectorOwnershipBoundary(token, boundary) {
+  const record = previewInspectorOwnershipByToken.get(token);
+  if (record === undefined) return undefined;
+  const previousBoundary = record.boundary ?? record.detachedBoundary;
+  if (previousBoundary !== undefined && previousBoundary !== boundary) record.nodes.clear();
+  record.detachedBoundary = undefined;
+  record.boundary = boundary;
+  return () => {
+    if (record.boundary !== boundary) return;
+    record.boundary = undefined;
+    record.detachedBoundary = boundary;
+    const clearReleasedBoundary = () => {
+      if (record.boundary === undefined && record.detachedBoundary === boundary) {
+        record.nodes.clear();
+        record.detachedBoundary = undefined;
+      }
+    };
+    if (typeof globalThis.queueMicrotask === 'function') globalThis.queueMicrotask(clearReleasedBoundary);
+    else Promise.resolve().then(clearReleasedBoundary);
+  };
+}
 function clearPreviewInspectorOwnedHosts(token, boundary) { const record = previewInspectorOwnershipByToken.get(token); if (record?.boundary === boundary) record.nodes.clear(); }
 function readPreviewInspectorOwnedBoundaryRecord(boundary, state) { const token = boundary?.ownershipToken; const record = previewInspectorOwnershipByToken.get(token); const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function' ? findSelectedPreviewInspectorDescriptor() : undefined; const sourcePath = state?.targetSourcePath ?? descriptor?.inspector?.target?.sourcePath; if (record === undefined || record.boundary !== boundary || record.exportName !== state?.targetExportName || typeof sourcePath !== 'string' || record.sourcePath !== sourcePath.replaceAll('\\', '/')) return undefined; return record; }
 function hasPreviewInspectorOwnedBoundary(boundary, state) { return readPreviewInspectorOwnedBoundaryRecord(boundary, state) !== undefined; }

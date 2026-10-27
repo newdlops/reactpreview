@@ -1,28 +1,30 @@
+import { createPreviewDragDropBridgePlugin } from '../../../src/adapters/esbuild/previewDragDropBridgePlugin';
+import { createPreviewYarnLibuiBridgePlugin } from '../../../src/adapters/esbuild/previewYarnLibuiBridgePlugin';
 /**
  * Executes the generated browser entry instead of inspecting bundle text only.
  * A deliberately small DOM client evaluates React elements into HTML, which keeps this test
  * dependency-free while proving bootstrap order, export ordering, props, and providers.
  */
+import { build, type Plugin } from 'esbuild';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { runInContext, createContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { build, type Plugin } from 'esbuild';
+import { createContext, runInContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { createPreviewEntry } from '../../../src/adapters/esbuild/createPreviewEntry';
 import { createPreviewApolloBridgePlugin } from '../../../src/adapters/esbuild/previewApolloBridgePlugin';
 import { createPreviewFormikBridgePlugin } from '../../../src/adapters/esbuild/previewFormikBridgePlugin';
+import { PREVIEW_SOURCE_LOADERS } from '../../../src/adapters/esbuild/previewLoaderPolicy';
 import { createPreviewReactQueryBridgePlugin } from '../../../src/adapters/esbuild/previewReactQueryBridgePlugin';
 import { createPreviewReduxBridgePlugin } from '../../../src/adapters/esbuild/previewReduxBridgePlugin';
 import { createPreviewRouterBridgePlugin } from '../../../src/adapters/esbuild/previewRouterBridgePlugin';
-import { createPreviewEntry } from '../../../src/adapters/esbuild/createPreviewEntry';
-import { createPreviewDirectBlockerTraceRuntimeSource } from '../../../src/adapters/esbuild/staticResources/previewDirectBlockerTraceRuntimeSource';
-import { createPreviewRuntimeCorrelationSource } from '../../../src/adapters/esbuild/staticResources/previewRuntimeCorrelationSource';
-import { PREVIEW_SOURCE_LOADERS } from '../../../src/adapters/esbuild/previewLoaderPolicy';
 import { resolvePreviewRuntimeEnvironment } from '../../../src/adapters/esbuild/previewRuntimeEnvironment';
 import { createPreviewSetupBridgePlugin } from '../../../src/adapters/esbuild/previewSetupBridgePlugin';
 import { createPreviewTargetBridgePlugin } from '../../../src/adapters/esbuild/previewTargetBridgePlugin';
 import { selectPreviewTargetExports } from '../../../src/adapters/esbuild/previewTargetExports';
 import { createPreviewThemeBridgePlugin } from '../../../src/adapters/esbuild/previewThemeBridgePlugin';
+import { createPreviewDirectBlockerTraceRuntimeSource } from '../../../src/adapters/esbuild/staticResources/previewDirectBlockerTraceRuntimeSource';
+import { createPreviewRuntimeCorrelationSource } from '../../../src/adapters/esbuild/staticResources/previewRuntimeCorrelationSource';
 import { installFakeApolloPackage } from './support/fakeApolloPackage';
 
 const PROJECT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -181,7 +183,7 @@ describe('generated preview runtime execution', () => {
     expect(messages).toHaveLength(2);
     expect(messages[0]).toMatchObject({
       runtimeRevision: 3,
-      runtimeSessionId: expect.stringMatching(/^rp-[0-9a-f]{24}$/u),
+      runtimeSessionId: expect.stringMatching(/^rp-[0-9a-f]{24}$/u) as unknown,
       event: {
         event: 'render-result',
         previewCommand: 'direct-preview',
@@ -190,7 +192,7 @@ describe('generated preview runtime execution', () => {
     });
     expect(messages[1]).toMatchObject({
       runtimeRevision: 3,
-      runtimeSessionId: expect.stringMatching(/^rp-[0-9a-f]{24}$/u),
+      runtimeSessionId: expect.stringMatching(/^rp-[0-9a-f]{24}$/u) as unknown,
       event: {
         blocker: { category: 'runtime', outcome: 'report-only' },
         event: 'subsequent-error',
@@ -300,6 +302,8 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewDragDropBridgePlugin({ projectRoot }),
+          createPreviewYarnLibuiBridgePlugin({ projectRoot }),
           createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
@@ -425,6 +429,8 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewDragDropBridgePlugin({ projectRoot }),
+          createPreviewYarnLibuiBridgePlugin({ projectRoot }),
           createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
@@ -522,6 +528,8 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewDragDropBridgePlugin({ projectRoot }),
+          createPreviewYarnLibuiBridgePlugin({ projectRoot }),
           createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
@@ -608,6 +616,8 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewDragDropBridgePlugin({ projectRoot }),
+          createPreviewYarnLibuiBridgePlugin({ projectRoot }),
           createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
@@ -701,6 +711,8 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewDragDropBridgePlugin({ projectRoot }),
+          createPreviewYarnLibuiBridgePlugin({ projectRoot }),
           createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
@@ -805,6 +817,8 @@ describe('generated preview runtime execution', () => {
           createPreviewApolloBridgePlugin({ projectRoot }),
           createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewDragDropBridgePlugin({ projectRoot }),
+          createPreviewYarnLibuiBridgePlugin({ projectRoot }),
           createPreviewReactQueryBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),

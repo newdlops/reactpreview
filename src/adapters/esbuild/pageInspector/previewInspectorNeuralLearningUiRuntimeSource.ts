@@ -845,7 +845,9 @@ function PreviewInspectorNeuralRequestButton() {
         : availability.mode === 'review' ? 'rpi-page-context-section' : undefined,
       busy: availability.pending && !availability.canPause,
       disabled: !availability.actionable && !availability.canPause && !availability.paused,
-      onClick: activatePreviewInspectorNeuralAssistance,
+      onClick: review?.action === 'target-evidence'
+        ? () => activatePreviewInspectorNeuralTargetEvidenceReview(review)
+        : activatePreviewInspectorNeuralAssistance,
       title: review === undefined ? availability.title : review.label + '. ' + review.lines.join(' ') +
         (review.hasOptions ? ' Opens the option list without selecting or applying a value.' : ''),
       variant: reviewingChoices ? 'choice-review' : undefined,

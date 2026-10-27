@@ -19,6 +19,11 @@ export function createPreviewHotReloadRuntimeSource(progressRuntimeSource: strin
   return `
 const PREVIEW_HOT_RUNTIME_KEY = Symbol.for('newdlops.react-file-preview.hot-runtime');
 
+/** Accepts only a bounded opaque host input identity, without interpreting it as a capability. */
+function readPreviewPageContextFrontierId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : undefined;
+}
+
 /** Creates the one webview-owned runtime that survives cache-busted entry-module imports. */
 function createPreviewHotRuntime() {
   let vscodeApi;
@@ -31,6 +36,9 @@ function createPreviewHotRuntime() {
     bootstrapPromise: undefined,
     eventListeners: new Map(),
     latestReloadRequest: undefined,
+    pageContextFrontierId: readPreviewPageContextFrontierId(
+      mountNode.dataset?.reactPreviewPageContextFrontierId,
+    ),
     reloadOutcomeByToken: new Map(),
     reloadQueue: Promise.resolve(),
     requestSequence: 0,
@@ -54,11 +62,15 @@ const previewEntryIsHotReload = Number.isSafeInteger(previewHotRuntime.activeRel
 const previewEntryRevision = previewEntryIsHotReload
   ? previewHotRuntime.activeReloadRevision
   : previewMountRevision;
-const previewRuntimeToken = mountNode.dataset?.reactPreviewRuntimeToken;
-const previewRuntimeRevision =
-  Number.isSafeInteger(previewRuntimeRevisionValue) && previewRuntimeRevisionValue >= 0
-    ? previewRuntimeRevisionValue
-    : previewEntryRevision;
+// The retained DOM still describes the cold entry while a replacement is prepared. Capture only
+// this entry's validated request: old callbacks keep their old identity, and superseded imports
+// must never borrow a newer queued request's token or the previous document's mount token.
+const previewRuntimeToken = previewEntryIsHotReload
+  ? previewHotRuntime.latestReloadRequest?.revision === previewEntryRevision
+    ? previewHotRuntime.latestReloadRequest.token
+    : undefined
+  : mountNode.dataset?.reactPreviewRuntimeToken;
+const previewRuntimeRevision = previewEntryRevision;
 
 ${progressRuntimeSource}
 
@@ -210,7 +222,7 @@ function readHotReloadMessage(value) {
   if (value === null || typeof value !== 'object') {
     return undefined;
   }
-  const { revision, scriptUri, stylesheetUri, token, type } = value;
+  const { pageContextFrontierId, revision, scriptUri, stylesheetUri, token, type } = value;
   const entryIdentity = typeof scriptUri === 'string'
     ? readPreviewEntryScriptUri(scriptUri)
     : undefined;
@@ -223,12 +235,17 @@ function readHotReloadMessage(value) {
     typeof token !== 'string' ||
     token.length === 0 ||
     token.length > 256 ||
+    (pageContextFrontierId !== undefined &&
+      readPreviewPageContextFrontierId(pageContextFrontierId) === undefined) ||
     (stylesheetUri !== undefined &&
       (typeof stylesheetUri !== 'string' || !isPreviewStylesheetUri(stylesheetUri)))
   ) {
     return undefined;
   }
-  return { revision, scriptUri, stylesheetUri, token };
+  return {
+    revision, scriptUri, stylesheetUri, token,
+    ...(pageContextFrontierId === undefined ? {} : { pageContextFrontierId }),
+  };
 }
 
 /** Accepts only a cancellation matching one extension-issued pending request identity. */
@@ -365,6 +382,9 @@ async function applyHotReloadMessage(message) {
     previewHotRuntime.activeStyleSheetBoundary = undefined;
     mountNode.replaceChildren();
     stylesheetPreparation.commit();
+    if (message.pageContextFrontierId !== undefined) {
+      previewHotRuntime.pageContextFrontierId = message.pageContextFrontierId;
+    }
     const activationOutcome = await preparedEntry.activate();
     if (activationOutcome !== 'ready') {
       reportHotReloadOutcome(message, {

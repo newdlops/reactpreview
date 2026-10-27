@@ -64,7 +64,7 @@ type PreviewCompilationPriority = 0 | 1 | 2;
 
 const MAX_QUEUED_COMPILATIONS = 8;
 
-/** Serial worker scheduler that owns all compiler caches and native esbuild lifecycle. */
+/** Serial worker scheduler that owns compiler requests, caches, and orderly shutdown. */
 export class PreviewCompilerWorkerServer {
   private activeBuildIntent: PreviewBuildIntent | undefined;
   private activeController: AbortController | undefined;

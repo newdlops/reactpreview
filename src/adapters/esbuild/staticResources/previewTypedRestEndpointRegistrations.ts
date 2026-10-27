@@ -13,7 +13,10 @@
  */
 import ts from 'typescript';
 import type { PreviewTypeOracleView } from '../typeOracle/previewTypeOracle';
-import { readPreviewRuntimeHookCallOccurrence } from './previewRuntimeHookTypedFallback';
+import {
+  createPreviewRuntimeCallOccurrenceCounter,
+  readPreviewRuntimeHookCallOccurrence,
+} from './previewRuntimeHookTypedFallback';
 import { readPreviewTypeNodeOccurrence } from './previewTypedResponseShape';
 
 /** `Symbol.for` key of the queue of `[method, pattern, shape]` entries shared with the runtime. */
@@ -29,8 +32,9 @@ const HTTP_METHODS = new Map([
 const MAX_ENDPOINTS_PER_MODULE = 64;
 const MAX_ORACLE_QUERIES_PER_MODULE = 128;
 const MAX_SHAPE_SOURCE_LENGTH = 64 * 1024;
-const REQUEST_CALL_PATTERN =
-  /\.(?:delete|get|patch|post|put)\s*[<(]|[\w$]\s*(?:<[^()]*>)?\s*\(\s*['"`](?:\/|https?:\/\/)/u;
+// Probe from the argument's opening parenthesis instead of rescanning generic type spans.
+// The AST below owns callee/type-argument validation, including comments and parenthesized types.
+const REQUEST_CALL_PATTERN = /\.(?:delete|get|patch|post|put)\s*[<(]|\(\s*['"`](?:\/|https?:\/\/)/u;
 /** Helper names that read as requests when the response type is inferred, not written. */
 const REQUEST_HELPER_NAME_PATTERN = /fetch|request|load|get|api|http|json|query/iu;
 const SWR_MODULES = new Set(['swr', 'swr/immutable']);
@@ -58,6 +62,7 @@ export function createPreviewTypedRestEndpointRegistrations(
   );
   const entries: string[] = [];
   const swrNames = collectSwrHookNames(sourceFile);
+  const readOccurrence = createPreviewRuntimeCallOccurrenceCounter();
   let queries = 0;
   const register = (method: string, pattern: string, shape: unknown, helper: boolean): void => {
     // A helper must return a payload; `router.push('/settings')` resolves to a boolean.
@@ -74,13 +79,16 @@ export function createPreviewTypedRestEndpointRegistrations(
       return;
     if (ts.isCallExpression(node)) {
       const pattern = readEndpointPattern(node.arguments[0]);
+      // Identical call text has the same first path argument; unrelated calls cannot affect ordinals.
+      const occurrence =
+        pattern === undefined ? undefined : readOccurrence(node.getText(sourceFile));
       const calleeName = readCalleeName(node.expression);
       const clientMethod = ts.isPropertyAccessExpression(node.expression)
         ? HTTP_METHODS.get(node.expression.name.text)
         : undefined;
       if (pattern !== undefined && clientMethod !== undefined) {
         queries += 1;
-        register(clientMethod, pattern, readCallShape(node), false);
+        register(clientMethod, pattern, readCallShape(node, occurrence), false);
       } else if (pattern !== undefined && calleeName !== undefined && swrNames.has(calleeName)) {
         const typeArgument = node.typeArguments?.[0];
         if (typeArgument !== undefined) {
@@ -103,15 +111,20 @@ export function createPreviewTypedRestEndpointRegistrations(
         (node.typeArguments !== undefined || REQUEST_HELPER_NAME_PATTERN.test(calleeName))
       ) {
         queries += 1;
-        register(readHelperMethod(node, calleeName), pattern, readCallShape(node), true);
+        register(
+          readHelperMethod(node, calleeName),
+          pattern,
+          readCallShape(node, occurrence),
+          true,
+        );
       }
     }
     ts.forEachChild(node, visit);
   };
-  const readCallShape = (node: ts.CallExpression): unknown =>
+  const readCallShape = (node: ts.CallExpression, occurrence: number | undefined): unknown =>
     oracle.readTypedCallResponseShape({
       callText: node.getText(sourceFile),
-      occurrence: readPreviewRuntimeHookCallOccurrence(sourceFile, node),
+      occurrence: occurrence ?? readPreviewRuntimeHookCallOccurrence(sourceFile, node),
       sourcePath,
     });
   visit(sourceFile);

@@ -1,23 +1,34 @@
+/** Verifies pinned preview lifecycle and route inventory ownership invariants. */
+import { stop } from 'esbuild';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
-import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import type { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
 import type { PreviewInspectorBundleSourceInventoryMemo } from '../../../src/adapters/esbuild/inspector/previewInspectorBundleFrontier';
-import type { PreviewStaticModuleResolutionMemo } from '../../../src/adapters/esbuild/previewStaticModuleResolver';
-import type { PreviewResolutionConfinementPathMemo } from '../../../src/adapters/esbuild/previewResolutionConfinement';
-import type { PreviewCompleteRouteUsageContext } from '../../../src/adapters/esbuild/preparePreviewCompilerUsage';
 import {
   PREVIEW_COMPLETE_ROUTE_INVENTORY_TELEMETRY_POLICY,
   type PreviewCompleteRouteInventoryTelemetryEvent,
 } from '../../../src/adapters/esbuild/inspector/previewInspectorCompleteRouteInventory';
+import type { PreviewCompleteRouteUsageContext } from '../../../src/adapters/esbuild/preparePreviewCompilerUsage';
+import type { PreviewResolutionConfinementPathMemo } from '../../../src/adapters/esbuild/previewResolutionConfinement';
+import type { PreviewStaticModuleResolutionMemo } from '../../../src/adapters/esbuild/previewStaticModuleResolver';
 import { PreviewRouteExecutionPlanInvariantError } from '../../../src/domain/preview';
+import { PreviewBuildStalledError } from '../../../src/domain/previewBuildExecution';
 import type { PreviewCompilerBundleFrontierActivity } from '../../../src/domain/previewCompilerActivity';
 import {
-  PreviewBuildStalledError,
-  type PreviewBuildExecutionContext,
-} from '../../../src/domain/previewBuildExecution';
-const REPOSITORY_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+  REPOSITORY_ROOT,
+  createFrontierActivityContext,
+  expectReleasedRequestMemo,
+  expectReleasedReusableMemo,
+  inventoryInternals,
+} from './esbuildPreviewCompleteRouteInventoryFixtures';
+
+import { createPreviewCompilerTestScope } from './support/previewCompilerTestScope';
+
+const compilerScope = createPreviewCompilerTestScope();
+afterEach(() => compilerScope.shutdown());
+afterAll(async () => stop());
+
 describe('EsbuildPreviewCompiler complete route replay', () => {
   it('replays generic nested wildcard alternates through the compiler-owned API', async () => {
     const projectRoot = await mkdtemp(
@@ -57,10 +68,10 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
         body { --final-frontier-style-companion: enabled; }
       \`;
     `;
-    const compiler = new EsbuildPreviewCompiler();
-    const outerEquivalentCompiler = new EsbuildPreviewCompiler();
-    const resolutionMemoDisabledCompiler = new EsbuildPreviewCompiler();
-    const unconfinedCompiler = new EsbuildPreviewCompiler();
+    const compiler = compilerScope.create();
+    const outerEquivalentCompiler = compilerScope.create();
+    const resolutionMemoDisabledCompiler = compilerScope.create();
+    const unconfinedCompiler = compilerScope.create();
     try {
       await mkdir(sourceDirectory, { recursive: true });
       await mkdir(routerDirectory, { recursive: true });
@@ -155,7 +166,7 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
         workspaceRoot: projectRoot,
       });
       const prepareExecutionPlanMethod = 'prepareCompleteRouteExecutionPlanArtifact';
-      const compilerInternals = compiler as unknown as Record<string, unknown>;
+      const compilerInternals = inventoryInternals(compiler);
       const originalPrepareExecutionPlan = compilerInternals[prepareExecutionPlanMethod];
       if (typeof originalPrepareExecutionPlan !== 'function') {
         throw new Error('Expected compiler-owned execution planner.');
@@ -177,7 +188,7 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
         if (executionPlanInvocation === 2) {
           throw new Error('intentional execution planner failure');
         }
-        return invokeOriginalPrepareExecutionPlan.apply(compiler, args);
+        return invokeOriginalPrepareExecutionPlan.apply(compilerInternals, args);
       };
       try {
         await expect(compiler.collectCompleteRouteInventory(request)).rejects.toThrow(
@@ -211,7 +222,7 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
         successfulResolutionMemos.push(args[5] as PreviewStaticModuleResolutionMemo);
         successfulPathMemos.push(args[6] as PreviewResolutionConfinementPathMemo);
         successfulUsageContexts.push(args[7] as PreviewCompleteRouteUsageContext);
-        return invokeOriginalPrepareExecutionPlan.apply(compiler, args);
+        return invokeOriginalPrepareExecutionPlan.apply(compilerInternals, args);
       };
       let inventory: Awaited<ReturnType<EsbuildPreviewCompiler['collectCompleteRouteInventory']>>;
       let repeatedInventory: typeof inventory;
@@ -253,7 +264,7 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
       expect(successfulUsageStatistics?.fastContextHits).toBeGreaterThan(0);
       const outerEquivalentTelemetry: PreviewCompleteRouteInventoryTelemetryEvent[] = [];
       const outerEquivalentTelemetryAll: PreviewCompleteRouteInventoryTelemetryEvent[] = [];
-      const outerCompilerInternals = outerEquivalentCompiler as unknown as Record<string, unknown>;
+      const outerCompilerInternals = inventoryInternals(outerEquivalentCompiler);
       const originalOuterPrepareExecutionPlan = outerCompilerInternals[prepareExecutionPlanMethod];
       if (typeof originalOuterPrepareExecutionPlan !== 'function') {
         throw new Error('Expected outer compiler-owned execution planner.');
@@ -263,7 +274,7 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
       ) => Promise<unknown>;
       outerCompilerInternals[prepareExecutionPlanMethod] = (...args: unknown[]) => {
         args[4] = undefined;
-        return invokeOriginalOuterPrepareExecutionPlan.apply(outerEquivalentCompiler, args);
+        return invokeOriginalOuterPrepareExecutionPlan.apply(outerCompilerInternals, args);
       };
       let outerEquivalentInventory: Awaited<
         ReturnType<EsbuildPreviewCompiler['collectCompleteRouteInventory']>
@@ -293,10 +304,7 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
         outerCompilerInternals[prepareExecutionPlanMethod] = originalOuterPrepareExecutionPlan;
       }
       const resolutionMemoDisabledTelemetry: PreviewCompleteRouteInventoryTelemetryEvent[] = [];
-      const resolutionMemoDisabledInternals = resolutionMemoDisabledCompiler as unknown as Record<
-        string,
-        unknown
-      >;
+      const resolutionMemoDisabledInternals = inventoryInternals(resolutionMemoDisabledCompiler);
       const originalResolutionMemoDisabledPrepareExecutionPlan =
         resolutionMemoDisabledInternals[prepareExecutionPlanMethod];
       if (typeof originalResolutionMemoDisabledPrepareExecutionPlan !== 'function') {
@@ -359,7 +367,7 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
         args[6] = passThroughPathMemo;
         args[7] = undefined;
         return invokeOriginalResolutionMemoDisabledPrepareExecutionPlan.apply(
-          resolutionMemoDisabledCompiler,
+          resolutionMemoDisabledInternals,
           args,
         );
       };
@@ -380,7 +388,7 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
         resolutionMemoDisabledInternals[prepareExecutionPlanMethod] =
           originalResolutionMemoDisabledPrepareExecutionPlan;
       }
-      const unconfinedInternals = unconfinedCompiler as unknown as Record<string, unknown>;
+      const unconfinedInternals = inventoryInternals(unconfinedCompiler);
       const originalUnconfinedPrepareExecutionPlan =
         unconfinedInternals[prepareExecutionPlanMethod];
       if (typeof originalUnconfinedPrepareExecutionPlan !== 'function') {
@@ -393,7 +401,7 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
       unconfinedInternals[prepareExecutionPlanMethod] = (...args: unknown[]) => {
         unconfinedPathMemoArguments.push(args[6]);
         unconfinedUsageContextArguments.push(args[7]);
-        return invokeOriginalUnconfinedPrepareExecutionPlan.apply(unconfinedCompiler, args);
+        return invokeOriginalUnconfinedPrepareExecutionPlan.apply(unconfinedInternals, args);
       };
       const { resolutionConfinement: _resolutionConfinement, ...unconfinedRequest } = request;
       void _resolutionConfinement;
@@ -878,7 +886,7 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
         `,
       ],
     ]);
-    const compiler = new EsbuildPreviewCompiler();
+    const compiler = compilerScope.create();
     try {
       await mkdir(sourceDirectory, { recursive: true });
       await mkdir(routerDirectory, { recursive: true });
@@ -945,56 +953,3 @@ describe('EsbuildPreviewCompiler complete route replay', () => {
     }
   });
 });
-/** Verifies that one request memo retained useful work and released every cache layer. */
-function expectReleasedRequestMemo(
-  memo: PreviewInspectorBundleSourceInventoryMemo | undefined,
-  reused: boolean,
-): void {
-  if (memo === undefined) throw new Error('Expected an execution-planning request memo.');
-  expect(memo.getStatistics()).toMatchObject({ entries: 0, released: true });
-  expect(memo.getSliceStatistics()).toMatchObject({ sliceEntries: 0, released: true });
-  const closures = memo.getClosureStatistics();
-  expect(closures).toMatchObject({ closureEntries: 0, released: true });
-  const graph = memo.getGraphStatistics();
-  expect([
-    graph.dynamicResolutionEntries,
-    graph.proposalEntries,
-    graph.resolvedNodeEntries,
-    graph.rootedGraphEntries,
-    graph.released,
-  ]).toEqual([0, 0, 0, 0, true]);
-  expect(graph.resolvedNodeComputations).toBeGreaterThan(0);
-  expect(graph.resolvedNodeRequests).toBe(graph.resolvedNodeComputations + graph.resolvedNodeHits);
-  if (reused)
-    expect(
-      closures.closureHits +
-        graph.dynamicResolutionHits +
-        graph.proposalHits +
-        graph.resolvedNodeHits +
-        graph.rootedGraphHits,
-    ).toBeGreaterThan(0);
-}
-
-/** Verifies common successful-only resolution/path memo accounting after request release. */
-function expectReleasedReusableMemo(
-  memo: PreviewResolutionConfinementPathMemo | PreviewStaticModuleResolutionMemo,
-  reused: boolean,
-): void {
-  const statistics = memo.getStatistics();
-  expect(statistics).toMatchObject({ entries: 0, released: true });
-  expect(statistics.requests).toBe(statistics.computations + statistics.hits);
-  if (reused) expect(statistics.hits).toBeGreaterThan(0);
-}
-
-/** Captures each distinct final-frontier activity emitted by a real compiler invocation. */
-function createFrontierActivityContext(
-  activities: PreviewCompilerBundleFrontierActivity[],
-): PreviewBuildExecutionContext {
-  return {
-    reportProgress: (stage, activity) => {
-      void stage;
-      if (activity?.kind !== 'bundle-frontier') return;
-      if (activities.at(-1) !== activity) activities.push(activity);
-    },
-  };
-}

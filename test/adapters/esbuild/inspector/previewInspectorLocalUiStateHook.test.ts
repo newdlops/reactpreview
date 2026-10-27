@@ -5,6 +5,31 @@ import { describe, expect, it } from 'vitest';
 import { hasPreviewInspectorLocalUiStateHook } from '../../../../src/adapters/esbuild/inspector/previewInspectorLocalUiStateHook';
 
 describe('hasPreviewInspectorLocalUiStateHook', () => {
+  it('retains a dropdown controller with a local ref, inline toggle and erased library types', () => {
+    const source = `import {DropdownMenu as Primitive} from 'radix-ui';
+      import {type ComponentProps, useRef, useState} from 'react';
+      type Outside = ComponentProps<typeof Primitive.Content>['onInteractOutside'];
+      export function useTouchDropdown() {
+        const [open, setOpen] = useState(false);
+        const triggerRef = useRef<HTMLButtonElement>(null);
+        return {open, onOpenChange:setOpen, triggerProps:{ref:triggerRef,
+          onPointerDown:(event)=>event.preventDefault(),onClick:()=>setOpen(value=>!value)},
+          contentProps:{onInteractOutside:(event)=>{
+            if(triggerRef.current?.contains(event.target as Node)) event.preventDefault();
+          }}};
+      }`;
+    expect(
+      hasPreviewInspectorLocalUiStateHook('/w/useTouchDropdown.ts', source, ['useTouchDropdown']),
+    ).toBe(true);
+    expect(
+      hasPreviewInspectorLocalUiStateHook(
+        '/w/useTouchDropdown.ts',
+        source.replace('event.preventDefault()', "fetch('/save')"),
+        ['useTouchDropdown'],
+      ),
+    ).toBe(false);
+  });
+
   /** Keeps one coherent visibility state/action pair while allowing erased project type imports. */
   it('recognizes a React-only modal actions hook', () => {
     const source = [

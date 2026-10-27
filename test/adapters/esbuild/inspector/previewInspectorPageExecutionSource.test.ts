@@ -1,10 +1,11 @@
 import { runInNewContext } from 'node:vm';
+import * as React from 'react';
 import { describe, expect, it } from 'vitest';
-import { createPreviewAutomaticPropsRuntimeSource } from '../../../../src/adapters/esbuild/previewAutomaticPropsRuntimeSource';
 import { createPreviewInspectorExecutionRootModuleContract } from '../../../../src/adapters/esbuild/inspector/previewInspectorExecutionRootModuleContract';
 import { createPreviewInspectorPageExecutionSource } from '../../../../src/adapters/esbuild/inspector/previewInspectorPageExecutionSource';
-import { createPreviewInspectorTargetModuleContract } from '../../../../src/adapters/esbuild/inspector/previewInspectorTargetModuleContract';
 import type { PreviewInspectorPageExecutionCandidate } from '../../../../src/adapters/esbuild/inspector/previewInspectorPageExecutionTypes';
+import { createPreviewInspectorTargetModuleContract } from '../../../../src/adapters/esbuild/inspector/previewInspectorTargetModuleContract';
+import { createPreviewAutomaticPropsRuntimeSource } from '../../../../src/adapters/esbuild/previewAutomaticPropsRuntimeSource';
 
 describe('createPreviewInspectorPageExecutionSource', () => {
   it('uses only exact composition modes and routes sliced surfaces through virtual specifiers', () => {
@@ -89,7 +90,9 @@ describe('createPreviewInspectorPageExecutionSource', () => {
 
     expect(source).toContain('react-preview:page-surface/page');
     expect(source).toContain('React.createElement(PreviewInspectorExecutionRootBridge, null');
-    expect(source).toContain('"content": React.createElement(Surface2, null)');
+    expect(source).toContain(
+      '"content": __reactPreviewReduxOverlayElement(React.createElement(Surface2, null))',
+    );
     expect(source).toContain('react-preview:inspector-target-facade');
     expect(source).toContain('import { Route as Surface0 } from "/workspace/Route.tsx";');
     expect(source).toContain('Surface3');
@@ -269,7 +272,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
       'React.createElement(Surface1, frameProps),\n    React.createElement(PreviewInspectorContextualTargetFallback, null)',
     );
     expect(source).toContain(
-      'React.createElement(PreviewInspectorExecutionRootBridge, null, React.createElement(PreviewInspectorContextualTargetParentFrame, null))',
+      'React.createElement(PreviewInspectorExecutionRootBridge, null, __reactPreviewReduxOverlayElement(React.createElement(PreviewInspectorContextualTargetParentFrame, null)))',
     );
     expect(source).not.toContain(
       'React.createElement(React.Fragment, null, React.createElement(PreviewInspectorExecutionRootBridge, null), React.createElement(PreviewInspectorContextualTargetFallback, null))',
@@ -370,7 +373,9 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     });
 
     expect(source).toContain('react-preview:inspector-page-route-state');
-    expect(source).toContain('"Component": () => React.createElement(Surface1, null)');
+    expect(source).toContain(
+      '"Component": () => __reactPreviewReduxOverlayElement(React.createElement(Surface1, null))',
+    );
     expect(source).toContain('"pageProps": {}');
     expect(source).not.toContain('route registry');
   });
@@ -447,7 +452,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
       'function PreviewInspectorSelectedRouteSurfacePassthrough',
       compatibilityRuntimeStart,
     );
-    const context: { result?: Promise<Record<string, unknown>> } = {};
+    const context: { React: typeof React; result?: Promise<Record<string, unknown>> } = { React };
     runInNewContext(
       [
         createPreviewAutomaticPropsRuntimeSource(),
@@ -727,7 +732,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     });
 
     expect(source).toContain(
-      'element: React.createElement(PreviewInspectorExecutionRootBridge, null, React.createElement(Surface1, null))',
+      'element: React.createElement(PreviewInspectorExecutionRootBridge, null, __reactPreviewReduxOverlayElement(React.createElement(Surface1, null)))',
     );
     expect(source).toContain('initialEntries: ["/selected/42?tab=details"]');
     expect(source).toContain('path: "/selected/:selectedId"');

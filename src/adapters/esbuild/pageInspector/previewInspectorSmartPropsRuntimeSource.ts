@@ -394,6 +394,7 @@ function createPreviewInspectorSmartPropsDraft(exportName, requiredPaths = []) {
   }
   return {
     evidenceFound: evidence.found,
+    runtimeValue: completedValue,
     generatedValue,
     generatedPaths,
     requiredPaths: resolvedRequiredPaths,
@@ -453,30 +454,27 @@ function hasPreviewInspectorSmartPropPath(value, rawPath) {
   return true;
 }
 
-/** Copies a JSON-visible prop record and replaces exactly one prototype-safe object path. */
+/** Copies only the changed plain-record path, preserving opaque React and native siblings. */
 function setPreviewInspectorSmartPropPathValue(value, rawPath, nextValue) {
   const parsed = parsePreviewInspectorRequiredPath(rawPath);
   if (parsed === undefined || parsed.path.length === 0) return undefined;
-  const copied = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
-  const root = copied !== null && typeof copied === 'object' && !Array.isArray(copied)
-    ? copied
-    : {};
-  let current = root;
-  for (let index = 0; index < parsed.path.length; index += 1) {
-    const propertyName = parsed.path[index];
-    if (previewInspectorSmartPropBlockedNames.has(propertyName)) return undefined;
-    if (index === parsed.path.length - 1) {
-      current[propertyName] = nextValue;
-      return root;
-    }
-    const child = current[propertyName];
-    const next = child !== null && typeof child === 'object' && !Array.isArray(child)
-      ? { ...child }
-      : {};
-    current[propertyName] = next;
-    current = next;
+  const frames = [];
+  let current = value;
+  for (const propertyName of parsed.path) {
+    if (previewInspectorSmartPropBlockedNames.has(propertyName) ||
+      !isPreviewInspectorGeneratedPlainRecord(current)) return undefined;
+    const descriptors = readPreviewInspectorGeneratedValueDescriptors(current);
+    if (descriptors === undefined) return undefined;
+    const descriptor = descriptors[propertyName];
+    if (descriptor !== undefined && !Object.hasOwn(descriptor, 'value')) return undefined;
+    frames.push({ current, descriptors, propertyName });
+    current = descriptor?.value ?? {};
   }
-  return root;
+  let result = nextValue;
+  for (const frame of frames.reverse()) result = clonePreviewInspectorGeneratedRecord(
+    frame.current, frame.descriptors, new Map([[frame.propertyName,
+      createPreviewInspectorGeneratedDescriptor(result, frame.descriptors[frame.propertyName])]]));
+  return result;
 }
 
 ${finitePropChoiceRuntimeSource}
@@ -691,6 +689,7 @@ function createPreviewInspectorTargetFailurePropMutation(failure, options = {}) 
           { nodes: 0 },
         );
         return {
+          runtimeValue: completion.changed ? completion.value : baseValue,
           beforeValue: copiedBase !== null && typeof copiedBase === 'object' &&
             !Array.isArray(copiedBase) ? copiedBase : {},
           evidenceFound: evidence.found,
@@ -779,7 +778,7 @@ function applyPreviewInspectorTargetFailurePropMutation(mutation, options = {}) 
   const applied = mutation.automatic === true && mutation.repairUserOverride !== true
     ? setPreviewInspectorResolverPropsOverride(
         mutation.failure.exportName,
-        mutation.draft.value,
+        mutation.draft.runtimeValue ?? mutation.draft.value,
         commit,
       )
     : setPreviewInspectorPropsOverride(
@@ -800,6 +799,7 @@ function smartFillPreviewInspectorTargetFailure(
   options = {},
 ) {
   const mutation = createPreviewInspectorTargetFailurePropMutation(failure, {
+    ...options,
     finiteChoiceOrdinal: options?.finiteChoiceOrdinal,
     finiteChoiceSignature: options?.finiteChoiceSignature,
   });

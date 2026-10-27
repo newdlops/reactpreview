@@ -13,7 +13,7 @@ const typescriptFiles = [
   'src/**/*.tsx',
   'test/**/*.ts',
   'test/**/*.tsx',
-  'vitest.config.ts',
+  'vitest.config.mts',
 ];
 
 /**

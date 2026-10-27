@@ -1,70 +1,50 @@
-/* eslint-disable jsdoc/require-jsdoc */
-/**
- * Generates executable VirtualPages from statically proven application-to-target render paths.
- *
- * The authored application root remains descriptor evidence, but generic projects execute the
- * nearest concrete page checkpoint. This avoids evaluating unrelated bootstraps while preserving
- * the route, omitted shell path, current-file instrumentation, global styles, and framework shells.
- */
-import {
-  completePreviewAutomaticProps,
-  completePreviewTypedListShape,
-  type PreviewTypedPropValue,
-} from '../typeOracle/previewTypedComponentProps';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
+/** Coordinates RootPlugin using bounded authored-source evidence. */
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
+import path from 'node:path';
+import type { PreviewInspectorTargetMode } from '../../../domain/preview';
+import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
+import { registerPreviewApplicationStylesheetResolver } from '../previewApplicationStylesheetBridge';
+import type { PreviewApplicationStylesheetImportSelection } from '../previewApplicationStylesheetSelection';
+import type { PreviewGlobalStyleImportSelection } from '../previewGlobalStyleSelection';
 import {
   PREVIEW_INSPECTOR_ROOT_NAMESPACE,
   PREVIEW_TARGET_SPECIFIER,
 } from '../previewPluginProtocol';
+import type { PreviewThemeImportSelection } from '../previewTargetExports';
+import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
+import { type PreviewTypedPropValue } from '../typeOracle/previewTypedComponentProps';
 import type {
   PreviewInspectorAncestorPlan,
   PreviewInspectorComponentReference,
 } from './previewInspectorAncestorPlan';
-import type { PreviewInspectorPageCandidate } from './previewInspectorAncestorTypes';
-import { createPreviewInspectorAutomaticPropsSampleDateStatements } from './previewInspectorAutomaticPropsSampleDates';
-import {
-  createPreviewInspectorDirectTargetSpecifier,
-  PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER,
-} from './previewInspectorTargetPlugin';
-import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
-import type { PreviewThemeImportSelection } from '../previewTargetExports';
-import type { PreviewGlobalStyleImportSelection } from '../previewGlobalStyleSelection';
-import type { PreviewApplicationStylesheetImportSelection } from '../previewApplicationStylesheetSelection';
-import {
-  createPreviewApplicationStylesheetSpecifier,
-  registerPreviewApplicationStylesheetResolver,
-} from '../previewApplicationStylesheetBridge';
-import {
-  PREVIEW_NEXT_APP_CONTROL_SIGNAL_SYMBOL_KEY,
-  PREVIEW_NEXT_APP_ROUTE_STATE_SYMBOL_KEY,
-} from '../previewNextAppNavigationRuntimeSource';
+import { selectPreviewInspectorExecutableCandidate } from './previewInspectorExecutableCandidateSelection';
+import type { PreviewInspectorExecutionRootModuleContract } from './previewInspectorExecutionRootModuleContract';
+import { registerPreviewInspectorPageExecutionEntryPlugin } from './previewInspectorPageExecutionEntryPlugin';
+import type { PreviewInspectorPageExecutionCandidate } from './previewInspectorPageExecutionTypes';
 import {
   collectPreviewInspectorRenderBootstrapSlice,
   type PreviewInspectorRenderBootstrapSlice,
 } from './previewInspectorRenderBootstrapSlice';
-import { createPreviewInspectorVirtualPageCandidates } from './previewInspectorVirtualPagePlan';
-import { selectPreviewInspectorExecutableCandidate } from './previewInspectorExecutableCandidateSelection';
 import {
-  PREVIEW_INSPECTOR_PAGE_EXECUTION_SPECIFIER,
-  registerPreviewInspectorPageExecutionEntryPlugin,
-} from './previewInspectorPageExecutionEntryPlugin';
-import type { PreviewInspectorPageExecutionCandidate } from './previewInspectorPageExecutionTypes';
-import type { PreviewInspectorExecutionRootModuleContract } from './previewInspectorExecutionRootModuleContract';
-import { canBundlePreviewInspectorDirectTargetDefinitions } from './previewInspectorDirectTargetBundling';
+  createPreviewInspectorRootSource,
+  readRenderBootstrapSource,
+} from './previewInspectorRootSource';
 import type { PreviewInspectorTargetModuleContract } from './previewInspectorTargetModuleContract';
-import { createPreviewInspectorPageExecutionCandidateSummaries } from './previewInspectorPageExecutionCandidateSummary';
+import { createPreviewInspectorVirtualPageCandidates } from './previewInspectorVirtualPagePlan';
+
 const INSPECTOR_ROOT_PATH = 'selected-ancestor-root';
+
 const INSPECTOR_RENDER_BOOTSTRAP_NAMESPACE = 'react-preview-inspector-render-bootstrap';
+
 const INSPECTOR_RENDER_BOOTSTRAP_SPECIFIER_PREFIX = 'react-preview:inspector-render-bootstrap/';
+
 /** One candidate-scoped virtual module containing a safe entry registration slice. */
 interface PreviewInspectorRenderBootstrapModule {
   readonly candidateId: string;
   readonly slice: PreviewInspectorRenderBootstrapSlice;
   readonly specifier: string;
 }
+
 /** Inputs required to expose one inspector plan as a preview target descriptor. */
 export interface PreviewInspectorRootPluginOptions {
   /** Side-effect CSS recovered from exact application wrappers above the mounted page root. */
@@ -91,6 +71,8 @@ export interface PreviewInspectorRootPluginOptions {
   readonly runtimeOwnershipTarget?: PreviewInspectorComponentReference;
   /** Neutral target props inferred without evaluating the selected project module. */
   readonly targetInference?: PreviewInferredExportProps;
+  /** Explicit route intent shared by descriptor and bootstrap selection. */
+  readonly targetMode?: PreviewInspectorTargetMode;
   /** Prepared-source target identity shared with the exact facade and PageExecution edge. */
   readonly targetModuleContract?: PreviewInspectorTargetModuleContract;
   /** Typed values for required target props that usage literals left missing. */
@@ -98,6 +80,7 @@ export interface PreviewInspectorRootPluginOptions {
   /** Exact page-corridor theme imported before any lazy authored root begins rendering. */
   readonly themeImport?: PreviewThemeImportSelection;
 }
+
 /** Creates the Inspector root descriptor and build-scoped candidate loaders. */
 export function createPreviewInspectorRootPlugin(
   options: PreviewInspectorRootPluginOptions,
@@ -138,6 +121,7 @@ export function createPreviewInspectorRootPlugin(
         plan: options.plan,
         renderBootstrapSpecifiersByCandidateId,
         targetTypedProps: options.targetTypedProps,
+        ...(options.targetMode === undefined ? {} : { targetMode: options.targetMode }),
         ...(options.runtimeOwnershipTarget === undefined
           ? {}
           : { runtimeOwnershipTarget: options.runtimeOwnershipTarget }),
@@ -247,6 +231,7 @@ function assertExecutionRootModuleContract(options: PreviewInspectorRootPluginOp
     );
   }
 }
+
 /** Builds candidate-scoped entry registration slices without importing the entry module. */
 function collectRenderBootstrapModules(
   options: PreviewInspectorRootPluginOptions,
@@ -255,6 +240,7 @@ function collectRenderBootstrapModules(
     options.plan.pageCandidates,
     options.maximumPageCandidates ?? options.plan.pageCandidates.length,
     options.plan.shallowVisualPaths ?? [],
+    options.targetMode,
   );
   const executable = selectPreviewInspectorExecutableCandidate(
     virtualPages,
@@ -288,6 +274,8 @@ function collectRenderBootstrapModules(
   }
   return Object.freeze(modules);
 }
+
+/** Checks the normalized page, layout, application shell, and composed shell paths for one physical source. */
 function pageLoadsSourcePath(
   virtualPage: ReturnType<typeof createPreviewInspectorVirtualPageCandidates>[number],
   sourcePath: string,
@@ -303,917 +291,5 @@ function pageLoadsSourcePath(
   ];
   return loadedPaths.some((loadedPath) => path.normalize(loadedPath) === canonicalSourcePath);
 }
-function readRenderBootstrapSource(
-  options: PreviewInspectorRootPluginOptions,
-  sourcePath: string,
-): string | undefined {
-  const snapshot = options.readSource?.(sourcePath);
-  if (snapshot !== undefined) return snapshot;
-  try {
-    return readFileSync(sourcePath, 'utf8');
-  } catch {
-    return undefined;
-  }
-}
-function createCandidateModuleImportPromise(
-  importExpressions: readonly string[],
-  renderBootstrapSpecifier: string | undefined,
-): string {
-  const pagePromise = `Promise.all([${importExpressions.join(',')}])`;
-  return renderBootstrapSpecifier === undefined
-    ? pagePromise
-    : `import(${JSON.stringify(renderBootstrapSpecifier)}).then(() => ${pagePromise})`;
-}
-
-/** Pure source generator inputs used by plugin and bridge contract tests. */
-export interface PreviewInspectorRootSourceOptions {
-  readonly applicationStylesheetImports?: readonly PreviewApplicationStylesheetImportSelection[];
-  readonly displayName?: string;
-  readonly globalStyleImports?: readonly PreviewGlobalStyleImportSelection[];
-  readonly maximumPageCandidates?: number;
-  readonly pageExecutionCandidate?: PreviewInspectorPageExecutionCandidate;
-  readonly pageExecutionCandidates?: readonly PreviewInspectorPageExecutionCandidate[];
-  readonly plan: PreviewInspectorAncestorPlan;
-  readonly renderBootstrapSpecifiersByCandidateId?: Readonly<Record<string, string>>;
-  /** Runtime-only selected route leaf; omission preserves the active-document target. */
-  readonly runtimeOwnershipTarget?: PreviewInspectorComponentReference;
-  /** One persisted caller-path choice that may produce an executable loader. */
-  readonly selectedPageCandidateId?: string;
-  readonly targetInference?: PreviewInferredExportProps;
-  readonly targetTypedProps?: Readonly<Record<string, PreviewTypedPropValue>> | undefined;
-  readonly themeImport?: PreviewThemeImportSelection;
-}
-
-/** Generates Inspector descriptor metadata and one executable candidate loader. */
-export function createPreviewInspectorRootSource(
-  options: PreviewInspectorRootSourceOptions,
-): string {
-  const { plan } = options;
-  const runtimeOwnershipTarget = options.runtimeOwnershipTarget ?? plan.target;
-  const runtimeOwnershipDiffersFromAnalysis =
-    path.normalize(runtimeOwnershipTarget.sourcePath) !== path.normalize(plan.target.sourcePath) ||
-    runtimeOwnershipTarget.exportName !== plan.target.exportName;
-  const runtimeTargetInference = runtimeOwnershipDiffersFromAnalysis
-    ? undefined
-    : options.targetInference;
-  const virtualPageCandidates = createPreviewInspectorVirtualPageCandidates(
-    plan.pageCandidates,
-    options.maximumPageCandidates ?? plan.pageCandidates.length,
-    plan.shallowVisualPaths ?? [],
-  );
-  const executableCandidate = selectPreviewInspectorExecutableCandidate(
-    virtualPageCandidates,
-    options.selectedPageCandidateId,
-  );
-  const selectedRenderPath =
-    options.pageExecutionCandidate?.browserCandidate.renderPath ??
-    executableCandidate?.active.browserCandidate.renderPath;
-  const descriptorRenderChains = createPreviewInspectorDescriptorRenderChains(
-    plan,
-    runtimeOwnershipTarget,
-    selectedRenderPath,
-  );
-  const pageCandidates = virtualPageCandidates.map((candidate) => candidate.browserCandidate);
-  for (const candidate of pageCandidates) {
-    assertExportName(candidate.root.exportName);
-  }
-  for (const virtualPage of virtualPageCandidates) {
-    for (const shell of virtualPage.recipe.shells) assertExportName(shell.root.exportName);
-  }
-  const browserCandidates = virtualPageCandidates.map((virtualPage) => {
-    const analysisCandidate = virtualPage.browserCandidate;
-    const executionCandidate =
-      options.pageExecutionCandidate?.browserCandidate.id === analysisCandidate.id
-        ? options.pageExecutionCandidate
-        : undefined;
-    const candidate = executionCandidate?.browserCandidate ?? analysisCandidate;
-    const executionRecipe = executionCandidate?.routeRecipe;
-    /*
-     * Ordinary single-export plans keep their shared target on the plan rather than duplicating it
-     * onto every candidate. Page Execution enriches only the active candidate, so publishing that
-     * one explicit target beside target-less alternatives made the browser's export filter discard
-     * every HOC/wrapper path except the mounted one. Named-export scenarios already carry an exact
-     * candidate target and remain authoritative; otherwise inherit the immutable analysis target.
-     */
-    const runtimeCandidateTarget =
-      executionCandidate?.browserCandidate.target ?? candidate.target ?? plan.target;
-    const selectedExecutionRootOwnsRouter =
-      executionCandidate === undefined
-        ? candidate.rootOwnsRouter
-        : executionCandidate.browserCandidate.rootOwnsRouter;
-    const generatedExecutionOwnsRouter =
-      executionRecipe?.rootOwnsRouter === false &&
-      (executionRecipe.kind === 'react-router-v5' || executionRecipe.kind === 'react-router-v6');
-    return {
-      complete: candidate.complete,
-      ...(candidate.detachedTargetPlacement === undefined
-        ? {}
-        : { detachedTargetPlacement: candidate.detachedTargetPlacement }),
-      ...(candidate.contextModule === undefined ? {} : { contextModule: candidate.contextModule }),
-      edges: candidate.edges,
-      id: candidate.id,
-      ...(candidate.renderPath === undefined ? {} : { renderPath: candidate.renderPath }),
-      root: candidate.root,
-      // A target-only execution mounts the target itself as the root, so it needs the same
-      // declared-type props the contextual target element receives (StatusChip's `status`).
-      rootAutomaticProps:
-        executionCandidate?.fidelity === 'target-only'
-          ? completePreviewAutomaticProps(
-              candidate.rootAutomaticProps,
-              options.targetTypedProps,
-              candidate.rootInference?.shape,
-            )
-          : candidate.rootAutomaticProps,
-      ...(candidate.rootInference === undefined
-        ? {}
-        : {
-            rootInferredPropShape:
-              executionCandidate?.fidelity === 'target-only'
-                ? completePreviewTypedListShape(
-                    candidate.rootInference.shape,
-                    options.targetTypedProps,
-                  )
-                : candidate.rootInference.shape,
-            rootInferredProps: candidate.rootInference.provenance,
-          }),
-      ...(candidate.nextAppLayoutChain === undefined
-        ? {}
-        : { nextAppLayoutChain: candidate.nextAppLayoutChain }),
-      ...(candidate.nextPagesShell === undefined
-        ? {}
-        : { nextPagesShell: candidate.nextPagesShell }),
-      rootOwnsRouter: selectedExecutionRootOwnsRouter || generatedExecutionOwnsRouter,
-      ...(candidate.routeMountBasePath === undefined
-        ? {}
-        : {
-            routeMountBasePath: candidate.routeMountBasePath,
-            routeSlotCount: candidate.routeSlotCount ?? 0,
-            wildcardFallbackPresent: candidate.wildcardFallbackPresent === true,
-          }),
-      ...(candidate.rootStepIndex === undefined ? {} : { rootStepIndex: candidate.rootStepIndex }),
-      ...(candidate.routeLocation === undefined
-        ? {}
-        : {
-            routeLocation: {
-              componentName: candidate.routeLocation.componentName,
-              evidenceKind: candidate.routeLocation.evidenceKind,
-              pathname: candidate.routeLocation.pathname,
-              ...('params' in candidate.routeLocation
-                ? {
-                    params: candidate.routeLocation.params,
-                    searchParams: candidate.routeLocation.searchParams,
-                  }
-                : {}),
-              pattern: candidate.routeLocation.pattern,
-              sourcePath: candidate.routeLocation.sourcePath,
-            },
-          }),
-      stopReason: candidate.stopReason,
-      targetAutomaticProps: completePreviewAutomaticProps(
-        executionCandidate?.browserCandidate.targetAutomaticProps ?? candidate.targetAutomaticProps,
-        options.targetTypedProps,
-        runtimeTargetInference?.shape,
-      ),
-      ...(executionCandidate?.targetPageTabKeys === undefined ||
-      executionCandidate.targetPageTabKeys.length === 0
-        ? {}
-        : { targetPageTabKeys: executionCandidate.targetPageTabKeys }),
-      ...(runtimeCandidateTarget === undefined ? {} : { target: runtimeCandidateTarget }),
-      virtualPage: virtualPage.recipe,
-    };
-  });
-  const legacyCandidateDefinitions = (
-    executableCandidate === undefined ? [] : [executableCandidate.active]
-  ).map((virtualPage) => {
-    const { browserCandidate: candidate, contentCandidate, recipe } = virtualPage;
-    const rootIsTarget =
-      path.normalize(contentCandidate.root.sourcePath) ===
-        path.normalize(runtimeOwnershipTarget.sourcePath) &&
-      contentCandidate.root.exportName === runtimeOwnershipTarget.exportName;
-    const rootSpecifier = rootIsTarget
-      ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
-      : contentCandidate.root.sourcePath.replaceAll('\\', '/');
-    const layoutSpecifiers = contentCandidate.nextAppLayoutChain?.map((layout) =>
-      path.normalize(layout.sourcePath) === path.normalize(runtimeOwnershipTarget.sourcePath) &&
-      layout.exportName === runtimeOwnershipTarget.exportName
-        ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
-        : layout.sourcePath.replaceAll('\\', '/'),
-    );
-    const nextAppRouteLocation =
-      contentCandidate.routeLocation?.evidenceKind === 'next-app-filesystem'
-        ? contentCandidate.routeLocation
-        : undefined;
-    const renderBootstrapSpecifier = options.renderBootstrapSpecifiersByCandidateId?.[candidate.id];
-    if (nextAppRouteLocation !== undefined) {
-      const imports = [rootSpecifier, ...(layoutSpecifiers ?? [])].map(
-        (specifier) => `import(${JSON.stringify(specifier)})`,
-      );
-      return [
-        '{ id: ',
-        JSON.stringify(candidate.id),
-        ', load: () => ',
-        createCandidateModuleImportPromise(imports, renderBootstrapSpecifier),
-        '.then((modules) => __reactPreviewComposeNextAppPage(modules, ',
-        JSON.stringify(contentCandidate.root.exportName),
-        ', ',
-        JSON.stringify(nextAppRouteLocation.pathname),
-        ', ',
-        JSON.stringify(nextAppRouteLocation.params),
-        ', ',
-        JSON.stringify(nextAppRouteLocation.searchParams),
-        ', ',
-        JSON.stringify(contentCandidate.nextAppLayoutChain?.map((layout) => layout.params) ?? []),
-        ', ',
-        JSON.stringify(createNextAppLayoutNavigationValues(contentCandidate)),
-        ', ',
-        JSON.stringify(
-          contentCandidate.nextAppLayoutChain?.map((layout) => layout.slotNames ?? []) ?? [],
-        ),
-        ')) }',
-      ].join('');
-    }
-    if (contentCandidate.nextPagesShell !== undefined) {
-      const appIsTarget =
-        path.normalize(contentCandidate.nextPagesShell.app.sourcePath) ===
-          path.normalize(runtimeOwnershipTarget.sourcePath) &&
-        contentCandidate.nextPagesShell.app.exportName === runtimeOwnershipTarget.exportName;
-      const appSpecifier = appIsTarget
-        ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
-        : contentCandidate.nextPagesShell.app.sourcePath.replaceAll('\\', '/');
-      const syntheticPage = contentCandidate.nextPagesShell.syntheticPage === true;
-      const imports = (syntheticPage ? [appSpecifier] : [rootSpecifier, appSpecifier]).map(
-        (specifier) => `import(${JSON.stringify(specifier)})`,
-      );
-      return [
-        '{ id: ',
-        JSON.stringify(candidate.id),
-        ', load: () => ',
-        createCandidateModuleImportPromise(imports, renderBootstrapSpecifier),
-        '.then((modules) => __reactPreviewComposeNextPagesPage(modules, ',
-        JSON.stringify(contentCandidate.root.exportName),
-        ', ',
-        JSON.stringify(syntheticPage),
-        ')) }',
-      ].join('');
-    }
-    const shellSpecifiers = recipe.shells.map((shell) =>
-      path.normalize(shell.root.sourcePath) === path.normalize(runtimeOwnershipTarget.sourcePath) &&
-      shell.root.exportName === runtimeOwnershipTarget.exportName
-        ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
-        : shell.root.sourcePath.replaceAll('\\', '/'),
-    );
-    const imports = [rootSpecifier, ...shellSpecifiers].map(
-      (specifier) => `import(${JSON.stringify(specifier)})`,
-    );
-    return [
-      '{ id: ',
-      JSON.stringify(candidate.id),
-      ', load: () => ',
-      createCandidateModuleImportPromise(imports, renderBootstrapSpecifier),
-      '.then((modules) => __reactPreviewComposeVirtualPage(modules, ',
-      JSON.stringify(contentCandidate.root.exportName),
-      ', ',
-      JSON.stringify(recipe.shells.map((shell) => shell.root.exportName)),
-      ', ',
-      JSON.stringify(recipe),
-      ')) }',
-    ].join('');
-  });
-  const candidateDefinitions =
-    options.pageExecutionCandidate === undefined
-      ? legacyCandidateDefinitions
-      : [
-          [
-            '{ id: ',
-            JSON.stringify(options.pageExecutionCandidate.browserCandidate.id),
-            ', load: () => import(',
-            JSON.stringify(PREVIEW_INSPECTOR_PAGE_EXECUTION_SPECIFIER),
-            ').then((module) => module.default) }',
-          ].join(''),
-        ];
-  // Register every statically proven current-file component behind its own dynamic import. The
-  // browser invokes these loaders only for the explicit file-component overview; authored page
-  // flow still mounts one selected caller path and preserves its exact UI.
-  const directTargetExportNames =
-    !runtimeOwnershipDiffersFromAnalysis &&
-    plan.contextModule === undefined &&
-    canBundlePreviewInspectorDirectTargetDefinitions(options.pageExecutionCandidate, plan.target)
-      ? [...new Set([plan.target.exportName, ...Object.keys(plan.renderChainsByExport)])]
-      : [];
-  for (const exportName of directTargetExportNames) assertExportName(exportName);
-  const directTargetDefinitions = directTargetExportNames.map((exportName) =>
-    [
-      '{ directTarget: true, id: ',
-      JSON.stringify(`direct-target:${exportName}`),
-      ', targetExportName: ',
-      JSON.stringify(exportName),
-      ', load: () => import(',
-      JSON.stringify(createPreviewInspectorDirectTargetSpecifier(exportName)),
-      ').then((module) => module.default) }',
-    ].join(''),
-  );
-  const primaryRootIsTarget =
-    path.normalize(runtimeOwnershipTarget.sourcePath) === path.normalize(plan.root.sourcePath) &&
-    runtimeOwnershipTarget.exportName === plan.root.exportName;
-  const pageExecutionCandidateSummaries = createPreviewInspectorPageExecutionCandidateSummaries(
-    options.pageExecutionCandidates,
-    (sourcePath) => readRenderBootstrapSource(options, sourcePath),
-  );
-  const descriptor = {
-    automaticProps: {},
-    displayName: options.displayName ?? runtimeOwnershipTarget.exportName,
-    exportName: runtimeOwnershipTarget.exportName,
-    ...(primaryRootIsTarget && runtimeTargetInference !== undefined
-      ? {
-          inferredPropShape: runtimeTargetInference.shape,
-          inferredProps: runtimeTargetInference.provenance,
-        }
-      : {}),
-    inspector: {
-      ancestry: plan.edges,
-      complete: plan.complete,
-      ...(plan.contextModule === undefined ? {} : { contextModule: plan.contextModule }),
-      pageCandidates: browserCandidates,
-      ...(executableCandidate === undefined
-        ? {}
-        : { executablePageCandidateId: executableCandidate.active.browserCandidate.id }),
-      // prettier-ignore
-      ...(options.pageExecutionCandidate === undefined ? {} : { pageExecutionCandidateId: options.pageExecutionCandidate.id }),
-      ...(pageExecutionCandidateSummaries === undefined
-        ? {}
-        : { pageExecutionCandidates: pageExecutionCandidateSummaries }),
-      ...(executableCandidate?.requestedCandidateWasUnavailable === true
-        ? { requestedPageCandidateUnavailable: true }
-        : {}),
-      renderChain: descriptorRenderChains.renderChain,
-      renderChainsByExport: descriptorRenderChains.renderChainsByExport,
-      renderOutcomesByExport: plan.renderOutcomesByExport ?? {},
-      routeBranches:
-        plan.routeBranches?.map((branch) => ({
-          ...(branch.availability === undefined ? {} : { availability: branch.availability }),
-          childState: branch.childState,
-          componentName: branch.componentName,
-          depth: branch.depth,
-          id: branch.id,
-          ...(branch.parentId === undefined ? {} : { parentId: branch.parentId }),
-          pathname: branch.pathname,
-          pattern: branch.pattern,
-          selectionPath: branch.selectionPath,
-          selectable: branch.selectable !== false,
-        })) ?? [],
-      root: runtimeOwnershipDiffersFromAnalysis ? runtimeOwnershipTarget : plan.root,
-      ...(plan.selectedRouteBranchId === undefined
-        ? {}
-        : { selectedRouteBranchId: plan.selectedRouteBranchId }),
-      ...(plan.routeSelectionResolution === undefined
-        ? {}
-        : { routeSelectionResolution: plan.routeSelectionResolution }),
-      stopReason: plan.stopReason,
-      target: runtimeOwnershipTarget,
-      targetAutomaticProps: completePreviewAutomaticProps(
-        runtimeOwnershipDiffersFromAnalysis ? {} : plan.targetAutomaticProps,
-        options.targetTypedProps,
-        runtimeTargetInference?.shape,
-      ),
-      ...(runtimeTargetInference === undefined
-        ? {}
-        : { targetInferredPropShape: runtimeTargetInference.shape }),
-      targetInferredProps: runtimeTargetInference?.provenance ?? [],
-    },
-  };
-  const themeImport = createInspectorThemeImport(options.themeImport);
-  const globalStyleImports = createInspectorGlobalStyleImports(options.globalStyleImports ?? []);
-  const applicationStylesheetStatements = (options.applicationStylesheetImports ?? []).map(
-    (_selection, index) =>
-      `import ${JSON.stringify(createPreviewApplicationStylesheetSpecifier(index))};`,
-  );
-  const requiresNextAppRuntime = virtualPageCandidates.some(
-    (candidate) => candidate.contentCandidate.routeLocation?.evidenceKind === 'next-app-filesystem',
-  );
-  const requiresNextPagesRuntime = virtualPageCandidates.some(
-    (candidate) => candidate.contentCandidate.nextPagesShell !== undefined,
-  );
-
-  return [
-    "import * as React from 'react';",
-    ...applicationStylesheetStatements,
-    ...(requiresNextPagesRuntime
-      ? [
-          "import __reactPreviewNextPagesRouter, { RouterContext as __reactPreviewNextPagesRouterContext } from 'next/router';",
-        ]
-      : []),
-    ...(themeImport.statement === undefined ? [] : [themeImport.statement]),
-    ...globalStyleImports.statements,
-    '/** Mounts a concrete page checkpoint while retaining the full authored path as recipe data. */',
-    'class __reactPreviewVirtualPageContentProbe extends React.Component {',
-    '  componentDidMount() { this.props.onMount(); }',
-    '  render() { return this.props.children; }',
-    '}',
-    '/** Isolates one inferred shell and restores its child when it throws or swallows children. */',
-    'class __reactPreviewVirtualPageShellBoundary extends React.Component {',
-    '  constructor(props) {',
-    '    super(props);',
-    '    this.bypassTimer = undefined;',
-    '    this.contentMounted = false;',
-    '    this.state = { bypass: false, error: null };',
-    '  }',
-    '  static getDerivedStateFromError(error) { return { bypass: true, error }; }',
-    '  componentDidCatch(error) {',
-    '    globalThis.console?.warn?.("[React Preview] VirtualPage shell bypassed", error);',
-    '  }',
-    '  componentDidMount() {',
-    '    if (this.props.standalone) return;',
-    '    // A real shell may return null during its first generated-data pass. Keep it mounted long',
-    '    // enough for condition and payload resolution before falling back to the page body.',
-    '    this.bypassTimer = globalThis.setTimeout(() => {',
-    '      if (!this.contentMounted && !this.state.bypass) this.setState({ bypass: true });',
-    '    }, 1800);',
-    '  }',
-    '  componentWillUnmount() {',
-    '    if (this.bypassTimer !== undefined) globalThis.clearTimeout(this.bypassTimer);',
-    '  }',
-    '  render() {',
-    '    if (this.state.bypass) return this.props.children;',
-    '    const Shell = this.props.shell;',
-    '    if (this.props.standalone) {',
-    '      return React.createElement(Shell, { children: this.props.children });',
-    '    }',
-    '    const child = React.createElement(',
-    '      __reactPreviewVirtualPageContentProbe,',
-    '      { onMount: () => { this.contentMounted = true; } },',
-    '      this.props.children,',
-    '    );',
-    '    return React.createElement(Shell, { children: child });',
-    '  }',
-    '}',
-    /**
-     * The generated module keeps this helper next to the composition boundary so anonymous default
-     * page exports still have one stable, readable identity in React DevTools and the inspector tree.
-     */
-    '/** Derives one readable page-root name when its ESM export is the generic default. */',
-    'function __reactPreviewReadPageName(recipe, exportName) {',
-    '  const exportedName = recipe?.contentRoot?.exportName ?? exportName;',
-    '  if (exportedName !== "default") return exportedName;',
-    '  const sourcePath = String(recipe?.contentRoot?.sourcePath ?? "Page");',
-    '  const pathSegments = sourcePath.split(String.fromCharCode(92)).join("/").split("/");',
-    '  const fileName = pathSegments.at(-1) ?? "Page";',
-    '  const fileStem = fileName.replace(/\\.[^.]+$/u, "");',
-    '  const sourceStem = fileStem === "index" ? (pathSegments.at(-2) ?? "Page") : fileStem;',
-    '  const inferredName = sourceStem',
-    '    .split(/[^A-Za-z0-9_$]+/u)',
-    '    .filter(Boolean)',
-    '    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))',
-    '    .join("");',
-    '  return inferredName || "Page";',
-    '}',
-    '/** Copies inert route metadata without invoking getters or reading prototypes. */',
-    'function __reactPreviewCopyVirtualPageRouteStatics(target, source) {',
-    '  for (const key of ["basePath", "allPages", "pageNames"]) {',
-    '    try {',
-    '      const descriptor = Object.getOwnPropertyDescriptor(source, key);',
-    '      if (descriptor === undefined || !Object.prototype.hasOwnProperty.call(descriptor, "value")) continue;',
-    '      Object.defineProperty(target, key, descriptor);',
-    '    } catch {}',
-    '  }',
-    '}',
-    '/** Builds one live page body plus its authored wrapper and sibling composition frame. */',
-    'function __reactPreviewComposeVirtualPage(modules, exportName, shellExportNames, recipe) {',
-    '  const Content = modules[0]?.[exportName];',
-    '  if (Content === null || (typeof Content !== "function" && typeof Content !== "object")) {',
-    '    throw new TypeError(`VirtualPage content export is unavailable: ${exportName}`);',
-    '  }',
-    '  const shells = shellExportNames.map((shellExportName, index) => {',
-    '    const shellModule = modules[index + 1];',
-    '    const Shell = shellModule?.[shellExportName] ?? shellModule?.default;',
-    '    return Shell === null || (typeof Shell !== "function" && typeof Shell !== "object")',
-    '      ? undefined',
-    '      : Shell;',
-    '  });',
-    '  function ReactPreviewVirtualPage(props) {',
-    '    let child = React.createElement(Content, Object.assign({}, props));',
-    '    for (let index = shells.length - 1; index >= 0; index -= 1) {',
-    '      const Shell = shells[index];',
-    '      if (Shell === undefined) continue;',
-    '      const shellRecipe = recipe?.shells?.[index];',
-    '      if (shellRecipe?.relation === "sibling") {',
-    '        const sibling = React.createElement(',
-    '          __reactPreviewVirtualPageShellBoundary,',
-    '          { key: shellRecipe?.root?.sourcePath ?? index, shell: Shell, standalone: true },',
-    '        );',
-    '        child = shellRecipe?.placement === "after"',
-    '          ? React.createElement(React.Fragment, null, child, sibling)',
-    '          : React.createElement(React.Fragment, null, sibling, child);',
-    '      } else if (shellRecipe?.relation === "owner") {',
-    '        // A corridor owner already imports and renders its selected inner path. Running it',
-    '        // standalone preserves the authored Header/Sidebar placement instead of waiting for a',
-    '        // children probe it may never consume; a thrown owner still falls back to `child`.',
-    '        child = React.createElement(',
-    '          __reactPreviewVirtualPageShellBoundary,',
-    '          { key: shellRecipe?.root?.sourcePath ?? index, shell: Shell, standalone: true },',
-    '          child,',
-    '        );',
-    '      } else {',
-    '        child = React.createElement(',
-    '          __reactPreviewVirtualPageShellBoundary,',
-    '          { key: shellRecipe?.root?.sourcePath ?? index, shell: Shell },',
-    '          child,',
-    '        );',
-    '      }',
-    '    }',
-    '    return child;',
-    '  }',
-    '  __reactPreviewCopyVirtualPageRouteStatics(ReactPreviewVirtualPage, Content);',
-    '  try {',
-    '    Object.defineProperties(ReactPreviewVirtualPage, {',
-    '      displayName: { value: `PagePreview(${__reactPreviewReadPageName(recipe, exportName)})` },',
-    '      virtualPageRecipe: { value: Object.freeze(recipe), enumerable: false },',
-    '    });',
-    '  } catch {}',
-    '  return ReactPreviewVirtualPage;',
-    '}',
-    ...(requiresNextAppRuntime
-      ? [
-          "import { PreviewLayoutSegmentsContext as __reactPreviewNextLayoutSegmentsContext } from 'next/navigation';",
-          `const __reactPreviewNextAppRouteStateSymbol = Symbol.for(${JSON.stringify(PREVIEW_NEXT_APP_ROUTE_STATE_SYMBOL_KEY)});`,
-          `const __reactPreviewNextAppControlSignalSymbol = Symbol.for(${JSON.stringify(PREVIEW_NEXT_APP_CONTROL_SIGNAL_SYMBOL_KEY)});`,
-          '/** Publishes one inferred App route without resetting local navigation on re-render. */',
-          'function __reactPreviewInstallNextAppRoute(pathname, params, searchParams) {',
-          '  const signature = JSON.stringify([pathname, params, searchParams]);',
-          '  const previous = globalThis[__reactPreviewNextAppRouteStateSymbol];',
-          '  if (previous?.initialSignature === signature) return;',
-          '  globalThis[__reactPreviewNextAppRouteStateSymbol] = {',
-          '    initialSignature: signature,',
-          '    params: Object.freeze({ ...params }),',
-          '    pathname,',
-          '    revision: Number.isSafeInteger(previous?.revision) ? previous.revision + 1 : 0,',
-          '    searchParams: Object.freeze({ ...searchParams }),',
-          '  };',
-          '}',
-          '/** Keeps Next never-returning guards local while allowing surrounding layouts to render. */',
-          'class __reactPreviewNextAppControlBoundary extends React.Component {',
-          '  constructor(props) { super(props); this.state = { error: null }; }',
-          '  static getDerivedStateFromError(error) { return { error }; }',
-          '  render() {',
-          '    const error = this.state.error;',
-          '    if (error !== null) {',
-          '      const signal = error?.[__reactPreviewNextAppControlSignalSymbol];',
-          '      if (signal === undefined) throw error;',
-          '      const destination = typeof signal.destination === "string"',
-          '        ? ` · ${signal.destination}`',
-          '        : "";',
-          '      return React.createElement(',
-          '        "section",',
-          '        {',
-          '          "data-react-preview-next-app-control": signal.kind,',
-          '          style: {',
-          '            border: "1px dashed #c98b2e", borderRadius: "6px", color: "#7a5318",',
-          '            margin: "8px", padding: "10px",',
-          '          },',
-          '        },',
-          '        React.createElement("strong", null, `Next ${signal.kind}() intercepted${destination}`),',
-          '        React.createElement(',
-          '          "button",',
-          '          { onClick: () => this.setState({ error: null }), style: { marginLeft: "8px" } },',
-          '          "Retry",',
-          '        ),',
-          '      );',
-          '    }',
-          '    return this.props.children;',
-          '  }',
-          '}',
-          '/**',
-          ' * Creates a stable object that supports legacy direct property reads, `await`, and',
-          ' * React 19 `use()` without choosing a project-specific Next.js major version.',
-          ' */',
-          'function __reactPreviewCreateNextAppCompatRecord(source) {',
-          '  const value = Object.freeze({ ...source });',
-          '  const record = { ...value };',
-          '  Object.defineProperties(record, {',
-          "    status: { configurable: false, enumerable: false, value: 'fulfilled' },",
-          '    value: { configurable: false, enumerable: false, value },',
-          '    then: {',
-          '      configurable: false,',
-          '      enumerable: false,',
-          '      value(onFulfilled, onRejected) {',
-          '        return Promise.resolve(value).then(onFulfilled, onRejected);',
-          '      },',
-          '    },',
-          '  });',
-          '  return Object.freeze(record);',
-          '}',
-          '/** Keeps each async App page/layout on one stable promise instead of suspending forever. */',
-          'function __reactPreviewAdaptNextComponent(Component) {',
-          '  if (typeof Component !== "function" || Component.constructor?.name !== "AsyncFunction") return Component;',
-          '  let record;',
-          '  return function ReactPreviewAsyncNextComponent(props) {',
-          '   if (record === undefined) {',
-          '    let resume;',
-          '    const promise = new Promise((resolve) => { resume = resolve; });',
-          '    record = { promise, status: "pending", value: null };',
-          '    let timer = setTimeout(() => {',
-          '      if (record.status !== "pending") return;',
-          '      record.status = "fulfilled";',
-          '      record.value = React.createElement("span", {',
-          '        "data-react-preview-next-async": "timeout", role: "status", title: "Async Next output timed out",',
-          '      }, "…");',
-          '      resume();',
-          '    }, 1500);',
-          '    Promise.resolve().then(() => Component(props)).then(',
-          '      (value) => {',
-          '        if (record.status !== "pending") return;',
-          '        clearTimeout(timer); record.status = "fulfilled"; record.value = value; resume();',
-          '      },',
-          '      (error) => {',
-          '        if (record.status !== "pending") return;',
-          '        clearTimeout(timer);',
-          '        if (error?.[__reactPreviewNextAppControlSignalSymbol] !== undefined) {',
-          '          record.status = "rejected"; record.value = error;',
-          '        } else {',
-          '          globalThis.console?.warn?.("[React Preview] async Next component", error);',
-          '          record.status = "fulfilled";',
-          '          record.value = React.createElement("span", {',
-          '            "data-react-preview-next-async": "failed", role: "status", title: String(error?.message ?? error).slice(0, 240),',
-          '          }, "…");',
-          '        }',
-          '        resume();',
-          '      },',
-          '    );',
-          '   }',
-          '   if (record.status === "pending") throw record.promise;',
-          '   if (record.status === "rejected") throw record.value;',
-          '   return record.value;',
-          '  };',
-          '}',
-          '/** Supplies one inert but truthy React node for each statically proven named slot prop. */',
-          'function __reactPreviewCreateNextSlotProps(slotNames) {',
-          '  const props = {};',
-          '  for (const slotName of slotNames) {',
-          '    props[slotName] = React.createElement("span", {',
-          '      "data-react-preview-next-slot": slotName, hidden: true,',
-          '    });',
-          '  }',
-          '  return props;',
-          '}',
-          '/** Recreates Next App Router implicit root-to-leaf layout nesting around one page. */',
-          'function __reactPreviewComposeNextAppPage(',
-          '  modules,',
-          '  rootExportName,',
-          '  pathname,',
-          '  pageParamValues,',
-          '  searchParamValues,',
-          '  layoutParamValues,',
-          '  layoutNavigationValues,',
-          '  layoutSlotNames,',
-          ') {',
-          '  const Root = __reactPreviewAdaptNextComponent(modules[0]?.[rootExportName]);',
-          '  const layouts = modules.slice(1).map((module) => __reactPreviewAdaptNextComponent(module?.default));',
-          '  const pageParams = __reactPreviewCreateNextAppCompatRecord(pageParamValues);',
-          '  const searchParams = __reactPreviewCreateNextAppCompatRecord(searchParamValues);',
-          '  const layoutParams = layoutParamValues.map(__reactPreviewCreateNextAppCompatRecord);',
-          '  return function ReactPreviewNextAppPage(props) {',
-          '    __reactPreviewInstallNextAppRoute(pathname, pageParamValues, searchParamValues);',
-          '    const pageProps = Object.assign({}, props, { params: pageParams, searchParams });',
-          '    let child = React.createElement(',
-          '      __reactPreviewNextLayoutSegmentsContext.Provider,',
-          '      { value: { segments: [], slots: {} } },',
-          '      React.createElement(',
-          '        __reactPreviewNextAppControlBoundary,',
-          '        null,',
-          '        React.createElement(Root, pageProps),',
-          '      ),',
-          '    );',
-          '    for (let index = layouts.length - 1; index >= 0; index -= 1) {',
-          '      const layoutProps = Object.assign(',
-          '        { children: child, params: layoutParams[index] },',
-          '        __reactPreviewCreateNextSlotProps(layoutSlotNames[index] ?? []),',
-          '      );',
-          '      child = React.createElement(',
-          '        __reactPreviewNextLayoutSegmentsContext.Provider,',
-          '        { value: layoutNavigationValues[index] ?? { segments: [], slots: {} } },',
-          '        React.createElement(',
-          '          __reactPreviewNextAppControlBoundary,',
-          '          null,',
-          '          React.createElement(layouts[index], layoutProps),',
-          '        ),',
-          '      );',
-          '    }',
-          '    return child;',
-          '  };',
-          '}',
-        ]
-      : []),
-    ...(requiresNextPagesRuntime
-      ? [
-          '/** Supplies a stable host marker when `_app` is the only authored Pages module. */',
-          'function __reactPreviewSyntheticNextPagesPage() {',
-          "  return React.createElement('main', { 'data-react-preview-synthetic-next-page': 'true' });",
-          '}',
-          '/** Recreates Next Pages `_app -> Component` composition absent from import graphs. */',
-          'function __reactPreviewComposeNextPagesPage(modules, rootExportName, syntheticPage) {',
-          '  const authoredPage = syntheticPage ? undefined : modules[0]?.[rootExportName];',
-          '  const Page = authoredPage ?? __reactPreviewSyntheticNextPagesPage;',
-          '  const App = modules[syntheticPage ? 0 : 1]?.default;',
-          '  if (App === undefined || App === null) return Page;',
-          '  return function ReactPreviewNextPagesPage(props) {',
-          '    const pageProps = Object.assign({}, props);',
-          '    return React.createElement(',
-          '      __reactPreviewNextPagesRouterContext.Provider,',
-          '      { value: __reactPreviewNextPagesRouter },',
-          '      React.createElement(App, {',
-          '        Component: Page,',
-          '        pageProps,',
-          '        router: __reactPreviewNextPagesRouter,',
-          '      }),',
-          '    );',
-          '  };',
-          '}',
-        ]
-      : []),
-    `const __reactPreviewInspectorCandidates = Object.freeze([${[
-      ...candidateDefinitions,
-      ...directTargetDefinitions,
-    ].join(',')}]);`,
-    `const __reactPreviewInspectorDescriptor = ${JSON.stringify(descriptor)};`,
-    ...createPreviewInspectorAutomaticPropsSampleDateStatements(
-      '__reactPreviewInspectorDescriptor',
-    ),
-    '/** Delegates candidate selection and Suspense loading to the entry-owned Inspector runtime. */',
-    'function __reactPreviewInspectorRoot(props) {',
-    "  const api = globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')];",
-    "  if (typeof api?.createPageCandidateElement !== 'function') {",
-    "    throw new Error('React Page Inspector candidate runtime is unavailable.');",
-    '  }',
-    '  return api.createPageCandidateElement(__reactPreviewInspectorCandidates, props);',
-    '}',
-    '__reactPreviewInspectorDescriptor.value = __reactPreviewInspectorRoot;',
-    `export const previewTheme = ${themeImport.reference};`,
-    `export const previewGlobalStyles = Object.freeze([${globalStyleImports.references.join(',')}]);`,
-    'export default Object.freeze([Object.freeze(__reactPreviewInspectorDescriptor)]);',
-  ].join('\n');
-}
-
-/**
- * Keeps alternate current-file exports selectable while removing inactive references of the
- * currently compiled export from browser-side blocker and JSX-case discovery.
- */
-function createPreviewInspectorDescriptorRenderChains(
-  plan: PreviewInspectorAncestorPlan,
-  runtimeTarget: PreviewInspectorComponentReference,
-  selectedRenderPath: PreviewInspectorPageCandidate['renderPath'],
-): Pick<PreviewInspectorAncestorPlan, 'renderChain' | 'renderChainsByExport'> {
-  const targetRenderChain = plan.renderChainsByExport[runtimeTarget.exportName];
-  const firstStep = selectedRenderPath?.steps[0];
-  const exactSelectedTargetPath =
-    targetRenderChain !== undefined &&
-    firstStep !== undefined &&
-    path.normalize(firstStep.sourcePath) === path.normalize(runtimeTarget.sourcePath) &&
-    (firstStep.label === runtimeTarget.exportName ||
-      (runtimeTarget.exportName === 'default' && firstStep.label.endsWith(' (default)')));
-  if (
-    !exactSelectedTargetPath ||
-    selectedRenderPath === undefined ||
-    targetRenderChain === undefined
-  ) {
-    return {
-      renderChain: plan.renderChain,
-      renderChainsByExport: plan.renderChainsByExport,
-    };
-  }
-  const selectedRenderChain = Object.freeze({
-    ...targetRenderChain,
-    paths: Object.freeze([selectedRenderPath]),
-  });
-  return {
-    renderChain: selectedRenderChain,
-    renderChainsByExport: Object.freeze({
-      ...plan.renderChainsByExport,
-      [runtimeTarget.exportName]: selectedRenderChain,
-    }),
-  };
-}
-
-/** Per-layout navigation context serialized beside one composed App Router candidate. */
-interface PreviewNextAppLayoutNavigationValue {
-  /** Active route segments below this exact layout/template boundary. */
-  readonly segments: readonly string[];
-  /** Known named slots remain neutral until a future bounded slot branch is selected. */
-  readonly slots: Readonly<Record<string, readonly string[]>>;
-}
-
-/**
- * Derives Next's layout-relative segment hook values from the same filesystem route evidence.
- * Using source directories instead of splitting the final URL preserves route groups and collapses
- * catch-all values into the single segment returned by Next's public navigation hooks.
- */
-function createNextAppLayoutNavigationValues(
-  candidate: PreviewInspectorPageCandidate,
-): readonly PreviewNextAppLayoutNavigationValue[] {
-  const routeParams =
-    candidate.routeLocation !== undefined && 'params' in candidate.routeLocation
-      ? candidate.routeLocation.params
-      : {};
-  const pageDirectory = path.dirname(candidate.root.sourcePath);
-  return Object.freeze(
-    (candidate.nextAppLayoutChain ?? []).map((layout) => {
-      const relativePath = path.relative(path.dirname(layout.sourcePath), pageDirectory);
-      const segments =
-        relativePath.startsWith('..') || path.isAbsolute(relativePath)
-          ? []
-          : relativePath
-              .split(path.sep)
-              .filter(Boolean)
-              .flatMap((segment) => normalizeNextLayoutSegment(segment, routeParams));
-      const slots = Object.fromEntries((layout.slotNames ?? []).map((slotName) => [slotName, []]));
-      return Object.freeze({
-        segments: Object.freeze(segments),
-        slots: Object.freeze(slots),
-      });
-    }),
-  );
-}
-
-/** Converts one filesystem segment into the public layout-hook representation. */
-function normalizeNextLayoutSegment(
-  sourceSegment: string,
-  params: Readonly<Record<string, string | readonly string[]>>,
-): readonly string[] {
-  if (
-    sourceSegment.startsWith('@') ||
-    sourceSegment.startsWith('_') ||
-    /^\([^)]*\)$/u.test(sourceSegment)
-  ) {
-    return Object.freeze([]);
-  }
-  const segment = sourceSegment.replace(/^(?:\(\.\.\.\)|\(\.\.\)|\(\.\))+/u, '');
-  const optionalCatchAll = /^\[\[\.\.\.([^\]]+)\]\]$/u.exec(segment);
-  if (optionalCatchAll !== null) {
-    const values = readNextLayoutParameterValues(params[optionalCatchAll[1] ?? '']);
-    return values.length === 0 ? Object.freeze([]) : Object.freeze([values.join('/')]);
-  }
-  const catchAll = /^\[\.\.\.([^\]]+)\]$/u.exec(segment);
-  if (catchAll !== null) {
-    const values = readNextLayoutParameterValues(params[catchAll[1] ?? '']);
-    return Object.freeze([values.length === 0 ? (catchAll[1] ?? 'preview') : values.join('/')]);
-  }
-  const dynamic = /^\[([^\]]+)\]$/u.exec(segment);
-  if (dynamic !== null) {
-    const values = readNextLayoutParameterValues(params[dynamic[1] ?? '']);
-    return Object.freeze([values[0] ?? dynamic[1] ?? 'preview']);
-  }
-  return Object.freeze([decodeNextLayoutSegment(segment)]);
-}
-/** Narrows scalar and catch-all route values to one immutable string sequence. */
-function readNextLayoutParameterValues(value: string | readonly string[] | undefined): string[] {
-  if (typeof value === 'string') return [value];
-  if (value === undefined) return [];
-  return Array.from(value);
-}
-
-/** Decodes ordinary URL-safe segment spelling while keeping malformed escapes inspectable. */
-function decodeNextLayoutSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment.replace(/^%5f/iu, '_'));
-  } catch {
-    return segment;
-  }
-}
-
-/** Creates stable eager imports for app-level global styles while page candidates remain lazy. */
-function createInspectorGlobalStyleImports(
-  globalStyleImports: readonly PreviewGlobalStyleImportSelection[],
-): { readonly references: readonly string[]; readonly statements: readonly string[] } {
-  const references: string[] = [];
-  const statements: string[] = [];
-  for (const [index, globalStyleImport] of globalStyleImports.entries()) {
-    assertExportName(globalStyleImport.exportName);
-    const reference = `__reactPreviewInspectorGlobalStyle${index.toString()}`;
-    references.push(reference);
-    statements.push(
-      `import { ${globalStyleImport.exportName} as ${reference} } from ${JSON.stringify(globalStyleImport.moduleSpecifier)};`,
-    );
-  }
-  return { references, statements };
-}
-
-/** Creates one eager exact-theme import while every authored page candidate remains lazy. */
-function createInspectorThemeImport(themeImport: PreviewThemeImportSelection | undefined): {
-  readonly reference: string;
-  readonly statement?: string;
-} {
-  if (themeImport === undefined) return { reference: 'undefined' };
-  assertExportName(themeImport.exportName);
-  return {
-    reference: '__reactPreviewInspectorTheme',
-    statement: `import { ${themeImport.exportName} as __reactPreviewInspectorTheme } from ${JSON.stringify(themeImport.moduleSpecifier)};`,
-  };
-}
-
-/** Rejects names that cannot be emitted in an ECMAScript named import clause. */
-function assertExportName(exportName: string): void {
-  if (
-    exportName !== 'default' &&
-    !/^[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*$/u.test(exportName)
-  ) {
-    throw new TypeError(`Invalid React preview inspector root export name: ${exportName}`);
-  }
-}
+export { createPreviewInspectorRootSource } from './previewInspectorRootSource';
+export type { PreviewInspectorRootSourceOptions } from './previewInspectorRootSource';

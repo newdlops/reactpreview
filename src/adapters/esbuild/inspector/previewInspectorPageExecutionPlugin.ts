@@ -29,6 +29,8 @@ export interface PreviewInspectorPageExecutionPluginSurface {
 export interface PreviewInspectorPageExecutionPluginOptions {
   readonly readSource: (sourcePath: string) => string | undefined;
   readonly surfaces: readonly PreviewInspectorPageExecutionPluginSurface[];
+  /** Preserves exact authored call-site identities before export extraction changes offsets. */
+  readonly prepareSource?: (sourcePath: string, sourceText: string) => string;
   /** Applies the same compatibility/runtime instrumentation used by authored workspace modules. */
   readonly transformSource?: (
     sourcePath: string,
@@ -86,7 +88,12 @@ export function createPreviewInspectorPageExecutionPlugin(
   const load = async (arguments_: OnLoadArgs): Promise<OnLoadResult | undefined> => {
     const surface = surfaces.get(arguments_.path);
     if (surface === undefined) return undefined;
-    const sourceText = options.readSource(surface.sourcePath) ?? readDiskSource(surface.sourcePath);
+    const authoredSource =
+      options.readSource(surface.sourcePath) ?? readDiskSource(surface.sourcePath);
+    const sourceText =
+      authoredSource === undefined
+        ? undefined
+        : (options.prepareSource?.(surface.sourcePath, authoredSource) ?? authoredSource);
     const result =
       sourceText === undefined
         ? undefined

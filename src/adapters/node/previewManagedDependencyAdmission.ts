@@ -692,7 +692,7 @@ function toPortablePath(relativePath: string): string {
 
 /** Checks strict containment without accepting sibling paths that merely share a textual prefix. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length > 0 &&
     relativePath !== '..' &&

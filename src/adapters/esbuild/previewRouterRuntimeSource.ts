@@ -6,7 +6,7 @@
 
 /** Resolved project module required to build the optional router preview boundary. */
 export interface PreviewRouterRuntimeSourceOptions {
-  /** Whether no target-reachable provider was found, allowing a default automatic wrapper. */
+  /** Default global wrapper in component mode; Inspector uses its candidate-local boundary. */
   readonly automaticallyWrap?: boolean;
   /** Absolute browser-resolved entry for the target project's react-router-dom package. */
   readonly reactRouterDomModulePath: string;

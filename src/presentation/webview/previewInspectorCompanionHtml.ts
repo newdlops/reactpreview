@@ -439,6 +439,10 @@ export function createPreviewInspectorCompanionHtml(
         if (control === null || control.matches('input,textarea,select')) return;
         event.preventDefault();
         if (control.matches('button,summary') && (event.key === 'Enter' || event.key === ' ')) {
+          if (control.matches('[data-rpi-accordion-toggle]')) {
+            control.click();
+            return;
+          }
           if (activateCompanionInferenceReview(control)) return;
           if (activateCompanionChoiceReview(control)) return;
           postControlEvent(control, 'click');

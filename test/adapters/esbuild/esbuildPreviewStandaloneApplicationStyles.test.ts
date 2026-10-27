@@ -70,8 +70,8 @@ describe('EsbuildPreviewCompiler standalone application styles', () => {
         .join('\n');
 
       expect(stylesheet).toContain('.standalone-card');
-      expect(stylesheet).toContain('@media (max-width: 40rem)');
-      expect(stylesheet).toContain('max-width: 32rem');
+      expect(stylesheet).toMatch(/@media\s*\(max-width:\s*40rem\)/u);
+      expect(stylesheet).toMatch(/max-width:\s*32rem/u);
       expect(javascript).not.toContain('ROOT_LAYOUT_MUST_NOT_EXECUTE');
       expect(bundle.dependencies).toEqual(
         expect.arrayContaining([documentPath, layoutPath, stylesheetPath]),

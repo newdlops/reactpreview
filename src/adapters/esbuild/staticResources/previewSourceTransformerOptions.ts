@@ -3,9 +3,10 @@
  * Keeping this contract outside the implementation prevents the already broad resource transformer
  * from becoming a second configuration boundary as new render-only compatibility layers are added.
  */
+import type { PreviewPrismaColumnDefaults } from '../previewPrismaColumnDefaults';
 import type { PreviewStaticModuleResolver } from '../previewStaticModuleResolver';
-import type { PreviewLocalTargetExportInstrumentation } from './previewLocalTargetExportInstrumentation';
 import type { PreviewTypeOracleView } from '../typeOracle/previewTypeOracle';
+import type { PreviewLocalTargetExportInstrumentation } from './previewLocalTargetExportInstrumentation';
 
 /** Immutable transformer configuration for one compilation request. */
 export interface PreviewSourceTransformerOptions {
@@ -40,12 +41,28 @@ export interface PreviewSourceTransformerOptions {
   readonly instrumentRuntimeHookFallbacks?: boolean;
   /** Build-scoped declared-type oracle; hook fallbacks gain type-correct values when present. */
   readonly typeOracle?: PreviewTypeOracleView;
+  /**
+   * Canonical paths of modules served as render-only server contracts in this build. Query calls
+   * rooted at their imports settle to the call site's declared result (needs `typeOracle` and
+   * `graphqlModuleResolver`).
+   */
+  readonly serverContractSourcePaths?: readonly string[];
+  /** String column defaults of the project's Prisma schema for typed server queries. */
+  readonly prismaColumnDefaults?: PreviewPrismaColumnDefaults;
   /** Whether failing React effects may be logged and isolated from otherwise valid page output. */
   readonly instrumentRuntimeEffectIsolation?: boolean;
   /** Exact selected target bindings whose same-module references need the Inspector boundary. */
   readonly localTargetExportInstrumentation?: PreviewLocalTargetExportInstrumentation;
   /** Offsets where owner modules render the selected target, keyed by normalized owner path. */
   readonly selectedTargetOccurrences?: ReadonlyMap<string, readonly number[]>;
+  /** Enables exact JSX tracking only when every selected path hop has a supported JSX identity. */
+  readonly trackSelectedJsxOccurrences?: boolean;
+  /** Bounded source proof that this exact imported hook owns only Router-query/local UI state. */
+  readonly admitSelectedPageTabHook?: (
+    specifier: string,
+    importer: string,
+    exportName: string,
+  ) => Promise<boolean>;
   /** Resolver used only to trace an interpolated GraphQL fragment to authored workspace source. */
   readonly graphqlModuleResolver?: Pick<PreviewStaticModuleResolver, 'resolve'>;
   /** Dirty-editor source lookup consulted before the GraphQL catalog reads an on-disk module. */

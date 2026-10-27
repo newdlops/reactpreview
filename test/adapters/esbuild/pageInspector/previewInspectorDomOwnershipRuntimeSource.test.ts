@@ -3,6 +3,56 @@ import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorDomOwnershipRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorDomOwnershipRuntimeSource';
 
 describe('Preview Inspector DOM ownership runtime source', () => {
+  it('revokes detached boundaries immediately and retains refs only across synchronous effect replay', () => {
+    const queued: (() => void)[] = [];
+    const result: unknown = vm.runInNewContext(
+      createPreviewInspectorDomOwnershipRuntimeSource() +
+        String.raw`
+const metadata = { exportName: 'Target', sourcePath: '/workspace/Target.tsx' };
+const capability = {};
+registerPreviewInspectorCompilerCapability(capability, metadata);
+const token = createPreviewInspectorOwnershipToken(capability, metadata);
+const boundary = { ownershipToken: token };
+const state = { targetExportName: 'Target', targetSourcePath: metadata.sourcePath };
+const host = { nodeType: 1 };
+const release = registerPreviewInspectorOwnershipBoundary(token, boundary);
+registerPreviewInspectorOwnedHost(token, host);
+release();
+const immediatelyRevoked = readPreviewInspectorOwnedHosts(boundary, state).length === 0;
+const releaseReplay = registerPreviewInspectorOwnershipBoundary(token, boundary);
+flush();
+const replayRetained = readPreviewInspectorOwnedHosts(boundary, state)[0] === host;
+releaseReplay();
+const replayImmediatelyRevoked = !hasPreviewInspectorOwnedBoundary(boundary, state);
+flush();
+registerPreviewInspectorOwnershipBoundary(token, boundary);
+const detachedRefsCleared = readPreviewInspectorOwnedHosts(boundary, state).length === 0;
+registerPreviewInspectorOwnedHost(token, host);
+const releaseReplacement = registerPreviewInspectorOwnershipBoundary(token, boundary);
+releaseReplacement();
+const otherBoundary = { ownershipToken: token };
+registerPreviewInspectorOwnershipBoundary(token, otherBoundary);
+flush();
+const differentBoundaryCleared = readPreviewInspectorOwnedHosts(otherBoundary, state).length === 0;
+({ immediatelyRevoked, replayRetained, replayImmediatelyRevoked, detachedRefsCleared, differentBoundaryCleared });`,
+      {
+        queueMicrotask: (callback: () => void) => {
+          queued.push(callback);
+        },
+        flush: () => {
+          for (const callback of queued.splice(0)) callback();
+        },
+      },
+    );
+    expect(result).toEqual({
+      immediatelyRevoked: true,
+      replayRetained: true,
+      replayImmediatelyRevoked: true,
+      detachedRefsCleared: true,
+      differentBoundaryCleared: true,
+    });
+  });
+
   it('discovers a JSX context initialized before the Inspector API and refuses conflicting capability metadata', () => {
     const contextValue = {};
     const sandbox: Record<PropertyKey, unknown> = {
@@ -179,7 +229,10 @@ describe('Preview Inspector DOM ownership runtime source', () => {
         metadata: object,
       ) => boolean;
       readonly registerPreviewInspectorOwnedHost: (token: object, node: object) => unknown;
-      readonly registerPreviewInspectorOwnershipBoundary: (token: object, boundary: object) => unknown;
+      readonly registerPreviewInspectorOwnershipBoundary: (
+        token: object,
+        boundary: object,
+      ) => unknown;
     };
     const marker = {};
     expect(ownership.registerPreviewInspectorCompilerCapability(marker, routeTarget)).toBe(true);

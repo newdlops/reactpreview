@@ -176,7 +176,7 @@ export function createPreviewInspectorRuntimePlugin(
   };
 }
 
-/** Private automatic-JSX adapter. It never changes composites or props and records only host refs. */
+/** Private JSX adapter: records host refs and strips compiler metadata before authored props. */
 function createPreviewInspectorJsxRuntimeSource(options: {
   readonly dev: boolean;
   readonly runtimePath?: string;
@@ -206,7 +206,7 @@ function createPreviewInspectorJsxRuntimeSource(options: {
     "const neutralRegistryKey = Symbol.for('newdlops.react-file-preview.generated-neutral');",
     'function isGeneratedNeutral(value) { const registry = globalThis[neutralRegistryKey]; return typeof value === "function" && registry instanceof WeakSet && registry.has(value); }',
     'function withRenderableChildren(props) { if (props === null || typeof props !== "object") return props; const children = props.children; if (isGeneratedNeutral(children)) return { ...props, children: null }; if (Array.isArray(children) && children.some(isGeneratedNeutral)) return { ...props, children: children.map((child) => isGeneratedNeutral(child) ? null : child) }; return props; }',
-    'function adapt(factory) { return (type, props, key, ...rest) => { reportInvalidElementType(type, props, rest); return factory(typeof type === "string" ? Host(type) : type, withRenderableChildren(props), key, ...rest); }; }',
+    'function adapt(factory) { return (type, props, key, ...rest) => { reportInvalidElementType(type, props, rest); const occurrence = globalThis[apiKey]?.prepareJsxOccurrenceProps?.(props); const clean = occurrence?.props ?? props; const prepared = globalThis[apiKey]?.prepareSelectedSuspenseProps?.(type, clean) ?? clean; const element = factory(typeof type === "string" ? Host(type) : type, withRenderableChildren(prepared), key, ...rest); if (occurrence) globalThis[apiKey]?.registerJsxOccurrenceProps?.(element?.props, occurrence.id); return element; }; }',
     'export const Fragment = original.Fragment;',
     ...factoryNames.map((name) => `export const ${name} = adapt(original.${name});`),
     'export default original;',

@@ -43,6 +43,7 @@ export interface FreezePreviewInspectorPageCandidateOptions {
   readonly rootAutomaticProps: PreviewParentSliceStaticProps;
   readonly rootInference?: PreviewInferredExportProps;
   readonly nextAppLayoutChain?: readonly PreviewInspectorNextAppLayoutReference[];
+  readonly nextAppRedirectDestination?: string;
   readonly nextPagesShell?: PreviewInspectorNextPagesShell;
   readonly rootOwnsRouter: boolean;
   readonly rootStepIndex?: number;
@@ -78,6 +79,9 @@ export function freezePreviewInspectorPageCandidate(
       ? {}
       : { nextAppLayoutChain: Object.freeze([...options.nextAppLayoutChain]) }),
     ...(options.nextPagesShell === undefined ? {} : { nextPagesShell: options.nextPagesShell }),
+    ...(options.nextAppRedirectDestination === undefined
+      ? {}
+      : { nextAppRedirectDestination: options.nextAppRedirectDestination }),
     rootOwnsRouter: options.rootOwnsRouter,
     ...(options.rootStepIndex === undefined ? {} : { rootStepIndex: options.rootStepIndex }),
     ...(options.routeLocation === undefined ? {} : { routeLocation: options.routeLocation }),

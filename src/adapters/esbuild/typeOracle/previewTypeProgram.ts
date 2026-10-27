@@ -14,6 +14,9 @@
 import { statSync } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
+import { createPreviewResolutionFileSystem } from '../previewResolutionFileSystem';
+import { createPreviewTypeAnalysisSourceFile } from './previewTypedJsonAnalysis';
+import { PreviewTypeResolutionCache } from './previewTypeResolutionCache';
 
 /** Inputs that define one analysis program. */
 export interface PreviewTypeProgramInput {
@@ -25,6 +28,11 @@ export interface PreviewTypeProgramInput {
   readonly readSnapshot: (sourcePath: string) => string | undefined;
   /** Absolute project files whose declared types the current build may request. */
   readonly rootPaths: readonly string[];
+  /**
+   * Bare specifiers answered by a served file instead of normal resolution, such as a declaration
+   * built from a Prisma schema for a client that was never generated. `readSnapshot` serves the text.
+   */
+  readonly moduleOverrides?: ReadonlyMap<string, string>;
   /** Optional explicit tsconfig/jsconfig path; otherwise the nearest config to the first root. */
   readonly tsconfigPath?: string;
 }
@@ -106,8 +114,11 @@ export class PreviewTypeSourceFileCache {
     string,
     { readonly file: ts.SourceFile; readonly settings: string; readonly text: string }
   >();
-  private readonly resolutions = new Map<string, string | null>();
-  private resolutionScope = '';
+  private readonly resolutions = new PreviewTypeResolutionCache();
+  private readonly imports = new Map<
+    string,
+    { readonly text: string; readonly specifiers: readonly string[] }
+  >();
 
   /** Returns a cached parse when text and parse settings match, otherwise parses and caches it. */
   public get(
@@ -118,13 +129,13 @@ export class PreviewTypeSourceFileCache {
     const key = readPreviewTypeFileKey(fileName);
     const settings =
       typeof languageVersion === 'object'
-        ? `${String(languageVersion.languageVersion)}:${String(languageVersion.impliedNodeFormat)}`
+        ? `${String(languageVersion.languageVersion)}:${String(languageVersion.impliedNodeFormat)}:${String(languageVersion.jsDocParsingMode ?? ts.JSDocParsingMode.ParseAll)}`
         : String(languageVersion);
     const cached = this.entries.get(key);
     if (cached?.text === text && cached.settings === settings) {
       return cached.file;
     }
-    const file = ts.createSourceFile(fileName, text, languageVersion, true);
+    const file = createPreviewTypeAnalysisSourceFile(fileName, text, languageVersion);
     this.entries.set(key, { file, settings, text });
     return file;
   }
@@ -134,6 +145,21 @@ export class PreviewTypeSourceFileCache {
     for (const key of this.entries.keys()) {
       if (!fileKeys.has(key)) this.entries.delete(key);
     }
+    for (const key of this.imports.keys()) {
+      if (!fileKeys.has(key)) this.imports.delete(key);
+    }
+  }
+
+  /** Reuses the exact ordered import scan of an admitted input only while its full text matches. */
+  public readImports(fileName: string, text: string): readonly string[] {
+    const key = readPreviewTypeFileKey(fileName);
+    const cached = this.imports.get(key);
+    if (cached?.text === text) return cached.specifiers;
+    const specifiers = Object.freeze(
+      ts.preProcessFile(text, true, true).importedFiles.map((reference) => reference.fileName),
+    );
+    this.imports.set(key, { text, specifiers });
+    return specifiers;
   }
 
   /** Text bytes of the retained parses; their heap is reused by the next unchanged build. */
@@ -147,32 +173,24 @@ export class PreviewTypeSourceFileCache {
   public clear(): void {
     this.entries.clear();
     this.resolutions.clear();
+    this.imports.clear();
   }
 
-  /** Keeps module resolutions only while compiler options and dependency layers are unchanged. */
-  public useResolutionScope(scope: string): void {
-    if (scope === this.resolutionScope && this.resolutions.size < MAX_CACHED_RESOLUTIONS) return;
-    this.resolutions.clear();
-    this.resolutionScope = scope;
+  /** Starts fresh import answers and metadata while retaining reusable source syntax separately. */
+  public createResolutionHost(host: ts.ModuleResolutionHost): ts.ModuleResolutionHost {
+    return this.resolutions.createHost(host);
   }
 
   /** Returns a remembered resolution: a path, `null` for a remembered miss, `undefined` if unknown. */
   public readResolution(key: string): string | null | undefined {
-    return this.resolutions.get(key);
+    return this.resolutions.read(key);
   }
 
-  /** Remembers one resolution, including a miss, for later builds in this worker. */
+  /** Remembers one resolution, including a miss, only for this program's admission traversal. */
   public writeResolution(key: string, resolvedFileName: string | undefined): void {
-    this.resolutions.set(key, resolvedFileName ?? null);
+    this.resolutions.write(key, resolvedFileName);
   }
 }
-
-/**
- * Import edges remembered across builds. Resolution walks the file system (stat, realpath) for
- * every edge of a 400-file program, which dominated warm rebuilds; a new specifier is always
- * resolved fresh, and a remembered miss lasts only until the worker is recycled.
- */
-const MAX_CACHED_RESOLUTIONS = 50_000;
 
 /** Canonical key for comparing host file names with admitted module paths. */
 function readPreviewTypeFileKey(fileName: string): string {
@@ -196,12 +214,21 @@ export function createPreviewTypeProgram(
   const rootPaths = [...new Set(input.rootPaths.map((rootPath) => path.normalize(rootPath)))];
   const options = readAnalysisOptions(input.tsconfigPath, rootPaths[0]);
   const host = ts.createCompilerHost(options, true);
+  const resolutionFileSystem = createPreviewResolutionFileSystem();
+  host.directoryExists = resolutionFileSystem.directoryExists;
+  if (resolutionFileSystem.realpath !== undefined) host.realpath = resolutionFileSystem.realpath;
+  // Match the CLI: retain JavaScript types and TypeScript links without descriptive TS JSDoc.
+  host.jsDocParsingMode = ts.JSDocParsingMode.ParseForTypeErrors;
   const libDirectory = input.libDirectory ?? path.dirname(ts.getDefaultLibFilePath(options));
   host.getDefaultLibLocation = () => libDirectory;
   host.getDefaultLibFileName = (compilerOptions) =>
     path.join(libDirectory, ts.getDefaultLibFileName(compilerOptions));
   const readText = (fileName: string): string | undefined =>
     input.readSnapshot(path.normalize(fileName)) ?? ts.sys.readFile(fileName);
+  host.readFile = (fileName) => readText(fileName);
+  host.fileExists = (fileName) =>
+    input.readSnapshot(path.normalize(fileName)) !== undefined ||
+    resolutionFileSystem.fileExists(fileName);
   const readCandidate = (fileName: string, limit: number): string | number | undefined => {
     const snapshot = input.readSnapshot(path.normalize(fileName));
     if (snapshot !== undefined) return snapshot;
@@ -214,7 +241,17 @@ export function createPreviewTypeProgram(
     (fileName) => fileName,
     options,
   );
-  cache.useResolutionScope(JSON.stringify([options, input.managedNodeModulesPaths]));
+  // Reuse admission's package metadata for per-file format detection in this same program.
+  host.getModuleResolutionCache = () => resolutionCache;
+  const resolutionHost = cache.createResolutionHost({ ...host });
+  host.fileExists = (fileName) => resolutionHost.fileExists(fileName);
+  host.readFile = (fileName) => resolutionHost.readFile(fileName);
+  if (resolutionHost.directoryExists !== undefined)
+    host.directoryExists = (fileName) => resolutionHost.directoryExists?.(fileName) ?? false;
+  if (resolutionHost.realpath !== undefined)
+    host.realpath = (fileName) => resolutionHost.realpath?.(fileName) ?? fileName;
+  if (resolutionHost.getDirectories !== undefined)
+    host.getDirectories = (fileName) => resolutionHost.getDirectories?.(fileName) ?? [];
   const resolve = (specifier: string, containingFile: string): string | undefined => {
     const key = `${containingFile}\0${specifier}`;
     const remembered = cache.readResolution(key);
@@ -224,6 +261,8 @@ export function createPreviewTypeProgram(
     return resolvedFileName;
   };
   const resolveUncached = (specifier: string, containingFile: string): string | undefined => {
+    const override = input.moduleOverrides?.get(specifier);
+    if (override !== undefined) return override;
     const direct = ts.resolveModuleName(specifier, containingFile, options, host, resolutionCache);
     if (direct.resolvedModule !== undefined) return direct.resolvedModule.resolvedFileName;
     if (specifier.startsWith('.') || path.isAbsolute(specifier)) return undefined;
@@ -242,15 +281,16 @@ export function createPreviewTypeProgram(
   const lib = readPreviewTypeLibFiles(libDirectory, options.lib ?? []);
   const admission = admitModulesBreadthFirst(
     rootPaths,
-    { readCandidate, readRoot: readText },
+    {
+      readCandidate,
+      readRoot: readText,
+      readImports: (fileName, text) => cache.readImports(fileName, text),
+    },
     resolve,
     budget,
     lib.bytes,
   );
   cache.retainOnly(new Set([...admission.texts.keys(), ...lib.texts.keys()]));
-  host.readFile = (fileName) => readText(fileName);
-  host.fileExists = (fileName) =>
-    input.readSnapshot(path.normalize(fileName)) !== undefined || ts.sys.fileExists(fileName);
   // Only admitted modules and lib files are served: `/// <reference path|types>` directives in
   // admitted declarations would otherwise load files that the byte budget never counted.
   host.getSourceFile = (fileName, languageVersion) => {
@@ -313,6 +353,8 @@ interface ModuleAdmission {
 interface ModuleTextReader {
   readonly readCandidate: (fileName: string, limit: number) => string | number | undefined;
   readonly readRoot: (fileName: string) => string | undefined;
+  /** Ordered imports of admitted source text; positions and budgets remain owned by admission. */
+  readonly readImports: (fileName: string, text: string) => readonly string[];
 }
 
 /**
@@ -348,12 +390,12 @@ function admitModulesBreadthFirst(
   }
   // The queue grows while it is iterated; array iteration visits the appended modules too.
   for (const containing of queue) {
-    const imports = ts.preProcessFile(containing.text, true, true).importedFiles;
-    for (const reference of imports) {
-      const resolvedFileName = resolve(reference.fileName, containing.fileName);
+    const imports = reader.readImports(containing.fileName, containing.text);
+    for (const specifier of imports) {
+      const resolvedFileName = resolve(specifier, containing.fileName);
       if (resolvedFileName === undefined) continue;
       const key = readPreviewTypeFileKey(resolvedFileName);
-      const edge = `${containing.fileName}\0${reference.fileName}`;
+      const edge = `${containing.fileName}\0${specifier}`;
       if (admission.texts.has(key) || isElidedPackageScript(resolvedFileName)) {
         // TypeScript never loads JavaScript from node_modules at `maxNodeModuleJsDepth: 0`.
         admission.resolved.set(edge, resolvedFileName);

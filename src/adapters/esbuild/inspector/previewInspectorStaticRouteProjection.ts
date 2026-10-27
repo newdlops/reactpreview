@@ -5,11 +5,18 @@
  * traverses every imported page. This module uses TypeScript syntax only: an import is eligible when
  * every runtime binding from that exact declaration is used exclusively as the render value of a
  * leaf route carrying a literal `path`/`index` discriminator or as a choice in a literal-base route
- * factory with an authored JSX shell. Layout routes with `children`, namespace imports, side-effect
- * imports, attributes, shadowed bindings, and ambiguous uses fail open.
+ * factory with an authored JSX shell. Authored catch-all UI, layout routes with `children`, namespace
+ * imports, side-effect imports, attributes, shadowed bindings, and ambiguous uses fail open.
  */
+import path from 'node:path';
 import ts from 'typescript';
-import { readPreviewInspectorStaticAbsolutePathArgument } from './previewInspectorRouteFactory';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
+import type { PreviewInspectorComponentReference } from './previewInspectorAncestorTypes';
+import {
+  collectPreviewInspectorRouteFactoryEvidence,
+  readPreviewInspectorStaticAbsolutePathArgument,
+} from './previewInspectorRouteFactory';
+import { collectPreviewInspectorRouteFactoryLocalExports } from './previewInspectorRouteFactoryLocalExports';
 
 /** One importer-local module edge whose runtime bindings can share an inert route projection. */
 export interface PreviewStaticRouteProjection {
@@ -83,22 +90,38 @@ const ROUTE_RENDER_KEYS = new Set([
  *
  * @param sourcePath Authored source identity used to select TS versus TSX parsing.
  * @param sourceText Current editor or filesystem snapshot.
+ * @param retainedFactoryOwner Exact compiler-proven unresolved root whose original page inputs remain authentic.
  * @returns Import projections plus a broad-registry cardinality used by the esbuild boundary.
  */
 export function collectPreviewStaticRouteProjectionInventory(
   sourcePath: string,
   sourceText: string,
+  retainedFactoryOwner?: PreviewInspectorComponentReference,
 ): PreviewStaticRouteProjectionInventory {
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = readPreviewAnalysisSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     scriptKindForPath(sourcePath),
   );
   const demandsBySpecifier = new Map<string, MutableImportDemand>();
   const bindingsByLocalName = new Map<string, MutableBindingUsage[]>();
   const localChoiceAggregates = collectLocalChoiceAggregates(sourceFile);
+  const retainedOwnerName =
+    retainedFactoryOwner !== undefined &&
+    path.normalize(retainedFactoryOwner.sourcePath) === path.normalize(sourcePath)
+      ? (collectPreviewInspectorRouteFactoryLocalExports(sourceFile).get(
+          retainedFactoryOwner.exportName,
+        )?.localName ?? retainedFactoryOwner.exportName)
+      : undefined;
+  const preservedFactoryPageChoices = new Map(
+    collectPreviewInspectorRouteFactoryEvidence(sourceFile).map((factory) => [
+      factory.occurrenceStart,
+      factory.pageChoicesOpaque ||
+        (retainedOwnerName !== undefined &&
+          factory.componentName === retainedOwnerName &&
+          factory.routeSlots.length > 0),
+    ]),
+  );
 
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) {
@@ -123,17 +146,43 @@ export function collectPreviewStaticRouteProjectionInventory(
     if (
       !routeRenderPosition &&
       ts.isCallExpression(node) &&
-      visitComponentChoiceFactory(node, visit, (identifier, basePath) => {
-        const bindings = bindingsByLocalName.get(identifier.text);
-        if (bindings === undefined || !looksLikeComponentBinding(identifier.text)) {
-          visit(identifier, false);
-          return;
-        }
-        for (const binding of bindings) {
-          recordNeutralRouteUse(binding, createNeutralRouteBasePath(basePath));
-        }
-      })
+      visitComponentChoiceFactory(
+        node,
+        visit,
+        (identifier, basePath) => {
+          const bindings = bindingsByLocalName.get(identifier.text);
+          if (bindings === undefined || !looksLikeComponentBinding(identifier.text)) {
+            visit(identifier, false);
+            return;
+          }
+          for (const binding of bindings) {
+            recordNeutralRouteUse(binding, createNeutralRouteBasePath(basePath));
+          }
+        },
+        (collection) => {
+          const preserved =
+            preservedFactoryPageChoices.get(node.getStart(sourceFile)) ??
+            (ts.isObjectLiteralExpression(collection) &&
+              collection.properties.some(
+                (property) =>
+                  ts.isSpreadAssignment(property) ||
+                  ts.isGetAccessorDeclaration(property) ||
+                  ts.isSetAccessorDeclaration(property) ||
+                  ts.isComputedPropertyName(property.name),
+              ));
+          if (preserved) visit(collection, false);
+          else visitComponentChoiceCollection(collection, visit);
+        },
+      )
     ) {
+      return;
+    }
+    if (hasAuthoredCatchAllPath(node)) {
+      // The catch-all can become active after authored navigation or when route proof is absent.
+      // Its render imports are ordinary runtime demand, even inside another route's element.
+      ts.forEachChild(node, (child) => {
+        visit(child, false);
+      });
       return;
     }
     if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
@@ -207,6 +256,35 @@ export function collectPreviewStaticRouteProjectionInventory(
     projectionsBySpecifier,
     routeBranchSpecifiers,
   };
+}
+
+/** Keeps literal catch-all render imports authentic without evaluating paths or resolving aliases. */
+function hasAuthoredCatchAllPath(node: ts.Node): boolean {
+  if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
+    const opening = ts.isJsxElement(node) ? node.openingElement : node;
+    return opening.attributes.properties.some(
+      (property) =>
+        ts.isJsxAttribute(property) &&
+        jsxAttributeName(property) === 'path' &&
+        isLiteralCatchAllPath(property.initializer),
+    );
+  }
+  return (
+    ts.isObjectLiteralExpression(node) &&
+    node.properties.some(
+      (property) =>
+        ts.isPropertyAssignment(property) &&
+        objectPropertyName(property) === 'path' &&
+        isLiteralCatchAllPath(property.initializer),
+    )
+  );
+}
+
+/** Recognizes only inert `*` and `/*` literals, including a literal JSX expression container. */
+function isLiteralCatchAllPath(node: ts.Node | undefined): boolean {
+  if (node === undefined) return false;
+  if (ts.isJsxExpression(node)) return isLiteralCatchAllPath(node.expression);
+  return ts.isStringLiteralLike(node) && (node.text === '*' || node.text === '/*');
 }
 
 /**
@@ -520,6 +598,7 @@ function visitComponentChoiceFactory(
   node: ts.CallExpression,
   visit: (node: ts.Node, routeRenderPosition?: boolean) => void,
   markSubmoduleChoice: (identifier: ts.Identifier, basePath: string) => void,
+  visitPageCollection: (collection: ts.Expression) => void,
 ): boolean {
   const basePath = readPreviewInspectorStaticAbsolutePathArgument(node, node.getSourceFile());
   if (basePath === undefined) return false;
@@ -549,7 +628,7 @@ function visitComponentChoiceFactory(
     visit(argument, false);
   });
   node.arguments.forEach((argument, index) => {
-    if (collectionIndexSet.has(index)) visitComponentChoiceCollection(argument, visit);
+    if (collectionIndexSet.has(index)) visitPageCollection(argument);
     else if (submoduleCollectionIndexSet.has(index) && ts.isArrayLiteralExpression(argument)) {
       visitSubmoduleCollection(argument, basePath, visit, markSubmoduleChoice);
     } else {

@@ -913,7 +913,7 @@ function readObject(value: unknown): Readonly<Record<string, unknown>> | undefin
 
 /** Inclusive containment guard for a nearest lock root and nested workspace package root. */
 function isPathAtOrInside(rootPath: string, candidatePath: string): boolean {
-  const relative = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relative = path.relative(rootPath, candidatePath);
   return (
     relative === '' ||
     (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))

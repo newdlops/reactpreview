@@ -7,10 +7,10 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import ts from 'typescript';
 import { afterEach, describe, expect, it } from 'vitest';
 import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
 import { acquirePreviewLockedDependencies } from '../../../src/adapters/node/previewLockedDependencyAcquirer';
-import { PreviewCompilationError } from '../../../src/domain/preview';
 import type {
   PreviewPackageArchiveExtractRequest,
   PreviewPackageArchiveExtractor,
@@ -21,6 +21,7 @@ import type {
   PreviewYarnMetadataTransport,
   PreviewYarnMetadataTransportRequest,
 } from '../../../src/adapters/node/previewYarnLockAcquirer';
+import { PreviewCompilationError } from '../../../src/domain/preview';
 
 const temporaryRoots: string[] = [];
 
@@ -493,23 +494,38 @@ function selectGeneratedModule(javascript: string, marker: string): string {
  * The receiver name is intentionally not fixed because esbuild renames deduplicated imports.
  */
 function expectClassicFactoryReceiversToBeBound(generatedModule: string): void {
-  const receiverNames = [
-    ...new Set(
-      [...generatedModule.matchAll(/\b([A-Za-z_$][\w$]*)\.createElement\(/gu)].flatMap((match) =>
-        match[1] === undefined ? [] : [match[1]],
-      ),
-    ),
-  ];
-  expect(receiverNames.length).toBeGreaterThan(0);
-  const declaredNames = new Set(
-    [...generatedModule.matchAll(/\bvar\s+([^;]+);/gu)].flatMap((match) =>
-      (match[1] ?? '')
-        .split(',')
-        .map((declaration) => /^\s*([A-Za-z_$][\w$]*)/u.exec(declaration)?.[1])
-        .filter((name): name is string => name !== undefined),
-    ),
+  const fileName = 'generated-module.js';
+  const options: ts.CompilerOptions = { allowJs: true, noLib: true };
+  const host = ts.createCompilerHost(options);
+  const source = ts.createSourceFile(
+    fileName,
+    generatedModule,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
   );
-  expect(receiverNames.filter((name) => !declaredNames.has(name))).toEqual([]);
+  host.getSourceFile = (candidate) => (candidate === fileName ? source : undefined);
+  const checker = ts.createProgram([fileName], options, host).getTypeChecker();
+  const unbound = new Set<string>();
+  let factoryCount = 0;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'createElement' &&
+      ts.isIdentifier(node.expression.expression)
+    ) {
+      const receiver = node.expression.expression;
+      if (!['document', 'window', 'globalThis'].includes(receiver.text)) {
+        factoryCount += 1;
+        if (checker.getSymbolAtLocation(receiver) === undefined) unbound.add(receiver.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  expect(factoryCount).toBeGreaterThan(0);
+  expect([...unbound]).toEqual([]);
 }
 
 /** Writes the exact three alias packages retained by the extension's React 18 runtime catalog. */

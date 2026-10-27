@@ -58,12 +58,15 @@ export function readPreviewRuntimeFunctionName(
 
 /** Narrows TypeScript function-like nodes to hook-capable runtime scopes. */
 export function isPreviewRuntimeFunction(node: ts.Node): node is PreviewRuntimeFunction {
-  return (
-    ts.isArrowFunction(node) ||
-    ts.isFunctionDeclaration(node) ||
-    ts.isFunctionExpression(node) ||
-    ts.isMethodDeclaration(node)
-  );
+  switch (node.kind) {
+    case ts.SyntaxKind.ArrowFunction:
+    case ts.SyntaxKind.FunctionDeclaration:
+    case ts.SyntaxKind.FunctionExpression:
+    case ts.SyntaxKind.MethodDeclaration:
+      return true;
+    default:
+      return false;
+  }
 }
 
 /** Detects whether a function parameter replaces a tracked hook-result or alias binding. */

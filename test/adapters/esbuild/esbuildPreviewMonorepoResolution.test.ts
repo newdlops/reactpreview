@@ -91,9 +91,9 @@ describe('EsbuildPreviewCompiler monorepo package resolution', () => {
 
       expect(javascript).toContain('HOISTED_ESM_MARKER');
       expect(javascript).toContain('HOISTED_CJS_MARKER');
-      expect(bundle.dependencies).toEqual(
-        expect.arrayContaining([documentPath, legacyEntryPath, runtimeEntryPath]),
-      );
+      expect(bundle.dependencies).not.toContain(legacyEntryPath);
+      expect(bundle.dependencies).not.toContain(runtimeEntryPath);
+      expect(bundle.dependencies).toEqual(expect.arrayContaining([documentPath]));
     } finally {
       await rm(workspaceRoot, { force: true, recursive: true });
     }

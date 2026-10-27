@@ -78,8 +78,8 @@ export interface PreviewInspectorFactoryFallbackEntry {
   readonly componentName: string;
   /** Stable source offset for deterministic diagnostic ordering. */
   readonly occurrenceStart: number;
-  /** The only fallback pattern accepted by this static collector. */
-  readonly pattern: '*';
+  /** Literal catch-all spelling accepted without evaluating a project path expression. */
+  readonly pattern: '*' | '/*';
 }
 
 /** Complete inert route inventory for one exported factory owner. */

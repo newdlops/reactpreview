@@ -7,6 +7,7 @@
  */
 import ts from 'typescript';
 import { readPreviewRuntimeHookBindingPropertyName } from './previewRuntimeHookBindingPattern';
+import { reusePreviewRuntimeHookReferenceTraversal } from './previewRuntimeHookReferenceTraversal';
 import {
   findNearestPreviewRuntimeFunction,
   isPreviewRuntimeFunction,
@@ -78,6 +79,10 @@ function readBindingIdentifiers(
 function isUsedBySingleArgumentArrayConstructor(identifier: ts.Identifier): boolean {
   const owner = findNearestPreviewRuntimeFunction(identifier);
   if (owner === undefined) return false;
+  const visitReferencedChildren = reusePreviewRuntimeHookReferenceTraversal(
+    owner,
+    new Set([identifier.text]),
+  );
   let found = false;
   /** Traverses the component body without interpreting any project expression. */
   const visit = (node: ts.Node): void => {
@@ -98,7 +103,7 @@ function isUsedBySingleArgumentArrayConstructor(identifier: ts.Identifier): bool
       found = true;
       return;
     }
-    ts.forEachChild(node, visit);
+    visitReferencedChildren(node, visit);
   };
   visit(owner);
   return found;

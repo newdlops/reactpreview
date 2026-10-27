@@ -839,7 +839,7 @@ function sourceIdentity(sourcePath: string): string {
 
 /** Checks canonical containment without accepting sibling-prefix paths. */
 function isPathInside(rootPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  const relativePath = path.relative(rootPath, candidatePath);
   return (
     relativePath.length === 0 ||
     (relativePath !== '..' &&

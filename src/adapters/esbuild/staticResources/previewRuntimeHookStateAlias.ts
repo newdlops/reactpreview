@@ -17,6 +17,12 @@ interface PreviewRuntimeHookStateBinding {
   readonly stateName: string;
 }
 
+/** Retains syntax facts only; setter-origin callbacks are evaluated for every inference request. */
+const stateBindingsByOwner = new WeakMap<
+  PreviewRuntimeFunction,
+  readonly PreviewRuntimeHookStateBinding[]
+>();
+
 export interface CollectPreviewRuntimeHookStateAliasesOptions {
   /** Hook-relative identities already proven by ordinary immutable alias propagation. */
   readonly aliases: ReadonlyMap<string, PreviewRuntimeHookOriginPaths>;
@@ -50,6 +56,8 @@ export function collectPreviewRuntimeHookStateAliases(
 function collectReactStateBindings(
   owner: PreviewRuntimeFunction,
 ): readonly PreviewRuntimeHookStateBinding[] {
+  const retained = stateBindingsByOwner.get(owner);
+  if (retained !== undefined) return retained;
   const useStateBindings = collectReactUseStateBindings(owner.getSourceFile());
   const bindingCounts = countOwnerBindingNames(owner);
   const bindings: PreviewRuntimeHookStateBinding[] = [];
@@ -84,7 +92,9 @@ function collectReactStateBindings(
     ts.forEachChild(node, visit);
   };
   visit(owner);
-  return bindings;
+  const result = Object.freeze(bindings);
+  stateBindingsByOwner.set(owner, result);
+  return result;
 }
 
 interface ReactUseStateBindings {

@@ -7,8 +7,8 @@
  * which shell segments are missing, and why the current-file target did or did not produce output.
  */
 
-/** Maximum tree records inspected while computing aggregate composition counts. */
-export const PREVIEW_INSPECTOR_PAGE_COMPOSITION_VISIT_LIMIT = 512;
+/** Counts the existing 512 live rows plus bounded condition/blocker annotations; UI rows stay capped. */
+export const PREVIEW_INSPECTOR_PAGE_COMPOSITION_VISIT_LIMIT = 2_048;
 
 /** Maximum tree rows copied into one runtime-health event. */
 export const PREVIEW_INSPECTOR_PAGE_COMPOSITION_ROW_LIMIT = 20;
@@ -610,6 +610,10 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
       detachedTargetPlacement: reachability?.detachedTargetPlacement ?? '',
       directElementOutput: reachability?.targetDirectElementOutput === true,
       exportName: targetExportName,
+      frameworkNavigationPending:
+        previewInspectorSession.pendingPageCandidateOrigin === 'framework-navigation',
+      frameworkControlBlocked: typeof hasPreviewInspectorNextAppControlBlocker === 'function' &&
+        hasPreviewInspectorNextAppControlBlocker(reachability),
       ...(typeof targetOutputError?.message === 'string'
         ? { errorMessage: targetOutputError.message.slice(0, 1_200) }
         : {}),
@@ -682,6 +686,7 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     detail.targetState.ownershipPhases,
     detail.targetState.targetEffectControllerOutput,
     detail.targetState.targetRenderedEmpty,
+    detail.targetState.activeAutoAttemptSettled,
     detail.requirementSearch,
     detail.targetState.runtimeFallbackSummaries,
     detail.targetState.targetRenderCommitChain,
@@ -718,6 +723,9 @@ function recordPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     typeof recordPreviewInspectorRuntimeHealth !== 'function'
   ) {
     return;
+  }
+  if (typeof observePreviewInspectorStandaloneTargetReachability === 'function') {
+    observePreviewInspectorStandaloneTargetReachability();
   }
   recordPreviewInspectorRuntimeHealth({
     category: 'page-composition',

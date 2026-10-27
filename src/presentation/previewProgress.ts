@@ -6,6 +6,7 @@
 import {
   PREVIEW_PROGRESS_MESSAGE_TYPE,
   type PreviewProgressStage,
+  type PreviewProgressTiming,
 } from '../domain/previewProgress';
 
 /** One visible preparation step with concise and explanatory text. */
@@ -122,9 +123,11 @@ export function createPreviewProgressSnapshot(
 export function createPreviewProgressMessage(
   stage: PreviewProgressStage,
   revision: number,
+  timing?: PreviewProgressTiming,
 ): PreviewProgressSnapshot & {
   readonly revision: number;
   readonly type: typeof PREVIEW_PROGRESS_MESSAGE_TYPE;
+  readonly timing?: PreviewProgressTiming;
 } {
   if (!Number.isSafeInteger(revision) || revision < 0) {
     throw new TypeError('Preview progress revision must be a non-negative safe integer.');
@@ -132,6 +135,7 @@ export function createPreviewProgressMessage(
   return Object.freeze({
     ...createPreviewProgressSnapshot(stage),
     revision,
+    ...(timing === undefined ? {} : { timing }),
     type: PREVIEW_PROGRESS_MESSAGE_TYPE,
   });
 }

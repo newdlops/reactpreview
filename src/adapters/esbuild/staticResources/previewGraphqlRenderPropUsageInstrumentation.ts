@@ -1,9 +1,10 @@
 /** Registers static render-prop collection demand against the exact GraphQL DocumentNode. */
 import ts from 'typescript';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
-import type { PreviewSourceReplacement } from './previewSourceReplacement';
 import type { PreviewRuntimeHookChildPropDemandCatalog } from './previewRuntimeHookChildPropDemand';
+import type { PreviewSourceReplacement } from './previewSourceReplacement';
 import type { PreviewInferredPropShape } from './reactExportPropInference';
+import { isPreviewInferredCandidateValue } from './reactPropInferenceModel';
 
 const API = 'newdlops.react-file-preview.page-inspector';
 const MAX_DEMANDS = 32;
@@ -695,9 +696,10 @@ function appendShape(
       appendShape(paths, [...prefix, name], child, depth + 1, literalDemands);
   else if (literalDemands !== undefined) {
     const path = prefix.join('.');
-    const candidateValues = Array.isArray(shape.candidateValues)
+    const rawCandidateValues: readonly unknown[] = Array.isArray(shape.candidateValues)
       ? shape.candidateValues
       : [];
+    const candidateValues = rawCandidateValues.filter(isPreviewInferredCandidateValue);
     for (const value of candidateValues) {
       literalDemands.set(path + '\0' + typeof value + ':' + String(value), { path, value });
     }

@@ -11,6 +11,7 @@ import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames
 import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
 import { PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY_KEY } from '../previewAutomaticPropsRuntimeSource';
 import { createPreviewSampleLabelRuntimeSource } from '../previewSampleLabel';
+import { createPreviewInspectorGeneratedLiteralArrayRuntimeSource } from './previewInspectorGeneratedLiteralArrayRuntimeSource';
 
 /** Maximum nested object/array depth completed during one hook read. */
 export const PREVIEW_INSPECTOR_GENERATED_VALUE_DEPTH_LIMIT = 12;
@@ -44,10 +45,12 @@ function isPreviewInspectorGeneratedKeyText(value, key) {
   const name = String(key ?? '');
   return typeof value === 'string' && (value === name || value === previewInspectorGeneratedKeyLabel(name, 'Value'));
 }
+
 const PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT = ${PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT};
 const PREVIEW_INSPECTOR_GENERATED_VALUE_PATH_LIMIT = ${PREVIEW_INSPECTOR_GENERATED_VALUE_PATH_LIMIT};
 const PREVIEW_INSPECTOR_ARRAY_LENGTH_MAX = ${PREVIEW_INSPECTOR_ARRAY_LENGTH_MAX};
 const PREVIEW_INSPECTOR_ARRAY_LENGTH_SAFE_LIMIT = ${PREVIEW_INSPECTOR_ARRAY_LENGTH_SAFE_LIMIT};
+${createPreviewInspectorGeneratedLiteralArrayRuntimeSource()}
 const previewInspectorGeneratedValueBlockedKeys = new Set([
   '__proto__',
   'constructor',
@@ -482,6 +485,7 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
     return { changed: true, value: generated };
   }
 
+
   if (
     isPreviewInspectorGeneratedKeyText(authored, path.at(-1)) &&
     !Object.is(authored, generated) &&
@@ -500,6 +504,10 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
 
   const authoredIsArray = Array.isArray(authored);
   const generatedIsArray = Array.isArray(generated);
+  if (authoredIsArray && generatedIsArray) {
+    const literalArray = completePreviewInspectorGeneratedLiteralArray(authored, generated, state, path);
+    if (literalArray !== undefined) return literalArray;
+  }
   const authoredIsNeutralEmptyRecord =
     !authoredIsArray && isPreviewInspectorGeneratedEmptyPlainRecord(authored);
   const generatedType = typeof generated;
@@ -681,6 +689,8 @@ function completePreviewInspectorGeneratedValue(authored, generated, options = {
     requiredPaths: Array.isArray(options?.requiredPaths)
       ? options.requiredPaths.slice(0, PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT)
       : [],
+    typedLiterals: options?.typedLiterals,
+    repairLiteralArrays: options?.repairLiteralArrays === true,
   };
   const result = mergePreviewInspectorGeneratedValue(authored, generated, state, [], 0);
   return {

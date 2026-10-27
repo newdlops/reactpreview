@@ -211,10 +211,8 @@ function materializeRouteParameterConstraint(constraint: string): string | undef
 /** Recognizes only the two complete canonical UUID constraint structures supported by preview. */
 function isCanonicalUuidConstraint(constraint: string): boolean {
   return (
-    constraint ===
-      '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' ||
-    constraint ===
-      '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+    constraint === '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' ||
+    constraint === '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
   );
 }
 

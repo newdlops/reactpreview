@@ -19,6 +19,7 @@ import type {
 import { collectPreviewInspectorNextAppDescendantPages } from './previewInspectorNextAppDescendantPages';
 import { collectPreviewInspectorNextAppLayoutChain } from './previewInspectorNextAppLayoutChain';
 import { collectRefinedPreviewInspectorNextAppLayoutChain } from './previewInspectorNextAppParameterEvidence';
+import { readPreviewInspectorNextAppRedirectDestination } from './previewInspectorNextAppRedirectEvidence';
 
 const NEXT_APP_PAGE_PATTERN = /^page\.[cm]?[jt]sx?$/iu;
 const NEXT_APP_SHELL_PATTERN = /^(?:layout|template)\.[cm]?[jt]sx?$/iu;
@@ -41,7 +42,8 @@ export interface CreatePreviewInspectorNextAppDirectRoutePlanOptions {
 
 /**
  * Connects a selected page to its layouts, or a selected shell to its nearest descendant page.
- * Exactly one candidate is retained so a cold bundle cannot include every route sibling.
+ * One initial candidate plus at most four proven redirect destinations remain lazy metadata;
+ * execution still bundles only the selected page, keeping cold work independent of sibling count.
  */
 export async function createPreviewInspectorNextAppDirectRoutePlan(
   options: CreatePreviewInspectorNextAppDirectRoutePlanOptions,
@@ -55,6 +57,7 @@ export async function createPreviewInspectorNextAppDirectRoutePlan(
   const emptyProps = Object.freeze({});
   const directDependencies = new Set([documentPath]);
   let candidate: PreviewInspectorPageCandidate | undefined;
+  let candidates: readonly PreviewInspectorPageCandidate[] = [];
 
   if (NEXT_APP_PAGE_PATTERN.test(basename)) {
     const initialShell = collectPreviewInspectorNextAppLayoutChain({
@@ -108,6 +111,7 @@ export async function createPreviewInspectorNextAppDirectRoutePlan(
     });
     const descendants = await collectPreviewInspectorNextAppDescendantPages({
       base,
+      includeRedirectDestinations: true,
       maximumCount: 1,
       readSource: options.readSource,
       resolveModule: options.resolveModule,
@@ -117,10 +121,26 @@ export async function createPreviewInspectorNextAppDirectRoutePlan(
         : { staticParameterSourceBoundary: options.staticParameterSourceBoundary }),
     });
     candidate = descendants[0];
+    candidates = descendants;
+    const destination = descendants.at(-1);
+    if (descendants.length > 1 && destination !== undefined) {
+      const source = await options.readSource(destination.root.sourcePath);
+      if (
+        source !== undefined &&
+        readPreviewInspectorNextAppRedirectDestination(destination.root.sourcePath, source) ===
+          undefined
+      ) {
+        // A shell's freely chosen child can start at the proven destination, avoiding a bundle
+        // whose only work would be to request another page. Explicit candidate requests still win.
+        candidate = destination;
+        candidates = [destination, ...descendants.filter((item) => item !== destination)];
+      }
+    }
   }
   if (candidate === undefined) return undefined;
+  if (candidates.length === 0) candidates = [candidate];
 
-  const dependencies = new Set(candidate.dependencyPaths);
+  const dependencies = new Set(candidates.flatMap((item) => item.dependencyPaths));
   dependencies.add(documentPath);
   const renderChain: PreviewRenderChainPlan = Object.freeze({
     dependencyPaths: Object.freeze([...dependencies].sort()),
@@ -134,7 +154,7 @@ export async function createPreviewInspectorNextAppDirectRoutePlan(
     complete: true,
     dependencies,
     edges: candidate.edges,
-    pageCandidates: Object.freeze([candidate]),
+    pageCandidates: Object.freeze(candidates),
     root: candidate.root,
     rootAutomaticProps: candidate.rootAutomaticProps,
     renderChain,

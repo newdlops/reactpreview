@@ -29,8 +29,7 @@ export function readStaticJsxStringAttribute(
   );
   if (attribute?.initializer === undefined) return undefined;
   if (ts.isStringLiteral(attribute.initializer)) return attribute.initializer.text;
-  return ts.isJsxExpression(attribute.initializer) &&
-    attribute.initializer.expression !== undefined
+  return ts.isJsxExpression(attribute.initializer) && attribute.initializer.expression !== undefined
     ? readPreviewInspectorNormalizedRouteString(attribute.initializer.expression)
     : undefined;
 }

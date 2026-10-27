@@ -21,6 +21,25 @@ export const PREVIEW_CANONICAL_SAMPLE_DATE_TIME = '2026-01-15T09:00:00.000Z';
 /** The canonical instant as epoch milliseconds, for timestamp wrappers such as `{ value }`. */
 export const PREVIEW_CANONICAL_SAMPLE_EPOCH_MILLIS = Date.parse(PREVIEW_CANONICAL_SAMPLE_DATE_TIME);
 
+/** Calendar year of the canonical day, for number leaves named like a year. */
+export const PREVIEW_CANONICAL_SAMPLE_YEAR = Number(PREVIEW_CANONICAL_SAMPLE_DATE.slice(0, 4));
+
+/** 1-based calendar month of the canonical day, for number leaves named like a month. */
+export const PREVIEW_CANONICAL_SAMPLE_MONTH = Number(PREVIEW_CANONICAL_SAMPLE_DATE.slice(5, 7));
+
+/**
+ * Year leaf names (`year`, `currentYear`, `target_year`); never `years`, `yearly`, `yearCount`, or
+ * a composite that also names a month (`monthYear`).
+ */
+export const PREVIEW_SAMPLE_YEAR_NAME_PATTERN = /^(?!.*[Mm]onth)(?:year|.*[a-z0-9]Year|.*_year)$/u;
+
+/**
+ * Month leaf names (`month`, `currentMonth`, `target_month`); never `months`, `monthCount`, or a
+ * composite object such as `currentYearMonth` (protobuf YearMonth) that also names a year.
+ */
+export const PREVIEW_SAMPLE_MONTH_NAME_PATTERN =
+  /^(?!.*[Yy]ear)(?:month|.*[a-z0-9]Month|.*_month)$/u;
+
 /** Generated lists hold at most ten items, so item dates step back at most nine days. */
 export const PREVIEW_SAMPLE_DATE_MAX_OFFSET = 9;
 

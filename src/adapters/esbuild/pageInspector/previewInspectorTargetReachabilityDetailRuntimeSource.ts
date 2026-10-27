@@ -180,6 +180,8 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
                     : 'ran · no visible element'
               : targetMounted
                 ? 'visible'
+                : diagnosis?.kind === 'unmounted-target'
+                  ? 'mounted earlier · not mounted now'
                 : 'not reached')),
     React.createElement('div', { className: 'rpi-note' },
       'Page path: ' + blocker.applicationPath.join(' > ')),

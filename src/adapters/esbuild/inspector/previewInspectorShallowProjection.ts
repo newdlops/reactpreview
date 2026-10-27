@@ -240,11 +240,11 @@ export function collectPreviewInspectorRuntimeHookProjectionInventory(
   sourcePath: string,
   sourceText: string,
 ): PreviewInspectorShallowProjectionInventory {
-  const facts = analyzePreviewRenderSource(sourcePath, sourceText).moduleFacts;
   const runtimeHookCalls = groupRuntimeHookCallsByLocalName(
     collectPreviewRuntimeHookProjectionEvidence(sourcePath, sourceText),
   );
   if (runtimeHookCalls.size === 0) return freezeInventory(new Map(), false);
+  const facts = analyzePreviewRenderSource(sourcePath, sourceText).moduleFacts;
   const importsBySpecifier = groupImportsBySpecifier(facts.imports);
   const edgesByLocalName = groupEdgesByChildLocalName(facts.localEdges);
   const projections = new Map<string, PreviewInspectorShallowProjection>();

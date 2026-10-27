@@ -44,11 +44,13 @@ export async function createPreviewInspectorNamedExportScenarioPlan(
   const dependencyPaths = Object.freeze(
     [...new Set(plans.flatMap((plan) => plan.dependencyPaths))].sort(),
   );
-  const renderChainsByExport = Object.freeze(
-    Object.assign({}, ...plans.map((plan) => plan.renderChainsByExport)),
+  const renderChainsByExport = mergeNamedExportRecords(
+    plans.map((plan) => plan.renderChainsByExport),
   );
-  const renderOutcomesByExport = Object.freeze(
-    Object.assign({}, ...plans.map((plan) => plan.renderOutcomesByExport ?? {})),
+  const renderOutcomesByExport = mergeNamedExportRecords(
+    plans.flatMap((plan) =>
+      plan.renderOutcomesByExport === undefined ? [] : [plan.renderOutcomesByExport],
+    ),
   );
   const pageCandidates = Object.freeze(
     plans.flatMap((plan) =>
@@ -68,6 +70,15 @@ export async function createPreviewInspectorNamedExportScenarioPlan(
     renderChainsByExport,
     renderOutcomesByExport,
   });
+}
+
+/** Freezes a typed source-order merge while retaining the existing last-export-wins semantics. */
+function mergeNamedExportRecords<Value>(
+  records: readonly Readonly<Record<string, Value>>[],
+): Readonly<Record<string, Value>> {
+  const result: Record<string, Value> = {};
+  for (const record of records) Object.assign(result, record);
+  return Object.freeze(result);
 }
 
 /** Namespaces candidate ids because different orphan exports share `nearest-authored-owner`. */

@@ -8,6 +8,7 @@
  * The operation name is read from the document at runtime, so no GraphQL parsing happens here.
  */
 import ts from 'typescript';
+import type { PreviewNumericTextReader } from './previewNumericTextInference';
 import {
   createPreviewTypedPayloadShape,
   readPreviewTypedDocumentResultType,
@@ -34,15 +35,21 @@ const MAX_CANDIDATES_PER_MODULE = 2_000;
  *
  * @param checker Checker of the program that owns `sourceFile`.
  * @param sourceFile Program-owned parse of the module being transformed.
+ * @param readNumericText Optional numeric string evidence from consumers in this program.
  * @returns Distinct bindings with structured result shapes; empty for generated schema modules.
  */
 export function collectPreviewTypedDocumentShapes(
   checker: ts.TypeChecker,
   sourceFile: ts.SourceFile,
+  readNumericText?: PreviewNumericTextReader,
 ): readonly PreviewTypedDocumentShape[] {
   const candidates = collectCandidateIdentifiers(sourceFile);
   if (candidates.length > MAX_CANDIDATES_PER_MODULE) return [];
-  const documents: PreviewTypedDocumentShape[] = [];
+  const pending: {
+    readonly identifier: ts.Identifier;
+    readonly type: ts.Type;
+    readonly shape: PreviewTypedPayloadShape | undefined;
+  }[] = [];
   const seen = new Set<ts.Symbol>();
   for (const identifier of candidates) {
     const symbol = checker.getSymbolAtLocation(identifier);
@@ -55,15 +62,47 @@ export function collectPreviewTypedDocumentShapes(
       checker.getTypeAtLocation(identifier),
       identifier,
     );
+    if (resultType === undefined) continue;
+    const definite = hasDefiniteObjectShape(checker, resultType, identifier);
+    // Uncertain results retain eager conversion and the original early stopping point. Deferring
+    // every result would force types for an entire intersection-heavy generated schema first.
+    const shape = definite
+      ? undefined
+      : createPreviewTypedPayloadShape(checker, resultType, identifier, undefined, readNumericText);
+    if (!definite && shape === undefined) continue;
+    pending.push({ identifier, type: resultType, shape });
+    if (pending.length > MAX_DOCUMENTS_PER_MODULE) return [];
+  }
+  const documents: PreviewTypedDocumentShape[] = [];
+  for (const { identifier, type, shape: knownShape } of pending) {
     const shape =
-      resultType === undefined
-        ? undefined
-        : createPreviewTypedPayloadShape(checker, resultType, identifier);
+      knownShape ??
+      createPreviewTypedPayloadShape(checker, type, identifier, undefined, readNumericText);
     if (shape === undefined) continue;
     if (documents.length >= MAX_DOCUMENTS_PER_MODULE) return [];
     documents.push({ identifier: identifier.text, shape });
   }
   return documents;
+}
+
+/**
+ * Proves only object results that the payload converter necessarily retains. Generated schema
+ * modules already return no registrations past 32 shapes; prove that before traversing their
+ * nested fields. Object intersections follow the same converter; unions, primitives, and
+ * uncertain objects keep eager conversion.
+ */
+function hasDefiniteObjectShape(checker: ts.TypeChecker, type: ts.Type, anchor: ts.Node): boolean {
+  if ((type.flags & ts.TypeFlags.Object) === 0 && !type.isIntersection()) return false;
+  const name = type.getSymbol()?.getName();
+  if (name === 'Map' || name === 'Set' || name === 'Promise') return false;
+  if (name === 'Date' || checker.isArrayType(type) || checker.isTupleType(type)) return true;
+  for (const property of checker.getPropertiesOfType(type)) {
+    const key = property.getName();
+    if (key.startsWith('__') && key !== '__typename') continue;
+    const value = checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(property, anchor));
+    if (value.getCallSignatures().length === 0 || value.getProperties().length > 0) return true;
+  }
+  return false;
 }
 
 /**

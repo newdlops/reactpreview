@@ -34,7 +34,16 @@ const MAXIMUM_RANKED_SOURCE_PATHS = 24;
 const MAXIMUM_CONTEXT_ANCHORS = 6;
 const MINIMUM_SHARED_TOKEN_COUNT = 2;
 const FEATURE_COMPONENT_DIRECTORIES = new Set(['component', 'components']);
-const PAGE_DIRECTORIES = new Set(['page', 'pages', 'route', 'routes', 'screen', 'screens', 'view', 'views']);
+const PAGE_DIRECTORIES = new Set([
+  'page',
+  'pages',
+  'route',
+  'routes',
+  'screen',
+  'screens',
+  'view',
+  'views',
+]);
 const IGNORED_TOKENS = new Set([
   'app',
   'component',
@@ -191,8 +200,7 @@ async function collectPreviewInspectorDetachedOverlayAnchors(
     }))
     .filter((candidate) => Number.isFinite(candidate.score))
     .sort(
-      (left, right) =>
-        right.score - left.score || left.sourcePath.localeCompare(right.sourcePath),
+      (left, right) => right.score - left.score || left.sourcePath.localeCompare(right.sourcePath),
     )
     .slice(0, MAXIMUM_RANKED_SOURCE_PATHS);
   const anchors: PreviewInspectorDetachedOverlayAnchor[] = [];
@@ -289,9 +297,7 @@ async function tryCreatePreviewInspectorOverlayAnchorPlan(
       exportName: anchor.exportName,
       readSource: options.readSource,
       resolveModule: options.resolveModule,
-      ...(options.routeSelection === undefined
-        ? {}
-        : { routeSelection: options.routeSelection }),
+      ...(options.routeSelection === undefined ? {} : { routeSelection: options.routeSelection }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       sourcePaths: corridor.sourcePaths,
     });
@@ -360,9 +366,7 @@ function composePreviewInspectorDetachedOverlayPlan(
     pageCandidates: Object.freeze(pageCandidates),
     root: primary.root,
     rootAutomaticProps: primary.rootAutomaticProps,
-    ...(anchorPlan.routeBranches === undefined
-      ? {}
-      : { routeBranches: anchorPlan.routeBranches }),
+    ...(anchorPlan.routeBranches === undefined ? {} : { routeBranches: anchorPlan.routeBranches }),
     ...(anchorPlan.routeSelectionResolution === undefined
       ? {}
       : { routeSelectionResolution: anchorPlan.routeSelectionResolution }),

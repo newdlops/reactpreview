@@ -792,7 +792,7 @@ describe('Preview Inspector target output runtime source', () => {
     const error = {
       eventId: 'runtime-health-1',
       message: 'Error: Unreachable',
-      ownerName: 'FiStaManagementApp',
+      ownerName: 'ApplicationWrapper',
       timestamp: Date.now() - 1_000,
     };
     const evaluation = evaluateResolvedOutput(
@@ -800,7 +800,7 @@ describe('Preview Inspector target output runtime source', () => {
       {
         child: { kind: 'function', name: 'ErrorStatus' },
         kind: 'function',
-        name: 'FiStaManagementApp',
+        name: 'ApplicationWrapper',
       },
       { activeError: error },
     );
@@ -809,7 +809,7 @@ describe('Preview Inspector target output runtime source', () => {
     expect(evaluation.state.targetOutputKind).toBe('fallback-output');
     expect(evaluation.state.targetOutputError).toMatchObject({
       message: 'Error: Unreachable',
-      ownerName: 'FiStaManagementApp',
+      ownerName: 'ApplicationWrapper',
     });
     expect(evaluation.clearedErrors).toBe(0);
   });
@@ -821,7 +821,7 @@ describe('Preview Inspector target output runtime source', () => {
       {
         child: { kind: 'function', name: 'MainPanel' },
         kind: 'function',
-        name: 'FiStaManagementApp',
+        name: 'ApplicationWrapper',
       },
       {
         activeError: {
@@ -845,7 +845,7 @@ describe('Preview Inspector target output runtime source', () => {
       {
         child: { kind: 'function', name: 'MainPanel' },
         kind: 'function',
-        name: 'FiStaManagementApp',
+        name: 'ApplicationWrapper',
       },
       {
         activeError: {

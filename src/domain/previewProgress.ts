@@ -25,6 +25,19 @@ export const PREVIEW_PROGRESS_STAGES = Object.freeze([
 /** Ordered lifecycle stages visible to the owner of one pinned preview tab. */
 export type PreviewProgressStage = (typeof PREVIEW_PROGRESS_STAGES)[number];
 
+/** Measured preparation time carried between the host and successive browser documents. */
+export interface PreviewProgressTiming {
+  /** Milliseconds since this revision began, excluding no reported preparation work. */
+  readonly elapsedMs: number;
+  /** Observed stages only, in lifecycle order; the current stage includes its elapsed interval. */
+  readonly stages: readonly {
+    /** Actual preparation stage; unreported stages must not acquire an invented duration. */
+    readonly stage: Exclude<PreviewProgressStage, 'ready'>;
+    /** Measured milliseconds spent in this stage within the current revision. */
+    readonly elapsedMs: number;
+  }[];
+}
+
 /** Optional observer used to report preparation without coupling work to a particular UI. */
 export type PreviewProgressReporter = (
   stage: PreviewProgressStage,

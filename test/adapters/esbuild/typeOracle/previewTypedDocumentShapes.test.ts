@@ -6,9 +6,10 @@
 import { createContext, runInContext } from 'node:vm';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { collectPreviewTypedDocumentShapes } from '../../../../src/adapters/esbuild/typeOracle/previewTypedDocumentShapes';
 import { createPreviewTypedDocumentRegistrations } from '../../../../src/adapters/esbuild/staticResources/previewTypedDocumentRegistrations';
+import { collectPreviewTypedDocumentShapes } from '../../../../src/adapters/esbuild/typeOracle/previewTypedDocumentShapes';
 import type { PreviewTypeOracleView } from '../../../../src/adapters/esbuild/typeOracle/previewTypeOracle';
+import type { PreviewNumericTextReader } from '../../../../src/adapters/esbuild/typeOracle/previewNumericTextInference';
 
 const ENTRY = '/virtual/queries.ts';
 
@@ -39,6 +40,67 @@ const CODEGEN_PRELUDE = [
 ].join('\n');
 
 describe('collectPreviewTypedDocumentShapes', () => {
+  it.each(['object', 'intersection'])(
+    'avoids leaf consumer analysis for an oversized %s document module',
+    (kind) => {
+      let reads = 0;
+      const source = [
+        CODEGEN_PRELUDE,
+        'type Composite = { head: string } & { tail: string };',
+        ...Array.from(
+          { length: 33 },
+          (_, index) =>
+            `export const QUERY_${String(index)}: ${kind === 'object' ? 'typeof INVESTMENT_DOCUMENT' : 'TypedDocumentNode<Composite, {}>'} = {} as never;`,
+        ),
+      ].join('\n');
+      expect(
+        collectFromSource(source, () => {
+          reads += 1;
+          return false;
+        }),
+      ).toEqual([]);
+      expect(reads).toBe(0);
+    },
+  );
+
+  it('keeps 32 structured documents when additional typed results carry no payload shape', () => {
+    const source = [
+      CODEGEN_PRELUDE,
+      'export const EMPTY_QUERY: TypedDocumentNode<Record<string, unknown>, {}> = {} as never;',
+      ...Array.from(
+        { length: 32 },
+        (_, index) =>
+          `export const QUERY_${String(index)}: typeof INVESTMENT_DOCUMENT = {} as never;`,
+      ),
+    ].join('\n');
+    const shapes = collectFromSource(source);
+    expect(shapes).toHaveLength(32);
+    expect(shapes[0]?.identifier).toBe('QUERY_0');
+    expect(shapes[31]?.identifier).toBe('QUERY_31');
+  });
+
+  it('stops type questions at the original document limit for uncertain union results', () => {
+    let questions = 0;
+    const source = [
+      CODEGEN_PRELUDE,
+      'type Composite = { head: string } | { tail: string };',
+      ...Array.from(
+        { length: 40 },
+        (_, index) =>
+          `export const QUERY_${String(index)}: TypedDocumentNode<Composite, {}> = {} as never;`,
+      ),
+    ].join('\n');
+    const shapes = collectFromSource(source, undefined, (checker) => {
+      const readType = checker.getTypeAtLocation.bind(checker);
+      checker.getTypeAtLocation = (node) => {
+        questions += 1;
+        return readType(node);
+      };
+    });
+    expect(shapes).toEqual([]);
+    expect(questions).toBeLessThanOrEqual(33);
+  });
+
   /** A declared-and-used typed document yields one shape; untyped documents yield none. */
   it('describes a codegen result type as list-aware, literal-preserving payload shape', () => {
     const shapes = collectFromSource(
@@ -116,6 +178,8 @@ describe('createPreviewTypedDocumentRegistrations', () => {
       readTypedGuardValue: () => undefined,
       readTypedCallResponseShape: () => undefined,
       readTypedComponentProps: () => undefined,
+      readTypedExportValue: () => undefined,
+      readTypedModuleTypeValue: () => undefined,
       readTypedResponseShape: () => undefined,
       release: () => undefined,
     };
@@ -141,7 +205,11 @@ describe('createPreviewTypedDocumentRegistrations', () => {
 });
 
 /** Creates a checker over one virtual module and collects its typed document shapes. */
-function collectFromSource(source: string): ReturnType<typeof collectPreviewTypedDocumentShapes> {
+function collectFromSource(
+  source: string,
+  readNumericText?: PreviewNumericTextReader,
+  observeChecker?: (checker: ts.TypeChecker) => void,
+): ReturnType<typeof collectPreviewTypedDocumentShapes> {
   const options: ts.CompilerOptions = {
     lib: ['lib.es2022.d.ts'],
     module: ts.ModuleKind.ESNext,
@@ -159,5 +227,7 @@ function collectFromSource(source: string): ReturnType<typeof collectPreviewType
   const program = ts.createProgram({ host, options, rootNames: [ENTRY] });
   const sourceFile = program.getSourceFile(ENTRY);
   if (sourceFile === undefined) throw new Error('The virtual module was not loaded.');
-  return collectPreviewTypedDocumentShapes(program.getTypeChecker(), sourceFile);
+  const checker = program.getTypeChecker();
+  observeChecker?.(checker);
+  return collectPreviewTypedDocumentShapes(checker, sourceFile, readNumericText);
 }

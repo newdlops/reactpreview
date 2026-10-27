@@ -6,6 +6,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
 import {
   collectPreviewEntryPointEvidence,
   type PreviewEntryPointEvidence,
@@ -79,7 +80,7 @@ export function createPreviewRenderSourceFile(
       : /(?:^|\.)[cm]?jsx?$/u.test(lowerPath)
         ? ts.ScriptKind.JSX
         : ts.ScriptKind.JS;
-  return ts.createSourceFile(sourcePath, sourceText, ts.ScriptTarget.Latest, true, scriptKind);
+  return readPreviewAnalysisSourceFile(sourcePath, sourceText, scriptKind);
 }
 
 /**

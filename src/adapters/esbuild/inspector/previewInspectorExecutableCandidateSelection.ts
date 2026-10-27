@@ -7,6 +7,26 @@
  * from accidentally becoming part of the initial graph again.
  */
 import type { PreviewInspectorVirtualPageCandidate } from './previewInspectorVirtualPagePlan';
+import type {
+  PreviewInspectorAncestorPlan,
+  PreviewInspectorComponentReference,
+} from './previewInspectorAncestorTypes';
+
+/**
+ * Resolves the same prepared-module export for descriptor narrowing and execution surfaces.
+ *
+ * A named scenario can select another analyzed export in the active file. A route leaf from a
+ * different file remains page context and cannot silently become current-file ownership.
+ */
+export function selectPreviewInspectorExecutableTarget(
+  plan: PreviewInspectorAncestorPlan,
+  authoredTarget: PreviewInspectorComponentReference | undefined,
+): PreviewInspectorComponentReference {
+  return authoredTarget?.sourcePath === plan.target.sourcePath &&
+    plan.renderChainsByExport[authoredTarget.exportName] !== undefined
+    ? authoredTarget
+    : plan.target;
+}
 
 /** Result of resolving a requested candidate against the current static candidate inventory. */
 export interface PreviewInspectorExecutableCandidateSelection {

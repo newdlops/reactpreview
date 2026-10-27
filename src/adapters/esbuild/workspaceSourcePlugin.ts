@@ -122,6 +122,12 @@ export class MutableWorkspaceSourceState {
   public readCanonicalSnapshot(sourcePath: string): PreviewSourceSnapshot | undefined {
     return this.snapshotByCanonicalPath.get(sourcePath);
   }
+
+  /** Reads the current editor overlay without retaining another saved-source cache or doing I/O. */
+  public readCurrentSource(sourcePath: string): string | undefined {
+    const key = normalizeLexicalPath(sourcePath);
+    return this.readLexicalSnapshot(key)?.sourceText ?? this.readCanonicalSnapshot(key)?.sourceText;
+  }
 }
 
 /**

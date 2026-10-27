@@ -2,24 +2,26 @@
  * Extracts a bounded, syntax-only JSX render slice around an imported React component usage.
  * The analyzer retains only the target and its directly reproducible ancestor wrapper branch; it
  * never executes the consumer module or pulls sibling JSX into the eventual preview bundle.
+ * Parent-linked syntax may be shared with other inert readers and must remain unmodified.
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
 import { isPreviewRenderHocFactoryCall } from '../renderGraph/previewRenderInvocation';
 import {
   collectPreviewParentSliceImportBindings,
-  matchesPreviewParentSliceTargetImport,
+  createPreviewParentSliceTargetImportMatcher,
   type PreviewParentSliceImportBinding,
 } from './previewParentSliceImports';
-import {
-  hasUnsafePreviewParentSliceRuntimeAttributes,
-  readPreviewParentSliceStaticProps,
-} from './previewParentSliceStaticProps';
 import type {
   PreviewParentSliceChildMode,
   PreviewParentSliceFrame,
   PreviewParentSliceStaticProps,
 } from './previewParentSliceSource';
+import {
+  hasUnsafePreviewParentSliceRuntimeAttributes,
+  readPreviewParentSliceStaticProps,
+} from './previewParentSliceStaticProps';
 
 const MAX_CONSUMER_SOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_TARGET_EXPORTS = 128;
@@ -131,11 +133,9 @@ export function analyzePreviewParentSlices(
     return { limitReached: true, slices: [], status: 'source-too-large' };
   }
 
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = readPreviewAnalysisSourceFile(
     options.consumerPath,
     options.sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     readScriptKind(options.consumerPath),
   );
   if (hasParseDiagnostics(sourceFile)) {
@@ -223,11 +223,9 @@ export function analyzePreviewLocalParentSlices(
     return { limitReached: true, slices: [], status: 'source-too-large' };
   }
 
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = readPreviewAnalysisSourceFile(
     options.consumerPath,
     options.sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     readScriptKind(options.consumerPath),
   );
   if (hasParseDiagnostics(sourceFile)) {
@@ -336,9 +334,10 @@ function collectTargetImportReferences(
     options.acceptedTargetImportSpecifiers?.map(cleanAcceptedSpecifier) ?? [],
   );
   const references = new Map<string, TargetImportReference>();
+  const matchesTargetImport = createPreviewParentSliceTargetImportMatcher();
 
   for (const binding of importBindings.values()) {
-    const lexicallyMatches = matchesPreviewParentSliceTargetImport(
+    const lexicallyMatches = matchesTargetImport(
       binding.moduleSpecifier,
       options.consumerPath,
       options.targetPath,
@@ -886,18 +885,10 @@ function isComponentExportTransportForLocal(
       new Set(visitedNames).add(current.text),
     );
   }
-  const hocCall = ts.isTaggedTemplateExpression(current)
-    ? unwrapExpression(current.tag)
-    : current;
+  const hocCall = ts.isTaggedTemplateExpression(current) ? unwrapExpression(current.tag) : current;
   if (!ts.isCallExpression(hocCall) || !isPreviewRenderHocFactoryCall(hocCall)) return false;
   return hocCall.arguments.some((argument) =>
-    isComponentExportTransportForLocal(
-      argument,
-      localName,
-      sourceFile,
-      depth + 1,
-      visitedNames,
-    ),
+    isComponentExportTransportForLocal(argument, localName, sourceFile, depth + 1, visitedNames),
   );
 }
 

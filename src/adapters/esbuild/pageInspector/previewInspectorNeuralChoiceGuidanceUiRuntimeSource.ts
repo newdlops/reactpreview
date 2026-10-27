@@ -35,23 +35,32 @@ function PreviewInspectorNeuralChoiceHandoff({ choices, targetRendered }) {
     ? readPreviewInspectorNeuralLearningStatus() : undefined;
   if (choice === undefined && (status?.phase !== 'needs-choice' || targetRendered)) return null;
   const pageChoice = choice?.surface === 'page-context';
-  const action = pageChoice ? 'Open page paths' : choice !== undefined ? 'Open blocker details' : 'Inspect conditions';
+  const diagnosis = pageChoice && typeof readPreviewInspectorCurrentVisibilityDiagnosis === 'function'
+    ? readPreviewInspectorCurrentVisibilityDiagnosis() : undefined;
+  const unmountedTarget = diagnosis?.kind === 'unmounted-target';
+  const action = unmountedTarget ? diagnosis.actionLabel
+    : pageChoice ? 'Open page paths' : choice !== undefined ? 'Open blocker details' : 'Inspect conditions';
   return React.createElement(
     'fieldset',
     { className: 'rpi-neural-choice-list', 'aria-label': 'Next action for the blocked preview' },
-    React.createElement('legend', undefined, pageChoice ? 'Choose a page path' : 'Review the blocked step'),
+    React.createElement('legend', undefined, unmountedTarget ? 'Review target evidence'
+      : pageChoice ? 'Choose a page path' : 'Review the blocked step'),
     React.createElement('div', { className: 'rpi-neural-choice-scroll', role: 'region', tabIndex: 0,
       'aria-label': 'Blocked preview guidance' },
       React.createElement('div', { className: 'rpi-neural-choice-origin-note' },
         'Inspector navigation · these controls are not part of the original page.'),
       React.createElement('div', { className: 'rpi-neural-choice-intro' },
-        pageChoice
+        unmountedTarget ? diagnosis.description : pageChoice
           ? 'Choose which source-proven page should render the selected component. Open page paths to compare them and apply one.'
           : 'No selectable value is available here. Inspect the blocked condition or page control; waiting alone does not select a value.'),
-      typeof choice?.title === 'string'
+      !unmountedTarget && typeof choice?.title === 'string'
         ? React.createElement('div', { className: 'rpi-neural-choice-empty' }, choice.title) : null,
       React.createElement(PreviewInspectorDevtoolsButton, {
         onClick: () => {
+          if (unmountedTarget) {
+            activatePreviewInspectorVisibilityDiagnosis(diagnosis);
+            return;
+          }
           if (choice !== undefined && revealPreviewInspectorNeuralUserChoice(choice)) return;
           if (typeof requestPreviewInspectorWorkbenchTab === 'function') requestPreviewInspectorWorkbenchTab('scenarios');
         },

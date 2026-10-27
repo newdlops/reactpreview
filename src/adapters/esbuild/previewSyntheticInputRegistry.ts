@@ -63,6 +63,7 @@ export function createPreviewSyntheticInputRegistry(
   });
 }
 
+/** Wraps synthetic-input policy violations in the compiler’s public diagnostic error type. */
 function createSyntheticRegistryError(message: string): PreviewCompilationError {
   return new PreviewCompilationError(
     `React Preview synthetic input confinement registry rejected the build. ${message}`,

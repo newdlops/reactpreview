@@ -514,6 +514,7 @@ function createSessionFixture(
     log: {
       debug: vi.fn(),
       error: vi.fn(),
+      info: vi.fn(),
       warn: vi.fn(),
     } as unknown as vscode.LogOutputChannel,
     panel: panel as unknown as vscode.WebviewPanel,

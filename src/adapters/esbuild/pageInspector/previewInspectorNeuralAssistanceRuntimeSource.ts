@@ -317,6 +317,8 @@ function applyPreviewInspectorNeuralAssistanceBlocker(
             true,
             neuralResidualDecision,
             {
+              automatic: requestedBy === 'automatic-learning',
+              state: readPreviewInspectorNeuralAssistanceReachability(),
               finiteChoiceOrdinal: exploration?.choiceOrdinal,
               finiteChoiceSignature: exploration?.choiceSignature,
             },

@@ -32,7 +32,7 @@ test/**
 .prettierrc.json
 eslint.config.mjs
 tsconfig.json
-vitest.config.ts
+vitest.config.mts
 dist/**/*.map
 dist/extension.js
 assets/*.md

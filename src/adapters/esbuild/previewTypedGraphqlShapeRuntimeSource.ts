@@ -83,6 +83,7 @@ function mergePreviewTypedGraphqlShape(selectionShape, typedShape, depth) {
   }
   if (PREVIEW_TYPED_GRAPHQL_LEAF_KINDS.has(typedShape.kind)) return typedShape;
   if (typedShape.kind === 'string') {
+    if (typedShape.numeric === true) return typedShape;
     return selectionShape === undefined || selectionShape?.kind === 'unknown'
       ? typedShape
       : selectionShape;
@@ -102,16 +103,21 @@ function mergePreviewTypedGraphqlShape(selectionShape, typedShape, depth) {
 }
 
 /** Applies declared literals, scalar kinds, and list-ness to an already generated value. */
-function applyPreviewTypedGraphqlSeed(seed, shape, depth) {
+function applyPreviewTypedGraphqlSeed(seed, shape, depth, itemIndex = 0) {
   if (!isPreviewTypedGraphqlRecord(shape) || depth > PREVIEW_TYPED_GRAPHQL_DEPTH_LIMIT) return seed;
   if (shape.kind === 'literal') return previewTypedGraphqlSampleDates.rebase(shape.value);
+  if (shape.kind === 'string' && shape.numeric === true) {
+    if (typeof seed === 'string' && seed.trim() !== '' && Number.isFinite(Number(seed))) return seed;
+    if (typeof seed === 'number' && Number.isFinite(seed)) return String(seed);
+    return String(itemIndex + 1);
+  }
   if (shape.kind === 'array') {
     if (Array.isArray(seed)) {
-      return seed.map((item) => applyPreviewTypedGraphqlSeed(item, shape.items, depth + 1));
+      return seed.map((item, index) => applyPreviewTypedGraphqlSeed(item, shape.items, depth + 1, index));
     }
     return seed === undefined || seed === null
       ? []
-      : [applyPreviewTypedGraphqlSeed(seed, shape.items, depth + 1)];
+      : [applyPreviewTypedGraphqlSeed(seed, shape.items, depth + 1, itemIndex)];
   }
   if (shape.kind === 'object') {
     const record = Array.isArray(seed) ? seed[0] : seed;
@@ -121,7 +127,7 @@ function applyPreviewTypedGraphqlSeed(seed, shape, depth) {
     const output = { ...record };
     for (const [name, child] of Object.entries(shape.fields)) {
       if (Object.prototype.hasOwnProperty.call(output, name)) {
-        output[name] = applyPreviewTypedGraphqlSeed(output[name], child, depth + 1);
+        output[name] = applyPreviewTypedGraphqlSeed(output[name], child, depth + 1, itemIndex);
       }
     }
     return output;

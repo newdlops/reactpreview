@@ -120,7 +120,137 @@ describe('revealPreviewInspectorReachedTargetViewport', () => {
 
     expect(context.__result).toEqual([false, true, false, 1]);
   });
+
+  /** Async query output can arrive after the first probe has no measurable target host. */
+  it('preserves the mounted-target reveal until a later commit has an eligible host', () => {
+    const context: { __result?: unknown } = {};
+    vm.runInNewContext(
+      `
+        const scrolls = [];
+        let elements = [];
+        const state = { key: 'active', directTarget: false, pageRootCommitted: true };
+        const previewInspectorSession = {
+          activeTargetReachabilityKey: state.key,
+          targetReachabilityByKey: new Map([[state.key, state]]),
+        };
+        const readPreviewInspectorTargetBoundaries = () => new Set([{}]);
+        const collectPreviewInspectorFiberElements = () => elements;
+        const isPreviewInspectorUiElement = () => false;
+        const notifyPreviewInspector = () => undefined;
+        const schedulePreviewInspectorTreeRefresh = () => undefined;
+        const schedulePreviewInspectorCommitRefresh = () => undefined;
+        const mountNode = null;
+        globalThis.innerHeight = 600;
+        globalThis.innerWidth = 800;
+        globalThis.setTimeout = () => 1;
+        ${createPreviewInspectorTargetViewportRevealRuntimeSource()}
+        const first = revealPreviewInspectorMountedTargetViewport({}, {}, state);
+        const consumedBeforeOutput = state.viewportRevealAttempted === true;
+        elements = [{
+          nodeType: 1, isConnected: true,
+          getBoundingClientRect: () => ({ left: 0, right: 800, top: 700, bottom: 1000 }),
+          scrollIntoView: options => scrolls.push(options),
+        }];
+        const second = revealPreviewInspectorMountedTargetViewport({}, {}, state);
+        const third = revealPreviewInspectorMountedTargetViewport({}, {}, state);
+        globalThis.__result = { first, consumedBeforeOutput, second, third, scrolls };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      first: false,
+      consumedBeforeOutput: false,
+      second: true,
+      third: false,
+      scrolls: [{ behavior: 'auto', block: 'nearest', inline: 'nearest' }],
+    });
+  });
+
+  /** A prepared page can replace its first target host after that host was already scrolled. */
+  it('reveals a replacement target host once without scrolling the same host repeatedly', () => {
+    expect(runMountedReplacement(false)).toEqual({
+      results: [true, false, true, false],
+      scrolls: ['initial', 'replacement'],
+      evaluations: 2,
+      evaluationsAfterFirstTimer: 1,
+      pending: false,
+    });
+  });
+
+  /** Manual Inspector changes cancel both the old settle callback and replacement activation. */
+  it('does not continue an older viewport reveal after the user changes controls', () => {
+    expect(runMountedReplacement(true)).toEqual({
+      results: [true, false, false, false],
+      scrolls: ['initial'],
+      evaluations: 0,
+      evaluationsAfterFirstTimer: 0,
+      pending: false,
+    });
+  });
+
+  /** A timer from the previous artifact cannot evaluate the replacement artifact's corridor. */
+  it('releases its pending flag without evaluating after the entry revision changes', () => {
+    expect(runMountedReplacement(false, true)).toMatchObject({
+      evaluationsAfterFirstTimer: 0,
+      pending: false,
+    });
+  });
 });
+
+/** Replaces an exact mounted host after the first bounded scroll callback has settled. */
+function runMountedReplacement(changeControls: boolean, changeEntry = false): unknown {
+  const context: { __result?: unknown } = {};
+  vm.runInNewContext(
+    `
+      const scrolls = [], timers = [];
+      let evaluations = 0;
+      const makeElement = name => ({
+        nodeType: 1, isConnected: true,
+        getBoundingClientRect: () => ({ left: 0, right: 800, top: 700, bottom: 1000 }),
+        scrollIntoView: () => scrolls.push(name),
+      });
+      let elements = [makeElement('initial')];
+      const descriptor = {}, candidate = { id: 'candidate' };
+      const state = { key: 'active', candidateId: candidate.id, directTarget: false, pageRootCommitted: true };
+      const previewInspectorSession = {
+        activeTargetReachabilityKey: state.key,
+        neuralHumanControlRevision: 0,
+        targetReachabilityByKey: new Map([[state.key, state]]),
+      };
+      let previewEntryRevision = 1;
+      const readPreviewInspectorTargetBoundaries = () => new Set([{}]);
+      const collectPreviewInspectorFiberElements = () => elements;
+      const isPreviewInspectorUiElement = () => false;
+      const notifyPreviewInspector = () => undefined;
+      const schedulePreviewInspectorTreeRefresh = () => undefined;
+      const schedulePreviewInspectorCommitRefresh = () => undefined;
+      const findSelectedPreviewInspectorDescriptor = () => descriptor;
+      const readSelectedPreviewInspectorPageCandidate = () => candidate;
+      const createPreviewInspectorTargetReachabilityKey = () => state.key;
+      const evaluatePreviewInspectorTargetReachability = () => { evaluations += 1; };
+      const mountNode = null;
+      globalThis.innerHeight = 600;
+      globalThis.innerWidth = 800;
+      globalThis.setTimeout = callback => { timers.push(callback); return timers.length; };
+      ${createPreviewInspectorTargetViewportRevealRuntimeSource()}
+      const results = [revealPreviewInspectorMountedTargetViewport(descriptor, candidate, state)];
+      if (${String(changeControls)}) previewInspectorSession.neuralHumanControlRevision += 1;
+      if (${String(changeEntry)}) previewEntryRevision += 1;
+      timers.shift()?.();
+      const evaluationsAfterFirstTimer = evaluations;
+      results.push(revealPreviewInspectorMountedTargetViewport(descriptor, candidate, state));
+      elements[0].isConnected = false;
+      elements = [makeElement('replacement')];
+      results.push(revealPreviewInspectorMountedTargetViewport(descriptor, candidate, state));
+      timers.shift()?.();
+      results.push(revealPreviewInspectorMountedTargetViewport(descriptor, candidate, state));
+      globalThis.__result = { results, scrolls, evaluations, evaluationsAfterFirstTimer, pending: state.viewportRevealPending };
+    `,
+    context,
+  );
+  return context.__result;
+}
 
 /** Evaluates the generated runtime against fixture target elements in a 800×600 window. */
 function runReveal(

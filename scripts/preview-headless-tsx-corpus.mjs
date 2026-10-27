@@ -23,7 +23,9 @@ const result = await build({
   target: 'node22',
 });
 await writeFile(metafilePath, `${JSON.stringify(result.metafile, undefined, 2)}\n`);
-const module = await import(`${pathToFileURL(runtimePath).href}?campaign=${Date.now().toString(36)}`);
+const module = await import(
+  `${pathToFileURL(runtimePath).href}?campaign=${Date.now().toString(36)}`
+);
 process.exitCode = await module.runPreviewHeadlessTsxCorpusCampaignCli(
   process.argv.slice(2),
   runtimePath,

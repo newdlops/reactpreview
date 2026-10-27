@@ -5,6 +5,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from './previewAnalysisSourceFile';
 import {
   PreviewCompilationError,
   type PreviewBuildRequest,
@@ -217,7 +218,7 @@ function createTargetSourceFile(documentPath: string, sourceText: string): ts.So
     : lowerPath.endsWith('.ts') || lowerPath.endsWith('.mts') || lowerPath.endsWith('.cts')
       ? ts.ScriptKind.TS
       : ts.ScriptKind.JSX;
-  return ts.createSourceFile(documentPath, sourceText, ts.ScriptTarget.Latest, true, scriptKind);
+  return readPreviewAnalysisSourceFile(documentPath, sourceText, scriptKind);
 }
 
 /** Collects direct ESM, dynamic-import, and CommonJS runtime references in source order. */

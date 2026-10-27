@@ -227,8 +227,10 @@ function readPreviewInspectorApplicableConditionOverrides(
     previewInspectorSession.renderConditionOverrides.delete(conditionId);
     schedulePreviewInspectorRenderOutcomeReconciliationPersistence();
   }
+  const unrelatedOverlay = isPreviewInspectorDetachedPageOverlayActivation(metadata, autoOverride);
+  if (unrelatedOverlay) previewInspectorSession.renderConditionAutoOverrides.delete(conditionId);
   return {
-    autoOverride: apply(autoOverride),
+    autoOverride: unrelatedOverlay ? undefined : apply(autoOverride),
     manualOverride: applicableManualOverride,
     outcomeOverride: apply(outcomeOverride),
   };
@@ -237,10 +239,27 @@ function readPreviewInspectorApplicableConditionOverrides(
 /** Allows target-guided true only for Boolean or compiler-proven overlay visibility conditions. */
 function canPreviewInspectorTargetGuideCondition(record, enabled) {
   return record?.requiresAuthoredState !== true &&
+    !isPreviewInspectorDetachedPageOverlayActivation(record, enabled) &&
     !isPreviewInspectorOutputHidingEmptinessContinuation(record, enabled) &&
     (enabled !== true || record?.authoredEnabled !== false ||
     record?.authoredValueKind === 'boolean' || record?.kind === 'overlay-visibility' ||
     record?.role === 'overlay');
+}
+
+/**
+ * A compiler-detached overlay target already has its own mount beside the authored page. Opening
+ * a different source's dormant dialog cannot reach that target; it can only obscure it with an
+ * empty shell while its selected entity remains null. Manual controls and authored opens stay live.
+ */
+function isPreviewInspectorDetachedPageOverlayActivation(record, enabled) {
+  if (enabled !== true || !(record?.kind === 'overlay-visibility' || record?.role === 'overlay')) {
+    return false;
+  }
+  const key = record?.reachabilityKey ?? previewInspectorSession.activeTargetReachabilityKey;
+  const state = previewInspectorSession.targetReachabilityByKey?.get?.(key);
+  if (state?.detachedTargetPlacement !== 'overlay-sibling' ||
+    typeof state.targetSourcePath !== 'string' || typeof record.sourcePath !== 'string') return false;
+  return !matchesPreviewInspectorConditionDefinitionPath(record.sourcePath, state.targetSourcePath);
 }
 
 /** One collection length read such as "orders.length", "data?.items?.length", or "rows[0].length". */

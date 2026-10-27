@@ -208,6 +208,7 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
   const wrapperHostOnly = mountedWithoutOutput && blocker.targetHasAnyHostOutput === true;
   const errorFallbackOutput = blocker.targetOutputKind === 'fallback-output';
   const candidateOutput = blocker.targetOutputKind === 'candidate-output';
+  const previouslyMounted = blocker.targetWasMounted === true && blocker.targetMounted !== true;
   const resolving = isPreviewInspectorTargetReachabilityResolving(blocker);
   return {
     blocker,
@@ -226,7 +227,8 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
             ? 'Render callback is waiting · '
             : wrapperHostOnly
               ? 'Fallback shown instead · '
-              : mountedWithoutOutput ? 'No visible element · ' : 'Target not reached · ') +
+              : mountedWithoutOutput ? 'No visible element · '
+                : previouslyMounted ? 'Target no longer mounted · ' : 'Target not reached · ') +
         blocker.targetExportName,
     props: {
       applicationPath: blocker.applicationPath,
@@ -243,6 +245,7 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
       directTarget: blocker.directTarget,
       targetHasOutput: blocker.targetHasOutput,
       targetMounted: blocker.targetMounted,
+      targetWasMounted: blocker.targetWasMounted,
       targetOutputKind: blocker.targetOutputKind,
     },
   };

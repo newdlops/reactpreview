@@ -127,6 +127,33 @@ describe('Inspector root route navigation', () => {
     });
   });
 
+  it.each([
+    [{ componentName: 'CompanyApp', pattern: String.raw`/company/:companyId(\d+)` }],
+    [
+      { componentName: 'CompanyApp', pattern: String.raw`/company/:companyId(\d+)` },
+      {
+        componentName: 'DocumentPage',
+        pattern: String.raw`/company/:companyId(\d+)/document/:documentId(\d+)`,
+      },
+    ],
+  ])('preserves authored numeric constraints through the route request: %j', (...selectionPath) => {
+    const message = evaluate(
+      `
+        const branch = { ...branches[0], selectionPath: authoredSelectionPath };
+        const button = PreviewInspectorRouteBranchButton({ branch, commonPrefix: [], selected: false });
+        button.props.onClick(); posted[0];
+      `,
+      { authoredSelectionPath: selectionPath },
+    );
+    expect(readPreviewInspectorRouteSelectionRequest(message)).toEqual({
+      branchId: rootId,
+      interactionId: 'route:7:1',
+      runtimeRevision: 7,
+      selectionPath,
+      type: 'react-preview-inspector-route-selected',
+    });
+  });
+
   it('does not change a pending route or its error when only browsing back to the root', () => {
     expect(
       evaluate(`

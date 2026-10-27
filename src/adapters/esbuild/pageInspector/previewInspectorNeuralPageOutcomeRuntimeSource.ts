@@ -3,6 +3,61 @@
 /** Emits bounded admission checks; unavailable evidence never teaches success or terminal failure. */
 export function createPreviewInspectorNeuralPageOutcomeRuntimeSource(): string {
   return String.raw`
+/** Reconsiders neutral user-state waits after explicit viewer input, without changing learned labels. */
+function isPreviewInspectorNeuralPageAuthoredStateAvailable(record, candidateId) {
+  if (!(record.authoredStateCandidateIds instanceof Set)) record.authoredStateCandidateIds = new Set();
+  const controlRevision = Number(previewInspectorSession.neuralHumanControlRevision) || 0;
+  if (record.authoredStateControlRevision !== controlRevision) {
+    for (const id of record.authoredStateCandidateIds) record.evaluatedCandidateIds.delete(id);
+    record.authoredStateCandidateIds.clear();
+    record.authoredStateControlRevision = controlRevision;
+  }
+  return !record.authoredStateCandidateIds.has(candidateId);
+}
+
+/**
+ * Leaves a source-proven user-state stop unlabelled and tries another admitted caller path.
+ * The delayed callback cannot outlive its document, target, gate, or human-control revision.
+ * Manual path choices and Auto off retain the page for normal interaction.
+ */
+function schedulePreviewInspectorNeuralPageAuthoredStateContinuation(descriptor, candidate, state) {
+  if (state?.neuralAuthoredStateContinuationScheduled === true ||
+    state?.neuralAuthoredStateContinuationSettled === true ||
+    typeof globalThis.setTimeout !== 'function') return false;
+  const revision = typeof previewEntryRevision === 'number' ? previewEntryRevision : undefined;
+  const controlRevision = previewInspectorSession.neuralHumanControlRevision;
+  const gateId = state?.awaitingAuthoredStateConditionId;
+  if (revision === undefined || typeof gateId !== 'string' || gateId.length === 0) return false;
+  const eligible = () => isPreviewInspectorNeuralPageOutcomeCurrent(descriptor, candidate, state) &&
+    previewEntryRevision === revision && previewInspectorSession.neuralHumanControlRevision === controlRevision &&
+    !previewInspectorSession.userSelectedPageCandidateId && previewInspectorSession.pendingPageCandidateId === undefined &&
+    state.awaitingAuthoredStateConditionId === gateId && state.status === 'awaiting-authored-state' &&
+    state.pageRootCommitted === true && state.targetHasOutput !== true &&
+    (state.targetMounted === true || state.targetWasMounted === true);
+  if (!eligible()) return false;
+  state.neuralAuthoredStateContinuationScheduled = true;
+  globalThis.setTimeout(() => {
+    state.neuralAuthoredStateContinuationScheduled = false;
+    if (!eligible()) return;
+    const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
+    if (record === undefined) return;
+    isPreviewInspectorNeuralPageAuthoredStateAvailable(record, candidate.id);
+    record.authoredStateCandidateIds.add(candidate.id);
+    record.evaluatedCandidateIds.add(candidate.id);
+    record.provisionalCandidateIds.delete(candidate.id);
+    record.successfulCandidateIds.delete(candidate.id);
+    state.neuralAuthoredStateContinuationSettled = true;
+    record.status = 'awaiting-authored-state';
+    record.selectionReason = 'authored-state-required-without-training';
+    if (typeof persistPreviewInspectorState === 'function') persistPreviewInspectorState();
+    if (!continuePreviewInspectorNeuralPageContextCoverage()) {
+      record.status = 'awaiting-authored-state';
+      record.selectionReason = 'authored-state-required-without-training';
+    }
+  }, 640);
+  return true;
+}
+
 /** Rejects old page/target callbacks before touching learning records or walking project Fibers. */
 function isPreviewInspectorNeuralPageOutcomeCurrent(descriptor, candidate, state) {
   if (
@@ -47,6 +102,8 @@ function isPreviewInspectorNeuralPageOutcomeCurrent(descriptor, candidate, state
  * here leave the result unlabelled; they do not hide the project's exception or consume its retries.
  */
 function readPreviewInspectorNeuralPageOutcome(state) {
+  if (typeof hasPreviewInspectorNextAppControlBlocker === 'function' &&
+    hasPreviewInspectorNextAppControlBlocker(state)) return undefined;
   const terminalFailure = state.neuralStableOutputRegressed === true ||
     state.status === 'page-blocked' && state.exhausted === true;
   const verifiedOutput = state.neuralStableOutputVerified === true &&
@@ -85,6 +142,62 @@ function readPreviewInspectorNeuralPageOutcome(state) {
   } catch {
     return undefined;
   }
+}
+
+/** Continues across caller/HOC mount paths only after the current path's inner sweep has settled. */
+function continuePreviewInspectorNeuralPageContextCoverage() {
+  if (
+    typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused() ||
+    typeof findSelectedPreviewInspectorDescriptor !== 'function' ||
+    typeof previewInspectorSession.userSelectedPageCandidateId === 'string' &&
+      previewInspectorSession.userSelectedPageCandidateId.length > 0 ||
+    previewInspectorSession.pendingPageCandidateId !== undefined
+  ) return false;
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
+  const currentId = descriptor?.inspector?.executablePageCandidateId ??
+    previewInspectorSession.selectedPageCandidateId;
+  if (record === undefined || record.evaluatedCandidateIds.has(currentId) !== true) return false;
+  const currentState = typeof readPreviewInspectorNeuralAssistanceReachability === 'function'
+    ? readPreviewInspectorNeuralAssistanceReachability() : undefined;
+  const currentCandidate = readPreviewInspectorPageCandidates(descriptor).find((candidate) => candidate?.id === currentId);
+  if (record.coverageComplete === true && currentState?.candidateId === currentId &&
+    currentState.neuralStableOutputVerified === true && currentState.neuralStableOutputRegressed !== true &&
+    isPreviewInspectorNeuralPageOutcomeCurrent(descriptor, currentCandidate, currentState) &&
+    typeof hasPreviewInspectorVerifiedCompletePageContract === 'function' &&
+    hasPreviewInspectorVerifiedCompletePageContract(record, currentId) &&
+    record.executionContractByCandidateId.get(currentId)?.snapshot?.temporalState?.kind !== 'transient-checkpoint' &&
+    typeof hasPreviewInspectorNeuralSuccessOutputEvidence === 'function' &&
+    hasPreviewInspectorNeuralSuccessOutputEvidence(currentState)) {
+    record.selectionReason = 'current-verified-execution-contract-retained';
+    record.status = 'verified';
+    return false;
+  }
+  const next = selectPreviewInspectorNeuralPageContextCandidate(descriptor, {
+    exploreUnevaluated: true,
+  });
+  if (next?.candidate?.id === undefined) {
+    record.status = 'exhausted';
+    return false;
+  }
+  if (next.candidate.id === currentId) {
+    record.coverageComplete = true;
+    record.selectionReason = 'best-verified-execution-contract';
+    record.status = 'verified';
+    return false;
+  }
+  record.status = 'switching';
+  record.selectionReason = record.coverageComplete === true
+    ? 'restoring-best-verified-execution-contract'
+    : 'testing-next-caller-wrapper-contract';
+  preparePreviewInspectorNeuralPageContextExecutionContract(
+    descriptor,
+    next.candidate.id,
+    'neural',
+  );
+  return selectPreviewInspectorPageCandidate(next.candidate.id, {
+    origin: 'neural-page-context',
+  });
 }
 `;
 }

@@ -5,6 +5,7 @@
  * valid domain value and is safer than inventing a project-specific enum member.
  */
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
 import { isReactComponentTypeSyntax } from './reactComponentTypeSyntax';
 
 const MAX_FALLBACKS_PER_TARGET = 32;
@@ -48,11 +49,9 @@ export function createReactExportPropFallbackReplacements(
     return [];
   }
 
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = readPreviewAnalysisSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     sourcePath.toLowerCase().endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   if (hasParseDiagnostics(sourceFile)) {

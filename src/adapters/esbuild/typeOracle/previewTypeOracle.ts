@@ -15,14 +15,28 @@
 import path from 'node:path';
 import ts from 'typescript';
 import {
-  readPreviewTypedComponentProps,
-  type PreviewTypedPropValue,
-} from './previewTypedComponentProps';
+  createPreviewNumericTextReader,
+  type PreviewNumericTextReader,
+} from './previewNumericTextInference';
 import {
   createPreviewRecordKeyReader,
   type PreviewRecordKeyReader,
 } from './previewRecordKeyInference';
 import { readPreviewReturnedPayloadType } from './previewReturnedPayloadType';
+import {
+  readPreviewTypedComponentProps,
+  type PreviewTypedPropValue,
+} from './previewTypedComponentProps';
+import {
+  collectPreviewTypedDocumentShapes,
+  PREVIEW_GRAPHQL_DOCUMENT_TEXT_PATTERN,
+  type PreviewTypedDocumentShape,
+} from './previewTypedDocumentShapes';
+import {
+  createPreviewTypedPayloadShape,
+  readPreviewResponseBodyType,
+  type PreviewTypedPayloadShape,
+} from './previewTypedPayloadShape';
 import {
   observePreviewTypeHeap,
   readPreviewTypeLiveHeapStatistics,
@@ -37,18 +51,9 @@ import {
   type PreviewTypeProgramStatus,
 } from './previewTypeProgram';
 import {
-  collectPreviewTypedDocumentShapes,
-  PREVIEW_GRAPHQL_DOCUMENT_TEXT_PATTERN,
-  type PreviewTypedDocumentShape,
-} from './previewTypedDocumentShapes';
-import {
-  createPreviewTypedPayloadShape,
-  readPreviewResponseBodyType,
-  type PreviewTypedPayloadShape,
-} from './previewTypedPayloadShape';
-import {
   synthesizePreviewTypedValue,
   type PreviewTypedValueResult,
+  type PreviewTypedValueSynthesisOptions,
 } from './previewTypeValueSynthesizer';
 
 /** One call-site question: which value would satisfy this call's declared result type? */
@@ -61,6 +66,8 @@ export interface PreviewTypedCallRequest {
   readonly requiredPaths: readonly string[];
   /** Absolute module path. */
   readonly sourcePath: string;
+  /** Marks nested slots of unresolved types instead of leaving them out (see synthesis options). */
+  readonly unknownPlaceholders?: boolean;
 }
 
 /** Declared-type value for one call site. */
@@ -83,6 +90,37 @@ export interface PreviewTypedGuardRequest {
   readonly sourcePath: string;
 }
 
+/** One package-type question: which value would the named type exported by a module hold? */
+export interface PreviewTypedModuleTypeRequest {
+  /** Bare module specifier imported by the source module, such as `next-auth`. */
+  readonly moduleSpecifier: string;
+  /** Authored usage paths that guide union selection and optional fields. */
+  readonly requiredPaths: readonly string[];
+  /** Absolute module path whose import declaration names the module. */
+  readonly sourcePath: string;
+  /** Exported type name; module augmentations admitted to the program are merged into it. */
+  readonly typeName: string;
+}
+
+/** One module-export question: which value does the export's declared type describe? */
+export interface PreviewTypedExportRequest {
+  /** Export name as importers see it; `default` reads the default export. */
+  readonly exportName: string;
+  /** Authored usage paths that guide union selection and optional fields. */
+  readonly requiredPaths: readonly string[];
+  /** Absolute path of the module that declares the export. */
+  readonly sourcePath: string;
+}
+
+/** Declared value of one runtime export. */
+export interface PreviewTypedExportValue extends PreviewTypedCallValue {
+  /**
+   * Whether the export is callable and its (awaited) result type admits `null`, `undefined`, or
+   * `void`, or is unresolved, so a mock returning nothing is still a value of the declared type.
+   */
+  readonly nullableResult: boolean;
+}
+
 /** Non-nullish declared-type value for one guard identifier. */
 export interface PreviewTypedGuardValue extends PreviewTypedCallValue {
   /** Whether the declared type admits null or undefined (the guard can be falsy at runtime). */
@@ -95,6 +133,15 @@ export interface PreviewTypeOracleView {
   readTypedCallValue(request: PreviewTypedCallRequest): PreviewTypedCallValue | undefined;
   /** Returns the non-nullish value of one guard identifier's declared type, when known. */
   readTypedGuardValue(request: PreviewTypedGuardRequest): PreviewTypedGuardValue | undefined;
+  /**
+   * Returns the value one runtime export's declared type describes, or `undefined` when unknown.
+   * Nested slots of unresolved types carry the `unknown` tag rather than being left out.
+   */
+  readTypedExportValue(request: PreviewTypedExportRequest): PreviewTypedExportValue | undefined;
+  /** Returns a value of one type exported by an imported module, or `undefined` when unknown. */
+  readTypedModuleTypeValue(
+    request: PreviewTypedModuleTypeRequest,
+  ): PreviewTypedCallValue | undefined;
   /** Lists module-scope typed GraphQL documents of one module with their result payload shapes. */
   readTypedDocumentShapes(sourcePath: string): readonly PreviewTypedDocumentShape[];
   /** Resolves a declared response type node (`get<T>()`, `as T`) to its response body shape. */
@@ -231,6 +278,15 @@ export class PreviewTypeOracle {
       return byText.get(text)?.[occurrence] as T | undefined;
     };
     const recordKeyReaders = new WeakMap<PreviewTypeProgram, PreviewRecordKeyReader>();
+    const numericTextReaders = new WeakMap<PreviewTypeProgram, PreviewNumericTextReader>();
+    const readNumericText = (analysis: PreviewTypeProgram): PreviewNumericTextReader => {
+      let reader = numericTextReaders.get(analysis);
+      if (reader === undefined) {
+        reader = createPreviewNumericTextReader(analysis.program, analysis.checker);
+        numericTextReaders.set(analysis, reader);
+      }
+      return reader;
+    };
     const readRecordKeys = (analysis: PreviewTypeProgram): PreviewRecordKeyReader => {
       let reader = recordKeyReaders.get(analysis);
       if (reader === undefined) {
@@ -253,8 +309,15 @@ export class PreviewTypeOracle {
       node: ts.Node,
       type: ts.Type,
       requiredPaths: readonly string[],
+      options?: PreviewTypedValueSynthesisOptions,
     ): PreviewTypedCallValue | undefined => {
-      const result = synthesizePreviewTypedValue(analysis.checker, type, node, requiredPaths);
+      const result = synthesizePreviewTypedValue(
+        analysis.checker,
+        type,
+        node,
+        requiredPaths,
+        options,
+      );
       return result === undefined
         ? undefined
         : {
@@ -297,6 +360,7 @@ export class PreviewTypeOracle {
             body,
             found.node,
             readRecordKeys(found.analysis),
+            readNumericText(found.analysis),
           );
         } catch {
           return undefined;
@@ -329,19 +393,30 @@ export class PreviewTypeOracle {
             body,
             found.node,
             readRecordKeys(found.analysis),
+            readNumericText(found.analysis),
           );
         } catch {
           return undefined;
         }
       },
       readTypedDocumentShapes: (sourcePath) => {
-        const text = input.readSnapshot(path.normalize(sourcePath)) ?? ts.sys.readFile(sourcePath);
+        const normalizedPath = path.normalize(sourcePath);
+        const available = current?.program.getSourceFile(normalizedPath);
+        // A view owns immutable admitted text. Once its program exists, re-reading every module
+        // adds disk work but cannot change that program's types; excluded files have no answers.
+        if (attempted && available === undefined) return [];
+        const text =
+          available?.text ?? input.readSnapshot(normalizedPath) ?? ts.sys.readFile(sourcePath);
         if (text === undefined || !PREVIEW_GRAPHQL_DOCUMENT_TEXT_PATTERN.test(text)) return [];
         const analysis = ensureProgram();
-        const sourceFile = analysis?.program.getSourceFile(path.normalize(sourcePath));
+        const sourceFile = available ?? analysis?.program.getSourceFile(normalizedPath);
         if (analysis === undefined || sourceFile === undefined) return [];
         try {
-          return collectPreviewTypedDocumentShapes(analysis.checker, sourceFile);
+          return collectPreviewTypedDocumentShapes(
+            analysis.checker,
+            sourceFile,
+            readNumericText(analysis),
+          );
         } catch {
           return [];
         }
@@ -353,7 +428,90 @@ export class PreviewTypeOracle {
         if (found === undefined) return undefined;
         try {
           const type = found.analysis.checker.getTypeAtLocation(found.node);
-          return synthesize(found.analysis, found.node, type, request.requiredPaths);
+          return synthesize(
+            found.analysis,
+            found.node,
+            type,
+            request.requiredPaths,
+            request.unknownPlaceholders === true ? { unknownPlaceholders: true } : undefined,
+          );
+        } catch {
+          return undefined;
+        }
+      },
+      readTypedExportValue: (request) => {
+        const found = readNode(request.sourcePath, (sourceFile) => sourceFile);
+        if (found === undefined) return undefined;
+        try {
+          const { checker } = found.analysis;
+          const moduleSymbol = checker.getSymbolAtLocation(found.node);
+          const exported =
+            moduleSymbol === undefined
+              ? undefined
+              : checker
+                  .getExportsOfModule(moduleSymbol)
+                  .find((symbol) => symbol.getName() === request.exportName);
+          const target =
+            exported === undefined || (exported.flags & ts.SymbolFlags.Alias) === 0
+              ? exported
+              : checker.getAliasedSymbol(exported);
+          // A type-only export has no runtime value to describe.
+          const declaration = target?.valueDeclaration;
+          if (
+            target === undefined ||
+            declaration === undefined ||
+            (target.flags & ts.SymbolFlags.Value) === 0
+          ) {
+            return undefined;
+          }
+          const type = checker.getTypeOfSymbolAtLocation(target, declaration);
+          // Slots typed by unresolved packages stay marked, so the caller keeps its neutral value.
+          const value = synthesize(found.analysis, declaration, type, request.requiredPaths, {
+            unknownPlaceholders: true,
+          });
+          const signature = type.getCallSignatures()[0];
+          return value === undefined
+            ? undefined
+            : {
+                ...value,
+                nullableResult:
+                  signature !== undefined &&
+                  admitsNullishResult(checker, checker.getReturnTypeOfSignature(signature)),
+              };
+        } catch {
+          return undefined;
+        }
+      },
+      readTypedModuleTypeValue: (request) => {
+        const found = readNode(
+          request.sourcePath,
+          (sourceFile) =>
+            sourceFile.statements.find(
+              (
+                statement,
+              ): statement is ts.ImportDeclaration & { moduleSpecifier: ts.StringLiteral } =>
+                ts.isImportDeclaration(statement) &&
+                ts.isStringLiteral(statement.moduleSpecifier) &&
+                statement.moduleSpecifier.text === request.moduleSpecifier,
+            )?.moduleSpecifier,
+        );
+        if (found === undefined) return undefined;
+        try {
+          const { checker } = found.analysis;
+          const moduleSymbol = checker.getSymbolAtLocation(found.node);
+          const exported =
+            moduleSymbol === undefined
+              ? undefined
+              : checker
+                  .getExportsOfModule(moduleSymbol)
+                  .find((symbol) => symbol.getName() === request.typeName);
+          if (exported === undefined) return undefined;
+          const declared = checker.getDeclaredTypeOfSymbol(
+            (exported.flags & ts.SymbolFlags.Alias) === 0
+              ? exported
+              : checker.getAliasedSymbol(exported),
+          );
+          return synthesize(found.analysis, found.node, declared, request.requiredPaths);
         } catch {
           return undefined;
         }
@@ -409,8 +567,19 @@ export interface PreviewBuildTypeOracleInput {
         readonly target: { readonly sourcePath: string };
       }
     | undefined;
+  /**
+   * Project declaration files that augment imported packages. The program follows imports only,
+   * so an ambient `declare module` file is otherwise missing from the declared types.
+   */
+  readonly augmentationPaths?: readonly string[];
   /** Current build request (document path and optional explicit tsconfig). */
   readonly request: { readonly documentPath: string; readonly tsconfigPath?: string };
+  /** Declaration modules served for bare specifiers instead of normal resolution. */
+  readonly virtualModules?: readonly {
+    readonly path: string;
+    readonly specifier: string;
+    readonly text: string;
+  }[];
   /** Canonical path to dirty editor contents for this build. */
   readonly snapshotSourceByPath: ReadonlyMap<string, string>;
 }
@@ -426,19 +595,45 @@ export function createPreviewBuildTypeOracleView(
   oracle: PreviewTypeOracle,
   input: PreviewBuildTypeOracleInput,
 ): PreviewTypeOracleView {
+  const virtualTexts = new Map(
+    (input.virtualModules ?? []).map((module) => [path.normalize(module.path), module.text]),
+  );
   return oracle.createView({
     managedNodeModulesPaths: input.managedNodeModulesPaths,
-    readSnapshot: (sourcePath) => input.snapshotSourceByPath.get(path.normalize(sourcePath)),
+    ...(input.virtualModules === undefined || input.virtualModules.length === 0
+      ? {}
+      : {
+          moduleOverrides: new Map(
+            input.virtualModules.map((module) => [module.specifier, path.normalize(module.path)]),
+          ),
+        }),
+    readSnapshot: (sourcePath) =>
+      virtualTexts.get(sourcePath) ?? input.snapshotSourceByPath.get(sourcePath),
     rootPaths: [
       input.request.documentPath,
       ...(input.plan === undefined
         ? []
         : [input.plan.target.sourcePath, input.plan.root.sourcePath]),
+      ...(input.augmentationPaths ?? []),
     ],
     ...(input.request.tsconfigPath === undefined
       ? {}
       : { tsconfigPath: input.request.tsconfigPath }),
   });
+}
+
+/** Reports whether a call result, once awaited, may be nullish or is of an unresolved type. */
+function admitsNullishResult(checker: ts.TypeChecker, returnType: ts.Type): boolean {
+  const awaited = checker.getAwaitedType(returnType) ?? returnType;
+  const nullish =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Void;
+  return (awaited.isUnion() ? awaited.types : [awaited]).some(
+    (member) => (member.flags & nullish) !== 0,
+  );
 }
 
 /** Reports a `guard && branch` or `guard ? branch : other` expression. */

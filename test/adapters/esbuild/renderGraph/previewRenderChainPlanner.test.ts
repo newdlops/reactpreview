@@ -364,6 +364,7 @@ describe('createPreviewRenderChainPlan', () => {
 
     expect(plan.paths[0]?.steps[0]?.invocation).toEqual({
       calleeName: 'QueryRenderer',
+      deferred: true,
       mode: 'render-prop',
       slotName: 'children',
       sourcePath: ownerPath,

@@ -629,7 +629,18 @@ describe('Preview Inspector neural assistance runtime source', () => {
     fixture.flushFrame();
 
     expect(fixture.calls.failures).toEqual(['standalone-error']);
+    expect(fixture.calls.choiceAttempts[0]?.automatic).toBe(true);
     expect(fixture.calls.paths).toEqual([]);
+  });
+
+  it('retains explicit Smart fill mode for a user-requested target repair', () => {
+    const fixture = createAssistanceFixture();
+    fixture.clearReachability();
+    fixture.setBlockers([{ blocker: { id: 'manual-error' }, blockerKind: 'target-error' }]);
+    expect(fixture.request()).toBe(true);
+    fixture.flushFrame();
+    fixture.flushFrame();
+    expect(fixture.calls.choiceAttempts[0]?.automatic).toBe(false);
   });
 
   it('does not confuse a generic runtime candidate id with verified neural failure', () => {

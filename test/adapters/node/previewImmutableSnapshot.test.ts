@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import {
   chmod,
+  cp,
   lstat,
   mkdir,
   mkdtemp,
@@ -14,13 +15,11 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
-import type { PreviewBuildRequest } from '../../../src/domain/preview';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   PREVIEW_COMPLETE_ROUTE_REPLAY_POLICY_DIGEST,
   type PreviewInspectorCompleteRouteInventory,
 } from '../../../src/adapters/esbuild/inspector/previewInspectorCompleteRouteInventory';
-import { createPreviewRouteExecutionPlanFixture } from '../../support/previewRouteExecutionPlanFixture';
 import {
   createPreviewDependencyView,
   verifyPreviewDependencyView,
@@ -33,9 +32,25 @@ import {
   normalizePreviewSnapshotAllowlist,
   verifyPreviewTrackedSourceSnapshot,
 } from '../../../src/adapters/node/previewTrackedSourceSnapshot';
+import type { PreviewBuildRequest } from '../../../src/domain/preview';
+import { createPreviewRouteExecutionPlanFixture } from '../../support/previewRouteExecutionPlanFixture';
 
 const run = promisify(execFile);
 const temporaryDirectories: string[] = [];
+/** Bounds real Git/tar integration work when external command startup varies under host load. */
+const GIT_SNAPSHOT_TEST_TIMEOUT_MS = 30_000;
+let repositoryTemplate: GitFixture | undefined;
+
+beforeAll(async () => {
+  repositoryTemplate = await createGitTemplate();
+}, GIT_SNAPSHOT_TEST_TIMEOUT_MS);
+
+afterAll(async () => {
+  if (repositoryTemplate !== undefined) {
+    await makeWritable(repositoryTemplate.directory);
+    await rm(repositoryTemplate.directory, { force: true, recursive: true });
+  }
+});
 
 afterEach(async () => {
   await Promise.all(
@@ -47,153 +62,184 @@ afterEach(async () => {
 });
 
 describe('immutable tracked source snapshot', () => {
-  it('atomically accepts matching archive, tracked blob, file, and content manifests', async () => {
-    const fixture = await createGitFixture();
-    const snapshotPath = path.join(fixture.directory, 'accepted-snapshot');
-    const manifest = await createSnapshot(fixture, snapshotPath);
-    const verified = await verifyPreviewTrackedSourceSnapshot(snapshotPath);
+  it(
+    'atomically accepts matching archive, tracked blob, file, and content manifests',
+    async () => {
+      const fixture = await createGitFixture();
+      const snapshotPath = path.join(fixture.directory, 'accepted-snapshot');
+      const manifest = await createSnapshot(fixture, snapshotPath);
+      const verified = await verifyPreviewTrackedSourceSnapshot(snapshotPath);
 
-    expect(manifest.commit).toBe(fixture.commit);
-    expect(manifest.tree).toBe(fixture.tree);
-    expect(manifest.files.map((file) => file.path)).toEqual([
-      'package.json',
-      'src/App.tsx',
-      'yarn.lock',
-      'zuzu/client/package.json',
-    ]);
-    expect(verified.manifestDigest).toBe(manifest.manifestDigest);
-    expect((await lstat(path.join(snapshotPath, 'source', 'src', 'App.tsx'))).mode & 0o222).toBe(0);
-    await expect(createSnapshot(fixture, snapshotPath)).rejects.toThrow('already exists');
-  });
+      expect(manifest.commit).toBe(fixture.commit);
+      expect(manifest.tree).toBe(fixture.tree);
+      expect(manifest.files.map((file) => file.path)).toEqual([
+        'package.json',
+        'src/App.tsx',
+        'yarn.lock',
+        'zuzu/client/package.json',
+      ]);
+      expect(verified.manifestDigest).toBe(manifest.manifestDigest);
+      expect((await lstat(path.join(snapshotPath, 'source', 'src', 'App.tsx'))).mode & 0o222).toBe(
+        0,
+      );
+      await expect(createSnapshot(fixture, snapshotPath)).rejects.toThrow('already exists');
+    },
+    GIT_SNAPSHOT_TEST_TIMEOUT_MS,
+  );
 
-  it('rejects traversal, sensitive/generated paths, links, and later content drift', async () => {
-    expect(() => normalizePreviewSnapshotAllowlist(['../outside'])).toThrow('traversal');
-    expect(() => normalizePreviewSnapshotAllowlist(['/absolute'])).toThrow('relative');
-    expect(() => normalizePreviewSnapshotAllowlist(['.env.production'])).toThrow('sensitive');
-    expect(() => normalizePreviewSnapshotAllowlist(['src/node_modules/pkg'])).toThrow('generated');
-    expect(() =>
-      { assertPreviewSnapshotTrackedFiles([
-        { blobId: 'a'.repeat(40), mode: '120000', path: 'unsafe-link' },
-      ]); },
-    ).toThrow('regular tracked file');
+  it(
+    'rejects traversal, sensitive/generated paths, and tracked symlinks',
+    async () => {
+      expect(() => normalizePreviewSnapshotAllowlist(['../outside'])).toThrow('traversal');
+      expect(() => normalizePreviewSnapshotAllowlist(['/absolute'])).toThrow('relative');
+      expect(() => normalizePreviewSnapshotAllowlist(['.env.production'])).toThrow('sensitive');
+      expect(() => normalizePreviewSnapshotAllowlist(['src/node_modules/pkg'])).toThrow(
+        'generated',
+      );
+      expect(() => {
+        assertPreviewSnapshotTrackedFiles([
+          { blobId: 'a'.repeat(40), mode: '120000', path: 'unsafe-link' },
+        ]);
+      }).toThrow('regular tracked file');
 
-    const fixture = await createGitFixture();
-    await expect(
-      createPreviewTrackedSourceSnapshot({
-        allowlist: ['unsafe-link'],
-        commit: fixture.commit,
-        destinationPath: path.join(fixture.directory, 'link-snapshot'),
-        repositoryPath: fixture.repository,
-        tree: fixture.tree,
-      }),
-    ).rejects.toThrow('regular tracked file');
+      const fixture = await createGitFixture();
+      await expect(
+        createPreviewTrackedSourceSnapshot({
+          allowlist: ['unsafe-link'],
+          commit: fixture.commit,
+          destinationPath: path.join(fixture.directory, 'link-snapshot'),
+          repositoryPath: fixture.repository,
+          tree: fixture.tree,
+        }),
+      ).rejects.toThrow('regular tracked file');
+    },
+    GIT_SNAPSHOT_TEST_TIMEOUT_MS,
+  );
 
-    const snapshotPath = path.join(fixture.directory, 'drift-snapshot');
-    await createSnapshot(fixture, snapshotPath);
-    const targetPath = path.join(snapshotPath, 'source', 'src', 'App.tsx');
-    await chmod(targetPath, 0o644);
-    await writeFile(targetPath, 'export default function Changed() {}');
-    await expect(verifyPreviewTrackedSourceSnapshot(snapshotPath)).rejects.toThrow(
-      /blob does not match Git|content hash has changed/u,
-    );
-  });
+  it(
+    'rejects content drift after accepting a valid tracked snapshot',
+    async () => {
+      const fixture = await createGitFixture();
+      const snapshotPath = path.join(fixture.directory, 'drift-snapshot');
+      await createSnapshot(fixture, snapshotPath);
+      const targetPath = path.join(snapshotPath, 'source', 'src', 'App.tsx');
+      await chmod(targetPath, 0o644);
+      await writeFile(targetPath, 'export default function Changed() {}');
+      await expect(verifyPreviewTrackedSourceSnapshot(snapshotPath)).rejects.toThrow(
+        /blob does not match Git|content hash has changed/u,
+      );
+    },
+    GIT_SNAPSHOT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('audited dependency view', () => {
-  it('links approved packages, omits caches, and remaps the workspace package to snapshot source', async () => {
-    const fixture = await createGitFixture();
-    const snapshotPath = path.join(fixture.directory, 'dependency-snapshot');
-    const sourceManifest = await createSnapshot(fixture, snapshotPath);
-    const dependencyRoot = path.join(fixture.directory, 'installed', 'node_modules');
-    await createDependencyRoot(dependencyRoot);
+  it(
+    'links approved packages, omits caches, and remaps the workspace package to snapshot source',
+    async () => {
+      const fixture = await createGitFixture();
+      const snapshotPath = path.join(fixture.directory, 'dependency-snapshot');
+      const sourceManifest = await createSnapshot(fixture, snapshotPath);
+      const dependencyRoot = path.join(fixture.directory, 'installed', 'node_modules');
+      await createDependencyRoot(dependencyRoot);
 
-    const manifest = await createPreviewDependencyView({
-      approvedDependencyRoots: [dependencyRoot],
-      snapshotPath,
-      sourceManifest,
-      workspacePackageName: '@zuzu/client',
-      workspacePackagePath: 'zuzu/client',
-    });
-    const verified = await verifyPreviewDependencyView(snapshotPath);
-    const sourceRoot = path.join(snapshotPath, 'source');
-
-    expect(manifest.links.some((link) => link.packageName === 'react')).toBe(true);
-    expect(await realpath(path.join(sourceRoot, 'node_modules', 'react'))).toBe(
-      await realpath(path.join(dependencyRoot, 'react')),
-    );
-    expect(await realpath(path.join(sourceRoot, 'node_modules', '@zuzu', 'client'))).toBe(
-      await realpath(path.join(sourceRoot, 'zuzu', 'client')),
-    );
-    await expect(lstat(path.join(sourceRoot, 'node_modules', '.bin'))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
-    expect(verified.dependencyViewDigest).toBe(manifest.dependencyViewDigest);
-
-    await makeWritable(snapshotPath);
-    await writeFile(path.join(dependencyRoot, 'react', 'package.json'), '{"name":"changed"}');
-    await expect(verifyPreviewDependencyView(snapshotPath)).rejects.toThrow(
-      'package manifest changed',
-    );
-  });
-
-  it('rejects installed package links escaping an approved root', async () => {
-    const fixture = await createGitFixture();
-    const snapshotPath = path.join(fixture.directory, 'escaped-dependency-snapshot');
-    const sourceManifest = await createSnapshot(fixture, snapshotPath);
-    const dependencyRoot = path.join(fixture.directory, 'escaped-installed', 'node_modules');
-    const outsidePackage = path.join(fixture.directory, 'outside-package');
-    await mkdir(dependencyRoot, { recursive: true });
-    await mkdir(outsidePackage, { recursive: true });
-    await writeFile(path.join(outsidePackage, 'package.json'), '{"name":"escaped"}');
-    await writeFile(path.join(dependencyRoot, '.yarn-integrity'), '{}');
-    await symlink(outsidePackage, path.join(dependencyRoot, 'escaped'));
-
-    await expect(
-      createPreviewDependencyView({
+      const manifest = await createPreviewDependencyView({
         approvedDependencyRoots: [dependencyRoot],
         snapshotPath,
         sourceManifest,
         workspacePackageName: '@zuzu/client',
         workspacePackagePath: 'zuzu/client',
-      }),
-    ).rejects.toThrow('escaped its approved root');
-  });
+      });
+      const verified = await verifyPreviewDependencyView(snapshotPath);
+      const sourceRoot = path.join(snapshotPath, 'source');
 
-  it('keeps the workspace link valid at the final CLI destination', async () => {
-    const fixture = await createGitFixture();
-    const snapshotPath = path.join(fixture.directory, 'cli-snapshot');
-    const dependencyRoot = path.join(fixture.directory, 'cli-installed', 'node_modules');
-    await createDependencyRoot(dependencyRoot);
+      expect(manifest.links.some((link) => link.packageName === 'react')).toBe(true);
+      expect(await realpath(path.join(sourceRoot, 'node_modules', 'react'))).toBe(
+        await realpath(path.join(dependencyRoot, 'react')),
+      );
+      expect(await realpath(path.join(sourceRoot, 'node_modules', '@zuzu', 'client'))).toBe(
+        await realpath(path.join(sourceRoot, 'zuzu', 'client')),
+      );
+      await expect(lstat(path.join(sourceRoot, 'node_modules', '.bin'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect(verified.dependencyViewDigest).toBe(manifest.dependencyViewDigest);
 
-    await expect(
-      runPreviewImmutableSnapshotCli([
-        '--repository',
-        fixture.repository,
-        '--commit',
-        fixture.commit,
-        '--tree',
-        fixture.tree,
-        '--destination',
-        snapshotPath,
-        '--allow',
-        'package.json',
-        '--allow',
-        'yarn.lock',
-        '--allow',
-        'zuzu/client/package.json',
-        '--dependency-root',
-        dependencyRoot,
-        '--workspace-package-name',
-        '@zuzu/client',
-        '--workspace-package-path',
-        'zuzu/client',
-      ]),
-    ).resolves.toBe(0);
-    await expect(verifyPreviewDependencyView(snapshotPath)).resolves.toBeDefined();
-    expect(
-      await realpath(path.join(snapshotPath, 'source', 'node_modules', '@zuzu', 'client')),
-    ).toBe(await realpath(path.join(snapshotPath, 'source', 'zuzu', 'client')));
-  });
+      await makeWritable(snapshotPath);
+      await writeFile(path.join(dependencyRoot, 'react', 'package.json'), '{"name":"changed"}');
+      await expect(verifyPreviewDependencyView(snapshotPath)).rejects.toThrow(
+        'package manifest changed',
+      );
+    },
+    GIT_SNAPSHOT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'rejects installed package links escaping an approved root',
+    async () => {
+      const fixture = await createGitFixture();
+      const snapshotPath = path.join(fixture.directory, 'escaped-dependency-snapshot');
+      const sourceManifest = await createSnapshot(fixture, snapshotPath);
+      const dependencyRoot = path.join(fixture.directory, 'escaped-installed', 'node_modules');
+      const outsidePackage = path.join(fixture.directory, 'outside-package');
+      await mkdir(dependencyRoot, { recursive: true });
+      await mkdir(outsidePackage, { recursive: true });
+      await writeFile(path.join(outsidePackage, 'package.json'), '{"name":"escaped"}');
+      await writeFile(path.join(dependencyRoot, '.yarn-integrity'), '{}');
+      await symlink(outsidePackage, path.join(dependencyRoot, 'escaped'));
+
+      await expect(
+        createPreviewDependencyView({
+          approvedDependencyRoots: [dependencyRoot],
+          snapshotPath,
+          sourceManifest,
+          workspacePackageName: '@zuzu/client',
+          workspacePackagePath: 'zuzu/client',
+        }),
+      ).rejects.toThrow('escaped its approved root');
+    },
+    GIT_SNAPSHOT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'keeps the workspace link valid at the final CLI destination',
+    async () => {
+      const fixture = await createGitFixture();
+      const snapshotPath = path.join(fixture.directory, 'cli-snapshot');
+      const dependencyRoot = path.join(fixture.directory, 'cli-installed', 'node_modules');
+      await createDependencyRoot(dependencyRoot);
+
+      await expect(
+        runPreviewImmutableSnapshotCli([
+          '--repository',
+          fixture.repository,
+          '--commit',
+          fixture.commit,
+          '--tree',
+          fixture.tree,
+          '--destination',
+          snapshotPath,
+          '--allow',
+          'package.json',
+          '--allow',
+          'yarn.lock',
+          '--allow',
+          'zuzu/client/package.json',
+          '--dependency-root',
+          dependencyRoot,
+          '--workspace-package-name',
+          '@zuzu/client',
+          '--workspace-package-path',
+          'zuzu/client',
+        ]),
+      ).resolves.toBe(0);
+      await expect(verifyPreviewDependencyView(snapshotPath)).resolves.toBeDefined();
+      expect(
+        await realpath(path.join(snapshotPath, 'source', 'node_modules', '@zuzu', 'client')),
+      ).toBe(await realpath(path.join(snapshotPath, 'source', 'zuzu', 'client')));
+    },
+    GIT_SNAPSHOT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('snapshot inventory lineage', () => {
@@ -270,10 +316,19 @@ interface GitFixture {
   readonly tree: string;
 }
 
-/** Creates one committed repository whose tracked and excluded files exercise snapshot policy. */
+/** Copies a real committed repository so every test keeps independent Git and working-tree state. */
 async function createGitFixture(): Promise<GitFixture> {
+  if (repositoryTemplate === undefined) throw new Error('Git fixture template is missing.');
   const directory = await mkdtemp(path.join(tmpdir(), 'preview-snapshot-test-'));
   temporaryDirectories.push(directory);
+  const repository = path.join(directory, 'repository');
+  await cp(repositoryTemplate.repository, repository, { recursive: true, verbatimSymlinks: true });
+  return { ...repositoryTemplate, directory, repository };
+}
+
+/** Commits the common input once; tests copy it before invoking snapshot policy or mutating files. */
+async function createGitTemplate(): Promise<GitFixture> {
+  const directory = await mkdtemp(path.join(tmpdir(), 'preview-snapshot-template-'));
   const repository = path.join(directory, 'repository');
   await mkdir(path.join(repository, 'src'), { recursive: true });
   await mkdir(path.join(repository, 'zuzu', 'client'), { recursive: true });
@@ -286,13 +341,35 @@ async function createGitFixture(): Promise<GitFixture> {
   );
   await writeFile(path.join(repository, '.env.production'), 'SECRET=test');
   await symlink('src/App.tsx', path.join(repository, 'unsafe-link'));
-  await run('git', ['init', '-q', repository]);
-  await run('git', ['-C', repository, 'config', 'user.email', 'snapshot@example.invalid']);
-  await run('git', ['-C', repository, 'config', 'user.name', 'Snapshot Test']);
-  await run('git', ['-C', repository, 'add', '.']);
-  await run('git', ['-C', repository, 'commit', '-qm', 'fixture']);
-  const commit = (await run('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim();
-  const tree = (await run('git', ['-C', repository, 'rev-parse', 'HEAD^{tree}'])).stdout.trim();
+  await run('git', ['-c', 'core.fsmonitor=false', 'init', '-q', repository]);
+  await run('git', ['-c', 'core.fsmonitor=false', '-C', repository, 'add', '.']);
+  await run('git', [
+    '-c',
+    'core.fsmonitor=false',
+    '-c',
+    'user.email=snapshot@example.invalid',
+    '-c',
+    'user.name=Snapshot Test',
+    '-C',
+    repository,
+    'commit',
+    '-qm',
+    'fixture',
+  ]);
+  const [commit, tree] = (
+    await run('git', [
+      '-c',
+      'core.fsmonitor=false',
+      '-C',
+      repository,
+      'rev-parse',
+      'HEAD',
+      'HEAD^{tree}',
+    ])
+  ).stdout
+    .trim()
+    .split(/\r?\n/u);
+  if (commit === undefined || tree === undefined) throw new Error('Git fixture refs are missing.');
   return { commit, directory, repository, tree };
 }
 

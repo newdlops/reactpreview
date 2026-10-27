@@ -22,6 +22,7 @@ export interface AssistanceFixture {
   readonly choice: (options?: Record<string, unknown>) => unknown;
   readonly calls: {
     readonly choiceAttempts: readonly {
+      readonly automatic?: boolean;
       readonly candidateId?: string;
       readonly id: string;
       readonly ordinal?: number;
@@ -166,7 +167,7 @@ export function createAssistanceFixture(): AssistanceFixture {
       const smartFillPreviewInspectorTargetApplicationPath = (...args) => (calls.paths.push(args), true);
       const smartFillPreviewInspectorTargetFailure = (failure, _commit, neuralResidualDecision, options = {}) => {
         calls.failures.push(failure.id);
-        calls.choiceAttempts.push({ candidateId: neuralResidualDecision?.candidateId, id: failure.id,
+        calls.choiceAttempts.push({ automatic: options.automatic, candidateId: neuralResidualDecision?.candidateId, id: failure.id,
           ordinal: options.finiteChoiceOrdinal, signature: options.finiteChoiceSignature });
         const finiteChoice = readPreviewInspectorTargetFailurePropChoices(failure)[0];
         const candidate = finiteChoice?.candidates?.[(options.finiteChoiceOrdinal ?? 1) - 1];

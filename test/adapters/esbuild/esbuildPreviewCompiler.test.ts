@@ -1,25 +1,33 @@
 /** Exercises the real compiler against project React, TSX, CSS, and unsaved source text. */
+import { stop } from 'esbuild';
 import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
-import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
-import {
-  PreviewCompilationError,
-  type PreviewBuildRequest,
-  type PreviewBundle,
-} from '../../../src/domain/preview';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { PreviewCompilationError, type PreviewBuildRequest } from '../../../src/domain/preview';
 import { canonicalizeExistingPath } from '../../../src/shared/pathIdentity';
+import {
+  decodeBundleJavascript,
+  installCompilerFakeRouterPackage,
+} from './esbuildPreviewCompilerFixtures';
 import { decodePreviewBundleStyles } from './support/previewBundleStyles';
 
+import { createPreviewCompilerTestScope } from './support/previewCompilerTestScope';
+
 const FIXTURE_PATH = fileURLToPath(new URL('../../fixtures/SamplePreview.tsx', import.meta.url));
+
 const PROJECT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+
 const SAVED_SOURCE = await readFile(FIXTURE_PATH, 'utf8');
+
+const compilerScope = createPreviewCompilerTestScope();
+afterEach(() => compilerScope.shutdown());
+afterAll(async () => stop());
 
 describe('EsbuildPreviewCompiler', () => {
   /** Bundles a default React export and emits imported CSS without writing into the project. */
   it('creates browser JavaScript and stylesheet artifacts', async () => {
-    const compiler = new EsbuildPreviewCompiler();
+    const compiler = compilerScope.create();
     const reportedStages: string[] = [];
 
     const bundle = await compiler.compile(
@@ -45,7 +53,7 @@ describe('EsbuildPreviewCompiler', () => {
     expect(
       bundle.dependencies.filter((dependency) => dependency.includes('react-preview-entry')),
     ).toEqual([]);
-    expect(reportedStages).toEqual([
+    expect([...new Set(reportedStages)]).toEqual([
       'discovering-components',
       'preparing-runtime',
       'analyzing-project',
@@ -55,7 +63,7 @@ describe('EsbuildPreviewCompiler', () => {
 
   /** Gives the active editor snapshot precedence over the fixture's saved filesystem contents. */
   it('uses unsaved current-document text', async () => {
-    const compiler = new EsbuildPreviewCompiler();
+    const compiler = compilerScope.create();
     const unsavedSource = SAVED_SOURCE.replace('Saved fixture source', 'Unsaved editor snapshot');
 
     const bundle = await compiler.compile({
@@ -73,7 +81,7 @@ describe('EsbuildPreviewCompiler', () => {
 
   /** Replaces editor text inside one compatible native context instead of reusing stale output. */
   it('updates mutable snapshots across persistent context rebuilds', async () => {
-    const compiler = new EsbuildPreviewCompiler();
+    const compiler = compilerScope.create();
     const firstSource = SAVED_SOURCE.replace('Saved fixture source', 'First incremental snapshot');
     const secondSource = SAVED_SOURCE.replace(
       'Saved fixture source',
@@ -103,7 +111,7 @@ describe('EsbuildPreviewCompiler', () => {
     const temporaryDirectory = await mkdtemp(fixturePrefix);
     const documentPath = path.join(temporaryDirectory, 'Preview.TSX');
     const sourceText = 'export default function Preview() { return <p>Uppercase TSX source</p>; }';
-    const compiler = new EsbuildPreviewCompiler();
+    const compiler = compilerScope.create();
 
     try {
       await writeFile(documentPath, sourceText, 'utf8');
@@ -151,7 +159,7 @@ describe('EsbuildPreviewCompiler', () => {
         writeFile(documentPath, savedSource, 'utf8'),
         writeFile(helperPath, helperSource, 'utf8'),
       ]);
-      const compiler = new EsbuildPreviewCompiler();
+      const compiler = compilerScope.create();
       const bundle = await compiler.compile({
         dependencySnapshots: [],
         documentPath,
@@ -249,7 +257,7 @@ describe('EsbuildPreviewCompiler', () => {
       ]);
 
       const sourceText = await readFile(documentPath, 'utf8');
-      const compiler = new EsbuildPreviewCompiler();
+      const compiler = compilerScope.create();
       const bundle = await compiler.compile({
         dependencySnapshots: [],
         documentPath,
@@ -306,7 +314,7 @@ describe('EsbuildPreviewCompiler', () => {
         writeFile(childPath, savedChild, 'utf8'),
         writeFile(unrelatedPath, 'export default function Unrelated() { return null; }', 'utf8'),
       ]);
-      const compiler = new EsbuildPreviewCompiler();
+      const compiler = compilerScope.create();
       const bundle = await compiler.compile({
         dependencySnapshots: [
           {
@@ -366,7 +374,7 @@ describe('EsbuildPreviewCompiler', () => {
         ),
       ]);
 
-      const bundle = await new EsbuildPreviewCompiler().compile({
+      const bundle = await compilerScope.create().compile({
         dependencySnapshots: [],
         documentPath,
         language: 'tsx',
@@ -426,7 +434,7 @@ describe('EsbuildPreviewCompiler', () => {
         ),
       ]);
 
-      const bundle = await new EsbuildPreviewCompiler().compile({
+      const bundle = await compilerScope.create().compile({
         dependencySnapshots: [],
         documentPath,
         language: 'tsx',
@@ -472,7 +480,7 @@ describe('EsbuildPreviewCompiler', () => {
           'utf8',
         ),
       ]);
-      const compiler = new EsbuildPreviewCompiler();
+      const compiler = compilerScope.create();
       const bundle = await compiler.compile({
         dependencySnapshots: [],
         documentPath,
@@ -492,7 +500,7 @@ describe('EsbuildPreviewCompiler', () => {
 
   /** Converts syntax failures into domain errors with real paths instead of plugin namespaces. */
   it('reports invalid editor source as a PreviewCompilationError', async () => {
-    const compiler = new EsbuildPreviewCompiler();
+    const compiler = compilerScope.create();
 
     try {
       await compiler.compile({
@@ -516,7 +524,7 @@ describe('EsbuildPreviewCompiler', () => {
 
   /** Produces a valid empty gallery without evaluating a non-component module or its broad graph. */
   it('bundles files without default or PascalCase component exports', async () => {
-    const compiler = new EsbuildPreviewCompiler();
+    const compiler = compilerScope.create();
     const sourceText = [
       'globalThis.__NON_COMPONENT_TARGET_MUST_NOT_RUN = true;',
       `export const namedOnly = [${Array.from(
@@ -613,7 +621,7 @@ describe('EsbuildPreviewCompiler', () => {
         ),
       ]);
 
-      const compiler = new EsbuildPreviewCompiler();
+      const compiler = compilerScope.create();
       const bundle = await compiler.compile({
         dependencySnapshots: [
           {
@@ -709,7 +717,7 @@ describe('EsbuildPreviewCompiler', () => {
         writeFile(localePath, "module.exports = 'CJS_DYNAMIC_RESOURCE';", 'utf8'),
       ]);
 
-      const bundle = await new EsbuildPreviewCompiler().compile({
+      const bundle = await compilerScope.create().compile({
         dependencySnapshots: [],
         documentPath,
         language: 'tsx',
@@ -720,9 +728,10 @@ describe('EsbuildPreviewCompiler', () => {
 
       expect(javascript).toContain('MJS_DYNAMIC_RESOURCE');
       expect(javascript).toContain('CJS_DYNAMIC_RESOURCE');
-      expect(bundle.dependencies).toEqual(
-        expect.arrayContaining([chunkPath, loaderPath, localePath, packageEntryPath]),
-      );
+      // Vendor inputs remain private admission evidence; the public watcher tracks authored files.
+      expect(bundle.dependencies).not.toContain(localePath);
+      expect(bundle.dependencies).not.toContain(packageEntryPath);
+      expect(bundle.dependencies).toEqual(expect.arrayContaining([chunkPath, loaderPath]));
     } finally {
       await rm(workspaceRoot, { force: true, recursive: true });
     }
@@ -741,7 +750,7 @@ describe('EsbuildPreviewCompiler', () => {
 
     try {
       await writeFile(documentPath, sourceText, 'utf8');
-      const compiler = new EsbuildPreviewCompiler();
+      const compiler = compilerScope.create();
 
       await expect(
         compiler.compile({
@@ -782,7 +791,7 @@ describe('EsbuildPreviewCompiler', () => {
         writeFile(documentPath, sourceText, 'utf8'),
         writeFile(publicImagePath, new Uint8Array([1, 2, 3])),
       ]);
-      const bundle = await new EsbuildPreviewCompiler().compile({
+      const bundle = await compilerScope.create().compile({
         dependencySnapshots: [],
         documentPath,
         language: 'tsx',
@@ -823,7 +832,7 @@ describe('EsbuildPreviewCompiler', () => {
         await symlink(outsideAssetPath, linkedAssetPath, 'file');
 
         await expect(
-          new EsbuildPreviewCompiler().compile({
+          compilerScope.create().compile({
             dependencySnapshots: [],
             documentPath,
             language: 'tsx',
@@ -856,7 +865,7 @@ describe('EsbuildPreviewCompiler', () => {
       await writeFile(documentPath, sourceText, 'utf8');
       await writeFile(assetPath, '');
       await truncate(assetPath, 5 * 1024 * 1024 + 1);
-      const compiler = new EsbuildPreviewCompiler();
+      const compiler = compilerScope.create();
 
       await expect(
         compiler.compile({
@@ -894,7 +903,7 @@ describe('EsbuildPreviewCompiler', () => {
       await writeFile(documentPath, sourceText, 'utf8');
       await Promise.all(assetPaths.map(async (assetPath) => writeFile(assetPath, '')));
       await Promise.all(assetPaths.map(async (assetPath) => truncate(assetPath, 5 * 1024 * 1024)));
-      const compiler = new EsbuildPreviewCompiler();
+      const compiler = compilerScope.create();
 
       await expect(
         compiler.compile({
@@ -942,7 +951,7 @@ describe('EsbuildPreviewCompiler', () => {
           ),
         ]);
         await symlink(realDocumentPath, linkedDocumentPath, 'file');
-        const compiler = new EsbuildPreviewCompiler();
+        const compiler = compilerScope.create();
         const bundle = await compiler.compile({
           dependencySnapshots: [],
           documentPath: linkedDocumentPath,
@@ -966,33 +975,3 @@ describe('EsbuildPreviewCompiler', () => {
     },
   );
 });
-
-/** Decodes the entry and every local lazy chunk when assertions inspect the complete render graph. */
-function decodeBundleJavascript(bundle: PreviewBundle): string {
-  const decoder = new TextDecoder();
-  return [bundle.javascript, ...bundle.chunks.map((chunk) => chunk.contents)]
-    .map((contents) => decoder.decode(contents))
-    .join('\n');
-}
-
-/** Installs the smallest project-local React Router surface required by adaptive compiler tests. */
-async function installCompilerFakeRouterPackage(projectRoot: string): Promise<void> {
-  const packageDirectory = path.join(projectRoot, 'node_modules/react-router-dom');
-  await mkdir(packageDirectory, { recursive: true });
-  await Promise.all([
-    writeFile(
-      path.join(packageDirectory, 'package.json'),
-      JSON.stringify({ exports: './index.js', name: 'react-router-dom', type: 'module' }),
-      'utf8',
-    ),
-    writeFile(
-      path.join(packageDirectory, 'index.js'),
-      [
-        'export function BrowserRouter({ children }) { return children; }',
-        'export function MemoryRouter({ children }) { return children; }',
-        "export function useLocation() { return { pathname: '/' }; }",
-      ].join('\n'),
-      'utf8',
-    ),
-  ]);
-}

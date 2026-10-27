@@ -212,7 +212,8 @@ describe('collectPreviewReduxStateContainerPaths', () => {
       ].join('\n'),
     );
 
-    expect(paths).toEqual([]);
+    expect(paths).toEqual([['session']]);
+    expect(paths).not.toContainEqual(['session', 'status']);
   });
 
   /** Supports inline input selectors while rejecting a shadowed factory parameter. */

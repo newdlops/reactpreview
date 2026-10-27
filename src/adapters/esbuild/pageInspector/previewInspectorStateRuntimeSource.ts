@@ -42,8 +42,26 @@ function normalizePreviewInspectorProps(value) {
   return normalized;
 }
 
-/** Produces bounded JSON for the editor while skipping functions, symbols, cycles, and prototypes. */
-function stringifyPreviewInspectorProps(value) {
+/**
+ * Creates a JSON-only element view without its private React owner graph. Copying descriptors
+ * preserves every other field without reading owner accessors or changing the live props object.
+ * Ordinary application records named _owner remain ordinary data.
+ */
+function copyPreviewInspectorElementWithoutOwner(value) {
+  const marker = Object.getOwnPropertyDescriptor(value, '$$typeof')?.value;
+  if (marker !== Symbol.for('react.element') && marker !== Symbol.for('react.transitional.element')) {
+    return value;
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  delete descriptors._owner;
+  return Object.defineProperties(Object.create(null), descriptors);
+}
+
+/**
+ * Produces JSON with the existing function, symbol, cycle and prototype filtering. Base-props
+ * fingerprints can omit React ownership; editor and persisted user JSON retain default semantics.
+ */
+function stringifyPreviewInspectorProps(value, options) {
   const seen = new WeakSet();
   try {
     return JSON.stringify(
@@ -67,6 +85,9 @@ function stringifyPreviewInspectorProps(value) {
             return '[Circular]';
           }
           seen.add(propertyValue);
+          if (options?.omitReactOwnership === true) {
+            return copyPreviewInspectorElementWithoutOwner(propertyValue);
+          }
         }
         return propertyValue;
       },
@@ -114,10 +135,16 @@ function persistPreviewInspectorState() {
         renderScenario: readPreviewInspectorRenderScenario(),
         selectedExportName: previewInspectorSession.selectedExportName,
         selectedPageCandidateId: previewInspectorSession.selectedPageCandidateId,
+        nextAppNavigationTrail: typeof serializePreviewInspectorNextAppNavigationTrail === 'function'
+          ? serializePreviewInspectorNextAppNavigationTrail() : undefined,
         selectedTreeNodeId: previewInspectorSession.selectedTreeNodeId,
         userSelectedPageCandidateId: previewInspectorSession.userSelectedPageCandidateId,
         verifiedPageCandidateId: previewInspectorSession.verifiedPageCandidateId,
         verifiedPageContextScope: previewInspectorSession.verifiedPageContextScope,
+        pageContextContinuity:
+          typeof serializePreviewInspectorPageContextContinuity === 'function'
+            ? serializePreviewInspectorPageContextContinuity()
+            : undefined,
       },
     });
   } catch {

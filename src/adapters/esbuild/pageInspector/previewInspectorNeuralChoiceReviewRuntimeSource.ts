@@ -21,6 +21,13 @@ function formatPreviewInspectorNeuralChoiceReviewValue(value, limit = 64) {
 function readPreviewInspectorNeuralChoiceReview(userChoices, userChoice) {
   const choices = Array.isArray(userChoices) && userChoices.length > 0 ? userChoices : [userChoice].filter(Boolean);
   const first = choices[0];
+  const diagnosis = first?.surface === 'page-context' &&
+    typeof readPreviewInspectorCurrentVisibilityDiagnosis === 'function'
+    ? readPreviewInspectorCurrentVisibilityDiagnosis() : undefined;
+  if (diagnosis?.kind === 'unmounted-target') return {
+    action: 'target-evidence', key: diagnosis.key, hasOptions: false, label: diagnosis.actionLabel,
+    lines: ['The target mounted earlier and is not mounted now. Inspect its recorded render and conditions.'],
+  };
   if (first?.surface === 'page-context') return {
     hasOptions: false, label: 'Compare page paths',
     lines: ['Choose which consuming page should render the selected file.'],
@@ -48,6 +55,15 @@ function readPreviewInspectorNeuralChoiceReview(userChoices, userChoice) {
   if (decisions.length > 3) lines.push('+' + String(decisions.length - 3) +
     (decisions.length === 4 ? ' more decision in the list' : ' more decisions in the list'));
   return { hasOptions: true, label, lines };
+}
+
+/** Revalidates retained evidence buttons without selecting a path or applying any value. */
+function activatePreviewInspectorNeuralTargetEvidenceReview(review) {
+  if (review?.action !== 'target-evidence') return false;
+  const diagnosis = typeof readPreviewInspectorCurrentVisibilityDiagnosis === 'function'
+    ? readPreviewInspectorCurrentVisibilityDiagnosis() : undefined;
+  return diagnosis?.kind === 'unmounted-target' && diagnosis.key === review.key
+    ? activatePreviewInspectorVisibilityDiagnosis(diagnosis) : false;
 }
 
 /** Opens the inline editor in both surfaces; the details button keeps its existing separate action. */

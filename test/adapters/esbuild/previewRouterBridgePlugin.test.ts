@@ -1,9 +1,11 @@
 /**
  * Verifies optional project React Router resolution and the bounded static MemoryRouter wrapper.
  * Each behavior runs from a real esbuild bundle in a VM so package identity and generated runtime
- * validation are exercised without installing react-router-dom in the extension itself.
+ * validation use controlled project packages. The absence case lives outside the repository's
+ * dependency ancestry so test-only Router packages cannot change its capability state.
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { createContext, runInContext, type Context } from 'node:vm';
 import { fileURLToPath } from 'node:url';
@@ -42,21 +44,27 @@ describe('createPreviewRouterBridgePlugin', () => {
 
   /** Treats an absent project dependency as a supported no-op capability state. */
   it('provides an identity wrapper when the project has no react-router-dom package', async () => {
-    const projectRoot = await createTemporaryProject('router-absent-preview-');
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'router-absent-preview-'));
 
     try {
+      await writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8');
       const context = await executeRouterBridgeFixture(
         projectRoot,
         true,
         [
           "import { createRouterPreviewElement } from 'react-preview:router';",
+          "import { readPreviewRuntimeStatus } from 'react-preview:router';",
           "const child = { marker: 'NO_ROUTER_CHILD' };",
           'globalThis.__routerBridgeResult =',
           '  createRouterPreviewElement(child, { configuration: undefined }) === child;',
+          'globalThis.__routerBridgeStatus = readPreviewRuntimeStatus();',
         ].join('\n'),
       );
 
       expect(context.__routerBridgeResult).toBe(true);
+      expect(context.__routerBridgeStatus).toBe(
+        'requested by target graph, but react-router-dom was not resolved from the target project',
+      );
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
     }
@@ -307,76 +315,84 @@ describe('createPreviewRouterBridgePlugin', () => {
   });
 
   /** Leaves Page Inspector unwrapped so its selected candidate can own exactly one Router policy. */
-  it('delegates Page Inspector routing to the candidate-local boundary', async () => {
-    const projectRoot = await createTemporaryProject('router-page-inspector-preview-');
+  it.each([true, false])(
+    'delegates Page Inspector routing with global wrapping %s',
+    async (automatic) => {
+      const projectRoot = await createTemporaryProject('router-page-inspector-preview-');
 
-    try {
-      await installFakeReactRouterDomPackage(projectRoot, true);
-      const context = await executeRouterBridgeFixture(
-        projectRoot,
-        true,
-        [
-          "import { createRouterPreviewElement, readPreviewRuntimeStatus } from 'react-preview:router';",
-          "const child = { marker: 'PAGE_INSPECTOR_CHILD' };",
-          'const rendered = createRouterPreviewElement(child, {',
-          "  configuration: { initialEntries: ['/contracts'] },",
-          "  renderMode: 'page-inspector',",
-          '});',
-          'globalThis.__routerBridgeResult = {',
-          '  childPreserved: rendered === child,',
-          '  status: readPreviewRuntimeStatus(),',
-          '};',
-        ].join('\n'),
-      );
+      try {
+        await installFakeReactRouterDomPackage(projectRoot, true);
+        const context = await executeRouterBridgeFixture(
+          projectRoot,
+          true,
+          [
+            "import { createRouterPreviewElement, readPreviewRuntimeStatus } from 'react-preview:router';",
+            "const child = { marker: 'PAGE_INSPECTOR_CHILD' };",
+            'const rendered = createRouterPreviewElement(child, {',
+            "  configuration: { initialEntries: ['/contracts'] },",
+            "  renderMode: 'page-inspector',",
+            '});',
+            'globalThis.__routerBridgeResult = {',
+            '  childPreserved: rendered === child,',
+            '  status: readPreviewRuntimeStatus(),',
+            '};',
+          ].join('\n'),
+          automatic,
+        );
 
-      expect(context.__routerBridgeResult).toEqual({
-        childPreserved: true,
-        status:
-          'available: Page Inspector delegates Router ownership to each selected page candidate',
-      });
-    } finally {
-      await rm(projectRoot, { force: true, recursive: true });
-    }
-  });
+        expect(context.__routerBridgeResult).toEqual({
+          childPreserved: true,
+          status:
+            'available: Page Inspector delegates Router ownership to each selected page candidate',
+        });
+      } finally {
+        await rm(projectRoot, { force: true, recursive: true });
+      }
+    },
+  );
 
   /** Supplies detached page candidates while inheriting setup or graph Router context exactly once. */
-  it('adds a non-nesting candidate-local MemoryRouter during React render', async () => {
-    const projectRoot = await createTemporaryProject('router-candidate-boundary-preview-');
+  it.each([true, false])(
+    'adds one candidate-local MemoryRouter with global wrapping %s',
+    async (automatic) => {
+      const projectRoot = await createTemporaryProject('router-candidate-boundary-preview-');
 
-    try {
-      await installFakeReactRouterDomPackage(projectRoot, true);
-      const context = await executeRouterBridgeFixture(
-        projectRoot,
-        true,
-        [
-          "import * as React from 'react';",
-          "import { renderToStaticMarkup } from 'react-dom/server';",
-          "import { createNestedRouterPreviewElement } from 'react-preview:router';",
-          "import { MemoryRouter, RouterDepthProbe } from 'react-router-dom';",
-          'function Candidate() {',
-          '  return createNestedRouterPreviewElement(React.createElement(RouterDepthProbe), {});',
-          '}',
-          'const detached = renderToStaticMarkup(React.createElement(Candidate));',
-          'const inherited = renderToStaticMarkup(',
-          '  React.createElement(MemoryRouter, null, React.createElement(Candidate)),',
-          ');',
-          'const owned = renderToStaticMarkup(createNestedRouterPreviewElement(',
-          '  React.createElement(MemoryRouter, null, React.createElement(RouterDepthProbe)),',
-          '  { ownsRouter: true },',
-          '));',
-          'globalThis.__routerBridgeResult = { detached, inherited, owned };',
-        ].join('\n'),
-      );
+      try {
+        await installFakeReactRouterDomPackage(projectRoot, true);
+        const context = await executeRouterBridgeFixture(
+          projectRoot,
+          true,
+          [
+            "import * as React from 'react';",
+            "import { renderToStaticMarkup } from 'react-dom/server';",
+            "import { createNestedRouterPreviewElement } from 'react-preview:router';",
+            "import { MemoryRouter, RouterDepthProbe } from 'react-router-dom';",
+            'function Candidate() {',
+            '  return createNestedRouterPreviewElement(React.createElement(RouterDepthProbe), {});',
+            '}',
+            'const detached = renderToStaticMarkup(React.createElement(Candidate));',
+            'const inherited = renderToStaticMarkup(',
+            '  React.createElement(MemoryRouter, null, React.createElement(Candidate)),',
+            ');',
+            'const owned = renderToStaticMarkup(createNestedRouterPreviewElement(',
+            '  React.createElement(MemoryRouter, null, React.createElement(RouterDepthProbe)),',
+            '  { ownsRouter: true },',
+            '));',
+            'globalThis.__routerBridgeResult = { detached, inherited, owned };',
+          ].join('\n'),
+          automatic,
+        );
 
-      expect(context.__routerBridgeResult).toEqual({
-        detached: '<span>1</span>',
-        inherited: '<span>1</span>',
-        owned: '<span>1</span>',
-      });
-    } finally {
-      await rm(projectRoot, { force: true, recursive: true });
-    }
-  });
+        expect(context.__routerBridgeResult).toEqual({
+          detached: '<span>1</span>',
+          inherited: '<span>1</span>',
+          owned: '<span>1</span>',
+        });
+      } finally {
+        await rm(projectRoot, { force: true, recursive: true });
+      }
+    },
+  );
 
   /** Reports and applies the compiler-inferred target location for a detached page shell. */
   it('uses a statically inferred candidate route as MemoryRouter history', async () => {

@@ -50,9 +50,7 @@ export function readPreviewRenderInvocation(
   const deferred = isPreviewRenderInvocationDeferred(identifier, boundary);
   const localOwnerNames = collectPreviewRenderLocalComponentOwnerNames(identifier, boundary);
   const localOwnerEvidence =
-    localOwnerNames.length === 0
-      ? {}
-      : { localOwnerNames: Object.freeze(localOwnerNames) };
+    localOwnerNames.length === 0 ? {} : { localOwnerNames: Object.freeze(localOwnerNames) };
   const attribute = findContainingJsxAttribute(identifier, boundary);
   if (attribute !== undefined) {
     const slotName = attribute.name.getText();

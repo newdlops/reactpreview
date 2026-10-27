@@ -156,13 +156,22 @@ export async function verifyPreviewDependencyView(
     'manifests',
     'dependency-view-manifest.json',
   );
-  const parsed = JSON.parse(await readFile(manifestPath, 'utf8')) as PreviewDependencyViewManifest;
-  const { dependencyViewDigest: _digest, ...unsigned } = parsed;
+  const manifestValue: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
   if (
-    parsed.kind !== 'react-preview-dependency-view' ||
-    parsed.version !== 1 ||
+    typeof manifestValue !== 'object' ||
+    manifestValue === null ||
+    !('kind' in manifestValue) ||
+    manifestValue.kind !== 'react-preview-dependency-view' ||
+    !('version' in manifestValue) ||
+    manifestValue.version !== 1
+  ) {
+    throw new Error('Dependency view manifest identity is invalid.');
+  }
+  const parsed = manifestValue as PreviewDependencyViewManifest;
+  const { dependencyViewDigest, ...unsigned } = parsed;
+  if (
     parsed.policyDigest !== createDependencyPolicyDigest() ||
-    digestPreviewManifest(unsigned) !== parsed.dependencyViewDigest
+    digestPreviewManifest(unsigned) !== dependencyViewDigest
   ) {
     throw new Error('Dependency view manifest identity is invalid.');
   }
@@ -232,6 +241,7 @@ export async function verifyPreviewDependencyView(
   return parsed;
 }
 
+/** Enumerates ordinary and scoped installed packages and admits each through the approved-root boundary. */
 async function collectDependencyRootLinks(
   dependencyRoot: string,
   linksByName: Map<string, PreviewDependencyViewLink>,
@@ -259,6 +269,7 @@ async function collectDependencyRootLinks(
   }
 }
 
+/** Admits regular package directories or confined links with a readable manifest; conflicting roots throw. */
 async function admitDependencyPackage(
   packageName: string,
   packagePath: string,
@@ -291,6 +302,7 @@ async function admitDependencyPackage(
   linksByName.set(packageName, link);
 }
 
+/** Enumerates view package names, rejecting hidden entries and malformed scope directories. */
 async function collectDependencyViewNames(nodeModulesPath: string): Promise<Set<string>> {
   const names = new Set<string>();
   for (const entry of await readdir(nodeModulesPath, { withFileTypes: true })) {
@@ -308,6 +320,7 @@ async function collectDependencyViewNames(nodeModulesPath: string): Promise<Set<
   return names;
 }
 
+/** Recursively removes write permissions from snapshot files and directories without following symlinks. */
 async function makeSnapshotReadOnly(snapshotPath: string): Promise<void> {
   const visit = async (candidatePath: string): Promise<void> => {
     const metadata = await lstat(candidatePath);
@@ -326,6 +339,7 @@ async function makeSnapshotReadOnly(snapshotPath: string): Promise<void> {
   await visit(snapshotPath);
 }
 
+/** Rejects absolute, backslash, empty, and parent-traversing workspace package paths before snapshot linking. */
 function normalizeWorkspacePackagePath(candidatePath: string): string {
   if (
     candidatePath.length === 0 ||
@@ -338,6 +352,7 @@ function normalizeWorkspacePackagePath(candidatePath: string): string {
   return candidatePath;
 }
 
+/** Requires the destination to be absent; filesystem failures other than missing paths propagate. */
 async function assertMissing(candidatePath: string, message: string): Promise<void> {
   try {
     await lstat(candidatePath);
@@ -348,12 +363,14 @@ async function assertMissing(candidatePath: string, message: string): Promise<vo
   }
 }
 
+/** Returns the SHA-256 of exact file bytes; unreadable files reject the calling admission step. */
 async function hashFile(filePath: string): Promise<string> {
   return createHash('sha256')
     .update(await readFile(filePath))
     .digest('hex');
 }
 
+/** Checks lexical containment using relative path segments rather than a shared string prefix. */
 function isPathInsideOrEqual(rootPath: string, candidatePath: string): boolean {
   const relativePath = path.relative(rootPath, candidatePath);
   return (
@@ -364,6 +381,7 @@ function isPathInsideOrEqual(rootPath: string, candidatePath: string): boolean {
   );
 }
 
+/** Hashes the fixed source, dependency, and explicit workspace-link admission rules. */
 function createDependencyPolicyDigest(): string {
   return digestPreviewManifest({
     dependencyRule: 'canonical-realpath-inside-approved-root',

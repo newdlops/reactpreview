@@ -1,4 +1,4 @@
-import { build, type Plugin } from 'esbuild';
+import { build, type BuildResult, type Plugin } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import {
   PREVIEW_INSPECTOR_PAGE_EXECUTION_SPECIFIER,
@@ -233,6 +233,7 @@ describe('registerPreviewInspectorPageExecutionEntryPlugin', () => {
   });
 });
 
+/** Creates an exact named-root fixture whose missing default export must not fall back to its target. */
 function createNamedRootCandidate(): PreviewInspectorPageExecutionCandidate {
   return {
     browserCandidate: {
@@ -288,13 +289,14 @@ function createNamedRootCandidate(): PreviewInspectorPageExecutionCandidate {
   } as unknown as PreviewInspectorPageExecutionCandidate;
 }
 
+/** Bundles the named owner and target through the real entry plugin without writing files. */
 async function buildNamedRoot(options: {
   readonly candidate: PreviewInspectorPageExecutionCandidate;
   readonly executionRootModuleContract: ReturnType<
     typeof createPreviewInspectorExecutionRootModuleContract
   >;
   readonly ownerSource: string;
-}) {
+}): Promise<BuildResult<{ write: false }>> {
   const plugin: Plugin = {
     name: 'test-named-page-execution-entry',
     setup(build_): void {

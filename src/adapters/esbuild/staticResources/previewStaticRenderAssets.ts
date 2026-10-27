@@ -429,7 +429,7 @@ function splitBrowserAssetPath(value: string): {
 
 /** Reports whether one absolute candidate remains lexically inside the trusted workspace. */
 function isPathInside(directoryPath: string, candidatePath: string): boolean {
-  const relativePath = path.relative(path.resolve(directoryPath), path.resolve(candidatePath));
+  const relativePath = path.relative(directoryPath, candidatePath);
   return (
     relativePath.length === 0 || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
   );

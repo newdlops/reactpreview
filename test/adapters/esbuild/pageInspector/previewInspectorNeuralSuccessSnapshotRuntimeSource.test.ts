@@ -50,6 +50,84 @@ function createNeuralSuccessSnapshotFixture(): NeuralSuccessSnapshotFixture {
 }
 
 describe('Preview Inspector neural success snapshot runtime source', () => {
+  /** Passive observed values are not controls; explicit choices and active hooks still own their id. */
+  it.each(['observation', 'smart', 'signature', 'manual', 'active'])(
+    'keeps %s hook disappearance consistent with the state that a checkpoint can restore',
+    (mode) => {
+      const sandbox: { __result?: unknown } = {};
+      vm.runInNewContext(
+        `
+          const mode = ${JSON.stringify(mode)};
+          const PREVIEW_INSPECTOR_NEURAL_SUCCESS_VALUE_LIMIT = 64;
+          const previewInspectorSession = {
+            selectedExportName: 'Panel', selectedPageCandidateId: 'page',
+            runtimeFallbacks: new Map([
+              ['context', { passive: mode !== 'active' }], ['query', {}],
+            ]),
+            runtimeFallbackValues: new Map([
+              ['context', { id: 'observed-provider' }], ['query', { rows: [1] }],
+            ]),
+            runtimeFallbackSmartIds: new Set(mode === 'smart' ? ['context'] : []),
+            runtimeFallbackSmartPathSignatures:
+              new Map(mode === 'signature' ? [['context', 'rows[].id']] : []),
+            runtimeFallbackOverrides: new Map(mode === 'manual' ? [['context', {}]] : []),
+          };
+          ${createPreviewInspectorNeuralSuccessSnapshotRuntimeSource()}
+          const checkpoint = createPreviewInspectorNeuralSuccessSnapshot({ targetExportName: 'Panel' });
+          previewInspectorSession.runtimeFallbacks.delete('context');
+          const current = createPreviewInspectorNeuralSuccessSnapshot({ targetExportName: 'Panel' });
+          globalThis.__result = {
+            ids: checkpoint.runtimeFallbackIds,
+            valueIds: checkpoint.runtimeFallbackValueEntries.map(([id]) => id),
+            compatible: isPreviewInspectorNeuralSuccessSnapshotCompatible(current, checkpoint),
+          };
+        `,
+        sandbox,
+      );
+
+      const controlled = mode !== 'observation';
+      expect(sandbox.__result).toEqual({
+        ids: controlled ? ['context', 'query'] : ['query'],
+        valueIds: controlled ? ['context', 'query'] : ['query'],
+        compatible: !controlled,
+      });
+    },
+  );
+
+  /** Filtering observations cannot consume the existing bounded slots needed for active values. */
+  it('preserves admitted control values when passive records sort before the bounded inventory', () => {
+    const sandbox: { __result?: unknown } = {};
+    vm.runInNewContext(
+      `
+        const PREVIEW_INSPECTOR_NEURAL_SUCCESS_VALUE_LIMIT = 2;
+        const previewInspectorSession = {
+          selectedExportName: 'Panel',
+          runtimeFallbacks: new Map([
+            ['a-observed', { passive: true }], ['b-observed', { passive: true }],
+            ['c-query', {}], ['d-query', {}], ['e-query', {}],
+          ]),
+          runtimeFallbackValues: new Map([
+            ['a-observed', 0], ['b-observed', 0], ['c-query', 1], ['d-query', 2], ['e-query', 3],
+          ]),
+        };
+        ${createPreviewInspectorNeuralSuccessSnapshotRuntimeSource()}
+        const snapshot = createPreviewInspectorNeuralSuccessSnapshot({ targetExportName: 'Panel' });
+        globalThis.__result = {
+          ids: snapshot.runtimeFallbackIds, values: snapshot.runtimeFallbackValueEntries,
+        };
+      `,
+      sandbox,
+    );
+
+    expect(sandbox.__result).toEqual({
+      ids: ['c-query', 'd-query'],
+      values: [
+        ['c-query', 1],
+        ['d-query', 2],
+      ],
+    });
+  });
+
   it('preserves an exact collection root instead of coercing it through props normalization', () => {
     const fixture = createNeuralSuccessSnapshotFixture();
 

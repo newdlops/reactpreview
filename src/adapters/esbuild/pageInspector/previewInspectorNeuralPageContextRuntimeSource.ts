@@ -1,6 +1,7 @@
 /** Generates neural ranking and verified exploration for compiler-proven page contexts. */
 import { createPreviewInspectorNeuralPagePreparationRuntimeSource } from './previewInspectorNeuralPagePreparationRuntimeSource';
 import { createPreviewInspectorNeuralPageOutcomeRuntimeSource } from './previewInspectorNeuralPageOutcomeRuntimeSource';
+import { createPreviewInspectorPageContextContinuityRuntimeSource } from './previewInspectorPageContextContinuityRuntimeSource';
 
 /**
  * Creates the browser runtime that connects the existing page-choice neural head to page roots.
@@ -11,6 +12,7 @@ export function createPreviewInspectorNeuralPageContextRuntimeSource(): string {
   return String.raw`
 ${createPreviewInspectorNeuralPagePreparationRuntimeSource()}
 ${createPreviewInspectorNeuralPageOutcomeRuntimeSource()}
+${createPreviewInspectorPageContextContinuityRuntimeSource()}
 const PREVIEW_INSPECTOR_NEURAL_PAGE_CONTEXT_PORTFOLIO_LIMIT = 12;
 const PREVIEW_INSPECTOR_NEURAL_PAGE_CONTEXT_RECORD_LIMIT = 24;
 
@@ -25,8 +27,9 @@ function hashPreviewInspectorNeuralPageContextCandidateId(value) {
   return hash >>> 0;
 }
 
-/** Lazily creates hot-session search records without persisting project identities. */
+/** Lazily creates local search records, separate from the anonymous learned model state. */
 function initializePreviewInspectorNeuralPageContextRecords() {
+  reconcilePreviewInspectorPageContextFrontier();
   if (!(previewInspectorSession.neuralPageContextByKey instanceof Map)) {
     previewInspectorSession.neuralPageContextByKey = new Map();
   }
@@ -279,6 +282,8 @@ function readPreviewInspectorNeuralPageContextRecord(descriptor) {
   let record = records.get(key);
   if (record === undefined) {
     record = {
+      authoredStateCandidateIds: new Set(),
+      authoredStateControlRevision: Number(previewInspectorSession.neuralHumanControlRevision) || 0,
       decisionByCandidateId: new Map(),
       evaluatedCandidateIds: new Set(),
       executionContractByCandidateId: new Map(),
@@ -290,12 +295,14 @@ function readPreviewInspectorNeuralPageContextRecord(descriptor) {
       successfulCandidateIds: new Set(),
       unstableCandidateIds: new Set(),
     };
+    restorePreviewInspectorPageContextContinuity(descriptor, record, candidates);
     records.set(key, record);
   }
   if (!(record.provisionalCandidateIds instanceof Set)) {
     record.provisionalCandidateIds = new Set();
   }
   if (!(record.unstableCandidateIds instanceof Set)) record.unstableCandidateIds = new Set();
+  if (!(record.authoredStateCandidateIds instanceof Set)) record.authoredStateCandidateIds = new Set();
   if (!(record.executionContractByCandidateId instanceof Map)) {
     record.executionContractByCandidateId = new Map();
   }
@@ -308,7 +315,19 @@ function readPreviewInspectorNeuralPageContextRecord(descriptor) {
   const candidateIds = new Set(candidates.map((candidate) => candidate?.id).filter((id) =>
     typeof id === 'string' && id.length > 0,
   ));
+  if (record.currentCandidateIds instanceof Set) {
+    const currentId = descriptor?.inspector?.executablePageCandidateId;
+    const readmitted = candidates.filter((candidate) => candidate?.id !== currentId &&
+      !record.currentCandidateIds.has(candidate?.id));
+    if (readmitted.length > 0) {
+      restorePreviewInspectorPageContextContinuity(descriptor, record, readmitted, {
+        historicalAdmissionOnly: true,
+      });
+    }
+  }
+  record.currentCandidateIds = candidateIds;
   for (const collection of [
+    record.authoredStateCandidateIds,
     record.decisionByCandidateId,
     record.evaluatedCandidateIds,
     record.executionContractByCandidateId,
@@ -334,8 +353,11 @@ function readPreviewInspectorNeuralPageContextRecord(descriptor) {
     }
   }
   record.candidateCount = candidates.length;
+  const verifiedPaths = typeof readPreviewInspectorVerifiedPageContextPathKeys === 'function'
+    ? readPreviewInspectorVerifiedPageContextPathKeys(record, inventory) : new Set();
   record.coverageComplete = candidates.every((candidate) =>
-    record.evaluatedCandidateIds.has(candidate?.id),
+    record.evaluatedCandidateIds.has(candidate?.id) ||
+      verifiedPaths.has(inventory.groupByCandidateId.get(candidate?.id)?.key),
   );
   record.possibilityCount = inventory.groups.length;
   record.inventoryFingerprint = [...candidateIds].join('\0');
@@ -508,7 +530,9 @@ function selectPreviewInspectorNeuralPageContextCandidate(descriptor, options = 
   if (record === undefined) return undefined;
   const explicitId = previewInspectorSession.userSelectedPageCandidateId;
   const candidates = admitted.filter((candidate) => candidate?.id === explicitId ||
-    isPreviewInspectorNeuralPagePreparationAvailable(record, candidate?.id));
+    candidate?.nextAppRedirectDestination === undefined &&
+    isPreviewInspectorNeuralPagePreparationAvailable(record, candidate?.id) &&
+    isPreviewInspectorNeuralPageAuthoredStateAvailable(record, candidate?.id));
   if (candidates.length === 0) { record.status = 'exhausted'; return undefined; }
   const inventory = createPreviewInspectorPageContextPathInventory(candidates);
   const explicitIndex = candidates.findIndex((candidate) => candidate?.id === explicitId);
@@ -603,13 +627,18 @@ function selectPreviewInspectorNeuralPageContextCandidate(descriptor, options = 
       portfolioCount: 1,
     };
   }
+  const verifiedPaths = typeof readPreviewInspectorVerifiedPageContextPathKeys === 'function'
+    ? readPreviewInspectorVerifiedPageContextPathKeys(record, inventory) : new Set();
   const eligible = inventory.orderedCandidates.filter((candidate) =>
     !record.failedCandidateIds.has(candidate?.id) &&
-    (options.exploreUnevaluated !== true || !record.evaluatedCandidateIds.has(candidate?.id)),
+    (options.exploreUnevaluated !== true ||
+      !record.evaluatedCandidateIds.has(candidate?.id) &&
+      !verifiedPaths.has(inventory.groupByCandidateId.get(candidate?.id)?.key)),
   );
   if (eligible.length === 0) {
     record.coverageComplete = candidates.every((candidate) =>
-      record.evaluatedCandidateIds.has(candidate?.id),
+      record.evaluatedCandidateIds.has(candidate?.id) ||
+        verifiedPaths.has(inventory.groupByCandidateId.get(candidate?.id)?.key),
     );
     if (bestVerifiedCandidate === undefined) {
       record.status = 'exhausted';
@@ -690,6 +719,7 @@ function schedulePreviewInspectorNeuralPageContextSelection() {
       createPreviewInspectorNeuralPageContextPersistedScope(descriptor);
     const restoringVerifiedCandidate = typeof verifiedCandidateId === 'string' &&
       verifiedScopeMatches && verifiedCandidateId.length > 0 &&
+      record?.awaitingCurrentCandidateId !== executableId &&
       verifiedCandidateId !== executableId &&
       readPreviewInspectorPageCandidates(descriptor).some((candidate) =>
         candidate?.id === verifiedCandidateId);
@@ -852,6 +882,7 @@ function observePreviewInspectorNeuralPageContextOutcome(descriptor, candidate, 
   if (record === undefined) return false;
   state.neuralPageContextOutcome = outcome;
   if (success) {
+    record.authoredStateCandidateIds.delete(candidate.id);
     capturePreviewInspectorNeuralPageContextExecutionContract(record, candidate, index, state);
   }
   const decision = record.decisionByCandidateId.get(candidate.id) ??
@@ -861,11 +892,13 @@ function observePreviewInspectorNeuralPageContextOutcome(descriptor, candidate, 
     ? trainPreviewInspectorNeuralResidualDecision(decision, success ? 1 : 0)
     : undefined;
   record.evaluatedCandidateIds.add(candidate.id);
+  record.awaitingCurrentCandidateId = undefined;
   record.selectedCandidateId = candidate.id;
   const stability = record.stabilityByCandidateId.get(candidate.id) ?? {
     regressionCount: 0,
     stableCount: 0,
   };
+  let shouldPersistPageContextState = readPreviewInspectorPageContextFrontierId() !== undefined;
   if (success) {
     previewInspectorSession.neuralPageContextScheduleRevision =
       (Number(previewInspectorSession.neuralPageContextScheduleRevision) || 0) + 1;
@@ -886,10 +919,7 @@ function observePreviewInspectorNeuralPageContextOutcome(descriptor, candidate, 
       previewInspectorSession.verifiedPageContextScope !== verifiedPageContextScope;
     previewInspectorSession.verifiedPageCandidateId = candidate.id;
     previewInspectorSession.verifiedPageContextScope = verifiedPageContextScope;
-    if (
-      verifiedCandidateChanged &&
-      typeof persistPreviewInspectorState === 'function'
-    ) persistPreviewInspectorState();
+    shouldPersistPageContextState = shouldPersistPageContextState || verifiedCandidateChanged;
   } else {
     record.failedCandidateIds.add(candidate.id);
     record.provisionalCandidateIds.delete(candidate.id);
@@ -909,10 +939,13 @@ function observePreviewInspectorNeuralPageContextOutcome(descriptor, candidate, 
     ) {
       previewInspectorSession.verifiedPageCandidateId = '';
       previewInspectorSession.verifiedPageContextScope = '';
-      if (typeof persistPreviewInspectorState === 'function') persistPreviewInspectorState();
+      shouldPersistPageContextState = true;
     }
   }
   record.stabilityByCandidateId.set(candidate.id, stability);
+  if (shouldPersistPageContextState && typeof persistPreviewInspectorState === 'function') {
+    persistPreviewInspectorState();
+  }
   recordPreviewInspectorNeuralPageContextHealth(record, candidate, update, outcome, state);
   if (
     success ||
@@ -935,45 +968,5 @@ function observePreviewInspectorNeuralPageContextOutcome(descriptor, candidate, 
   return true;
 }
 
-/** Continues across caller/HOC mount paths only after the current path's inner sweep has settled. */
-function continuePreviewInspectorNeuralPageContextCoverage() {
-  if (
-    typeof isPreviewInspectorNeuralAssistancePaused === 'function' && isPreviewInspectorNeuralAssistancePaused() ||
-    typeof findSelectedPreviewInspectorDescriptor !== 'function' ||
-    typeof previewInspectorSession.userSelectedPageCandidateId === 'string' &&
-      previewInspectorSession.userSelectedPageCandidateId.length > 0 ||
-    previewInspectorSession.pendingPageCandidateId !== undefined
-  ) return false;
-  const descriptor = findSelectedPreviewInspectorDescriptor();
-  const record = readPreviewInspectorNeuralPageContextRecord(descriptor);
-  const currentId = descriptor?.inspector?.executablePageCandidateId ??
-    previewInspectorSession.selectedPageCandidateId;
-  if (record === undefined || record.evaluatedCandidateIds.has(currentId) !== true) return false;
-  const next = selectPreviewInspectorNeuralPageContextCandidate(descriptor, {
-    exploreUnevaluated: true,
-  });
-  if (next?.candidate?.id === undefined) {
-    record.status = 'exhausted';
-    return false;
-  }
-  if (next.candidate.id === currentId) {
-    record.coverageComplete = true;
-    record.selectionReason = 'best-verified-execution-contract';
-    record.status = 'verified';
-    return false;
-  }
-  record.status = 'switching';
-  record.selectionReason = record.coverageComplete === true
-    ? 'restoring-best-verified-execution-contract'
-    : 'testing-next-caller-wrapper-contract';
-  preparePreviewInspectorNeuralPageContextExecutionContract(
-    descriptor,
-    next.candidate.id,
-    'neural',
-  );
-  return selectPreviewInspectorPageCandidate(next.candidate.id, {
-    origin: 'neural-page-context',
-  });
-}
 `;
 }

@@ -6,6 +6,7 @@
  * rendered page available. Automatic execution attempts also belong here: an import-map change
  * replaces the entire webview, losing its finite-search history but not advancing the source input.
  */
+import { randomUUID } from 'node:crypto';
 import type { ResolvedPreviewTarget } from './activePreviewTarget';
 
 /** Caps automatic compiler work and retained identities even if a runtime keeps proposing new ids. */
@@ -13,6 +14,7 @@ const MAXIMUM_AUTOMATIC_EXECUTION_ATTEMPTS = 12;
 
 /** Session-local candidate transaction and non-evicting automatic execution frontier. */
 export class PreviewPanelPageCandidateSelection {
+  private frontierId = randomUUID();
   private candidateId: string | undefined;
   private executionCandidateId: string | undefined;
   private pendingCandidateId: string | undefined;
@@ -137,6 +139,11 @@ export class PreviewPanelPageCandidateSelection {
     return this.executionCandidateId;
   }
 
+  /** Identifies this panel's immutable input frontier across selection-driven document replacement. */
+  public currentFrontierId(): string {
+    return this.frontierId;
+  }
+
   /** Removes page choices and old execution attempts after a different route is committed. */
   public clear(): void {
     this.clearExecutionFrontier();
@@ -149,6 +156,7 @@ export class PreviewPanelPageCandidateSelection {
 
   /** Starts a fresh automatic execution frontier: attempts, committed artifacts, and restores. */
   private clearExecutionFrontier(): void {
+    this.frontierId = randomUUID();
     this.attemptedExecutionCandidates.clear();
     this.committedExecutionCandidates.clear();
     this.restoredExecutionCandidates.clear();

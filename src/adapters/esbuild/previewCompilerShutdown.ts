@@ -1,5 +1,4 @@
-/** Clears compiler-owned caches before stopping esbuild's shared native service. */
-import { stop } from 'esbuild';
+/** Releases one compiler's resources; the shared native engine belongs to its owning host. */
 
 interface ClearablePreviewCompilerCache {
   clear(): void;
@@ -24,5 +23,4 @@ export async function shutdownPreviewCompiler(options: {
   for (const cache of options.caches) cache.clear();
   await options.incrementalBuildCache.shutdown();
   await options.managedDependencyStore?.shutdown();
-  await stop();
 }

@@ -11,6 +11,7 @@ import ts from 'typescript';
 
 const STATE_HOOK_NAME = 'useState';
 const CALLBACK_HOOK_NAME = 'useCallback';
+const REF_HOOK_NAME = 'useRef';
 
 type HookFunction = ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression;
 
@@ -22,6 +23,8 @@ interface ReactHookBindings {
   readonly namespaces: ReadonlySet<string>;
   /** Local identifiers imported as React's `useState`. */
   readonly stateHooks: ReadonlySet<string>;
+  /** Local identifiers imported as React's inert UI reference hook. */
+  readonly refHooks: ReadonlySet<string>;
 }
 
 /** One local state slot and the setter that is allowed to mutate only that slot. */
@@ -99,6 +102,7 @@ function collectReactHookBindings(sourceFile: ts.SourceFile): ReactHookBindings 
   const callbackHooks = new Set<string>();
   const namespaces = new Set<string>();
   const stateHooks = new Set<string>();
+  const refHooks = new Set<string>();
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
     const moduleName = ts.isStringLiteralLike(statement.moduleSpecifier)
@@ -108,15 +112,18 @@ function collectReactHookBindings(sourceFile: ts.SourceFile): ReactHookBindings 
     if (clause === undefined) return undefined;
     if (clause.phaseModifier === ts.SyntaxKind.TypeKeyword) continue;
     if (moduleName !== 'react') {
-      if (clause.name !== undefined) return undefined;
       const bindings = clause.namedBindings;
-      if (
-        bindings === undefined ||
-        ts.isNamespaceImport(bindings) ||
-        bindings.elements.some((element) => !element.isTypeOnly)
-      ) {
-        return undefined;
-      }
+      const names = [
+        ...(clause.name === undefined ? [] : [clause.name.text]),
+        ...(bindings === undefined
+          ? []
+          : ts.isNamespaceImport(bindings)
+            ? [bindings.name.text]
+            : bindings.elements
+                .filter((element) => !element.isTypeOnly)
+                .map((element) => element.name.text)),
+      ];
+      if (names.some((name) => isImportedValueReferenced(sourceFile, name))) return undefined;
       continue;
     }
     if (clause.name !== undefined) namespaces.add(clause.name.text);
@@ -131,9 +138,25 @@ function collectReactHookBindings(sourceFile: ts.SourceFile): ReactHookBindings 
       const importedName = (element.propertyName ?? element.name).text;
       if (importedName === STATE_HOOK_NAME) stateHooks.add(element.name.text);
       if (importedName === CALLBACK_HOOK_NAME) callbackHooks.add(element.name.text);
+      if (importedName === REF_HOOK_NAME) refHooks.add(element.name.text);
     }
   }
-  return { callbackHooks, namespaces, stateHooks };
+  return { callbackHooks, namespaces, stateHooks, refHooks };
+}
+
+/** Accepts a non-React binding only when all references are erased TypeScript syntax. */
+function isImportedValueReferenced(source: ts.SourceFile, name: string): boolean {
+  let used = false;
+  const visit = (node: ts.Node): void => {
+    if (used || ts.isImportDeclaration(node) || ts.isTypeNode(node)) return;
+    if (ts.isIdentifier(node) && node.text === name) {
+      used = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return used;
 }
 
 /**
@@ -145,6 +168,13 @@ function collectReactHookBindings(sourceFile: ts.SourceFile): ReactHookBindings 
  */
 function hasUnsafeTopLevelRuntime(sourceFile: ts.SourceFile): boolean {
   for (const statement of sourceFile.statements) {
+    if (ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression)) continue;
+    if (
+      ts.isExportDeclaration(statement) &&
+      statement.moduleSpecifier !== undefined &&
+      !statement.isTypeOnly
+    )
+      return true;
     if (ts.isExpressionStatement(statement) || ts.isClassDeclaration(statement)) return true;
     if (!ts.isVariableStatement(statement)) continue;
     for (const declaration of statement.declarationList.declarations) {
@@ -281,11 +311,18 @@ function isSelfContainedLocalUiStateHook(
       isSafeStateAction(initializer, setterNames, reactBindings) ? [name] : [],
     ),
   );
-  if (actionNames.size === 0 || hasUnknownHookCall(body, setterNames, reactBindings)) return false;
+  const refNames = new Set(
+    [...callbackInitializers].flatMap(([name, initializer]) =>
+      ts.isCallExpression(initializer) && isReactHookCall(initializer, REF_HOOK_NAME, reactBindings)
+        ? [name]
+        : [],
+    ),
+  );
+  if (hasUnknownHookCall(body, setterNames, reactBindings, refNames)) return false;
   const returnedNames = collectReferencedIdentifiers(returnExpressions);
   return (
     states.some((state) => returnedNames.has(state.stateName)) &&
-    [...actionNames].some((actionName) => returnedNames.has(actionName))
+    [...actionNames, ...setterNames].some((actionName) => returnedNames.has(actionName))
   );
 }
 
@@ -337,6 +374,7 @@ function hasUnknownHookCall(
   body: ts.Block,
   setterNames: ReadonlySet<string>,
   reactBindings: ReactHookBindings,
+  refNames: ReadonlySet<string>,
 ): boolean {
   let unknown = false;
   /** Visits callbacks too because their calls execute when the returned UI action fires. */
@@ -346,6 +384,8 @@ function hasUnknownHookCall(
       ts.isCallExpression(node) &&
       !isReactHookCall(node, STATE_HOOK_NAME, reactBindings) &&
       !isReactHookCall(node, CALLBACK_HOOK_NAME, reactBindings) &&
+      !isReactHookCall(node, REF_HOOK_NAME, reactBindings) &&
+      !isLocalUiEventCall(node, refNames) &&
       !(ts.isIdentifier(node.expression) && setterNames.has(node.expression.text))
     ) {
       unknown = true;
@@ -357,17 +397,51 @@ function hasUnknownHookCall(
   return unknown;
 }
 
+/** Allows only event cancellation and read-only containment checks on a proven local React ref. */
+function isLocalUiEventCall(call: ts.CallExpression, refs: ReadonlySet<string>): boolean {
+  const expression = call.expression;
+  if (!ts.isPropertyAccessExpression(expression)) return false;
+  const receiver = expression.expression;
+  if (
+    expression.name.text === 'contains' &&
+    call.arguments.length === 1 &&
+    ts.isPropertyAccessExpression(receiver) &&
+    receiver.name.text === 'current' &&
+    ts.isIdentifier(receiver.expression) &&
+    refs.has(receiver.expression.text)
+  )
+    return true;
+  if (
+    expression.name.text !== 'preventDefault' ||
+    call.arguments.length !== 0 ||
+    !ts.isIdentifier(receiver)
+  )
+    return false;
+  let owner: ts.Node = call.parent;
+  while (!ts.isSourceFile(owner) && !ts.isFunctionLike(owner)) owner = owner.parent;
+  return (
+    ts.isFunctionLike(owner) &&
+    owner.parameters.some(
+      (parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === receiver.text,
+    )
+  );
+}
+
 /** Matches either a named React hook import or a method on an imported React namespace. */
 function isReactHookCall(
   call: ts.CallExpression,
-  importedName: typeof STATE_HOOK_NAME | typeof CALLBACK_HOOK_NAME,
+  importedName: typeof STATE_HOOK_NAME | typeof CALLBACK_HOOK_NAME | typeof REF_HOOK_NAME,
   bindings: ReactHookBindings,
 ): boolean {
   const expression = call.expression;
   if (ts.isIdentifier(expression)) {
-    return (importedName === STATE_HOOK_NAME ? bindings.stateHooks : bindings.callbackHooks).has(
-      expression.text,
-    );
+    return (
+      importedName === STATE_HOOK_NAME
+        ? bindings.stateHooks
+        : importedName === REF_HOOK_NAME
+          ? bindings.refHooks
+          : bindings.callbackHooks
+    ).has(expression.text);
   }
   return (
     ts.isPropertyAccessExpression(expression) &&

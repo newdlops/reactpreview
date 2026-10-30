@@ -8,6 +8,7 @@
  * remain a cheap projection leaf. It parses source only; no workspace code is evaluated.
  */
 import ts from 'typescript';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
 import { hasPreviewInspectorLocalUiStateHookInSourceFile } from './previewInspectorLocalUiStateHook';
 import { hasPreviewInspectorStaticRenderDataHookInSourceFile } from './previewInspectorStaticRenderDataHook';
 
@@ -50,13 +51,27 @@ export function hasPreviewInspectorAuthoredHookLogic(
   ) {
     return false;
   }
-  const sourceFile = ts.createSourceFile(
+  const sourceFile = readPreviewAnalysisSourceFile(
     sourcePath,
     sourceText,
-    ts.ScriptTarget.Latest,
-    true,
     readScriptKind(sourcePath),
   );
+  return hasPreviewInspectorAuthoredHookLogicInSourceFile(sourceFile, demandedExports);
+}
+
+/** Reuses the frontier's exact inert syntax when checking whether a hook owns render computation. */
+export function hasPreviewInspectorAuthoredHookLogicInSourceFile(
+  sourceFile: ts.SourceFile,
+  exportNames: readonly string[],
+): boolean {
+  const demandedExports = [...new Set(exportNames)];
+  if (
+    demandedExports.length === 0 ||
+    demandedExports.some(
+      (exportName) => exportName !== 'default' && !HOOK_NAME_PATTERN.test(exportName),
+    )
+  )
+    return false;
   if (
     hasPreviewInspectorLocalUiStateHookInSourceFile(sourceFile, demandedExports) ||
     hasPreviewInspectorStaticRenderDataHookInSourceFile(sourceFile, demandedExports)

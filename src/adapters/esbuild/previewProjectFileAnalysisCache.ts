@@ -9,6 +9,7 @@
 import { createHash } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { PreviewYarnZipEntryCache } from './previewYarnZipEntryCache';
 import {
   analyzePreviewRenderSource,
   collectPreviewRenderModuleSpecifiers,
@@ -85,6 +86,7 @@ export class PreviewProjectFileAnalysisCache {
   private readonly renderAnalysisByPath = new Map<string, RenderAnalysisCacheEntry>();
   private readonly sourceByPath = new Map<string, SourceCacheEntry>();
   private retainedSourceBytes = 0;
+  private readonly yarnZipEntries = new PreviewYarnZipEntryCache();
 
   /**
    * Reads a current editor snapshot or disk file and reuses text when its identity is unchanged.
@@ -153,6 +155,7 @@ export class PreviewProjectFileAnalysisCache {
     this.renderAnalysisByPath.clear();
     this.sourceByPath.clear();
     this.retainedSourceBytes = 0;
+    this.yarnZipEntries.clear();
   }
 
   /** Creates or reuses an editor-content record without consulting stale disk metadata. */
@@ -298,7 +301,11 @@ export class PreviewProjectFileAnalysisCache {
   ): Promise<SourceCacheEntry | undefined> {
     const diskRecord = await this.loadDiskSource(sourcePath, maximumBytes);
     if (diskRecord !== undefined) return { origin: 'disk', record: diskRecord };
-    const archiveRecord = await readPreviewYarnZipSource(sourcePath, maximumBytes);
+    const archiveRecord = await readPreviewYarnZipSource(
+      sourcePath,
+      maximumBytes,
+      this.yarnZipEntries,
+    );
     return archiveRecord === undefined
       ? undefined
       : {

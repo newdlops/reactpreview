@@ -6,7 +6,11 @@ declare module 'yazl' {
     /** Readable archive bytes emitted after entries are added. */
     readonly outputStream: Readable;
     /** Adds one in-memory entry at an exact portable metadata path. */
-    addBuffer(contents: Buffer, metadataPath: string): void;
+    addBuffer(
+      contents: Buffer,
+      metadataPath: string,
+      options?: { readonly compress?: boolean },
+    ): void;
     /** Finalizes the central directory and closes the output stream. */
     end(): void;
   }

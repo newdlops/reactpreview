@@ -9,6 +9,63 @@ import {
 } from './previewInspectorBundleFrontierFixtures';
 
 describe('frozen local UI hook frontier', () => {
+  it('retains callbacks that transform render inputs while projecting their external data leaves', async () => {
+    const app = '/workspace/Page.tsx';
+    const helper = '/workspace/use-column-helpers.ts';
+    const remote = '/workspace/use-data.ts';
+    const sources = new Map([
+      [
+        app,
+        `import {useColumnHelpers} from './use-column-helpers'; import {useColumns} from './use-columns';
+        export function SlicedPage(){const {setColumn}=useColumnHelpers();
+          const {columns}=useColumns({setColumn});return <div>{columns.map(column=><span>{column.label}</span>)}</div>;}
+        export function AuthenticTarget(){return null;}`,
+      ],
+      [
+        helper,
+        `import {useCallback} from 'react'; import {useRemoteData} from './use-data';
+        export function useColumnHelpers(){const data=useRemoteData();
+          const setColumn=useCallback(column=>({...column,label:column.label.trim()}),[]);
+          return {setColumn,data};}`,
+      ],
+      [
+        remote,
+        `import {useQuery} from './backend';export function useRemoteData(){return useQuery();}`,
+      ],
+      [
+        '/workspace/use-columns.ts',
+        `export function useColumns({setColumn}){
+        return {columns:[{label:' Authored '}].map(setColumn)};}`,
+      ],
+      [
+        '/workspace/backend.ts',
+        'export function useQuery(){throw new Error("backend must stay projected");}',
+      ],
+    ]);
+    const policy = createPreviewCompilerFrontierPolicy('fast');
+    if (policy === undefined) throw new Error('Missing fast policy');
+    const result = await preparePreviewInspectorBundleFrontier({
+      executionCandidate: createRepresentationDominanceCandidate(app, true),
+      plan: createRepresentationDominancePlan(app),
+      policy,
+      workspaceRoot: '/workspace',
+      readSource: (source) => Promise.resolve(sources.get(source)),
+      resolveModule: (specifier, importer) =>
+        specifier.startsWith('.')
+          ? path.resolve(path.dirname(importer), specifier + '.ts')
+          : undefined,
+    });
+    expect(result.rejected).toBe(false);
+    expect(result.frontier.authenticSourcePaths).toContain(helper);
+    expect(result.frontier.projectedEdges.some((edge) => edge.targetPath === helper)).toBe(false);
+    expect(result.frontier.authenticSourcePaths).not.toContain('/workspace/backend.ts');
+    expect(
+      result.frontier.projectedEdges.some(
+        (edge) => edge.targetPath === remote || edge.targetPath === '/workspace/backend.ts',
+      ),
+    ).toBe(true);
+  });
+
   it('retains a local state/action hook and leaves data hooks projected', async () => {
     const app = '/workspace/Page.tsx',
       local = '/workspace/use-modal.ts',

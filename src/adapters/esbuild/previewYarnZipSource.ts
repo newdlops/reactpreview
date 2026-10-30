@@ -2,6 +2,7 @@
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { openPromise, type Entry, type ZipFile } from 'yauzl';
+import type { PreviewYarnZipEntryCache } from './previewYarnZipEntryCache';
 
 const MAXIMUM_ARCHIVE_BYTES = 1024 * 1024 * 1024;
 const MAXIMUM_ARCHIVE_ENTRIES = 100_000;
@@ -21,6 +22,7 @@ export interface PreviewYarnZipSourceRecord {
 export async function readPreviewYarnZipSource(
   sourcePath: string,
   maximumBytes: number,
+  entryCache?: PreviewYarnZipEntryCache,
 ): Promise<PreviewYarnZipSourceRecord | undefined> {
   const location = parseYarnZipSourcePath(sourcePath);
   if (location === undefined || maximumBytes < 0) return undefined;
@@ -36,7 +38,16 @@ export async function readPreviewYarnZipSource(
       validateEntrySizes: true,
     });
     if (zipFile.entryCount > MAXIMUM_ARCHIVE_ENTRIES) return undefined;
-    const entry = await findExactEntry(zipFile, location.entryPath);
+    const entry =
+      entryCache === undefined
+        ? await findExactEntry(zipFile, location.entryPath)
+        : await entryCache.find(
+            zipFile,
+            location.archivePath,
+            before.fingerprint,
+            location.entryPath,
+            MAXIMUM_ARCHIVE_ENTRIES,
+          );
     if (entry === undefined || entry.uncompressedSize > maximumBytes) return undefined;
     const sourceBuffer = await readEntryBytes(zipFile, entry, maximumBytes);
     if (sourceBuffer === undefined) return undefined;
@@ -91,7 +102,9 @@ async function readArchiveMetadata(
   try {
     const metadata = await stat(archivePath);
     return metadata.isFile() && metadata.size <= MAXIMUM_ARCHIVE_BYTES
-      ? { fingerprint: `yarn-zip:${metadata.mtimeMs.toString()}:${metadata.size.toString()}` }
+      ? {
+          fingerprint: `yarn-zip:${metadata.dev.toString()}:${metadata.ino.toString()}:${metadata.ctimeMs.toString()}:${metadata.mtimeMs.toString()}:${metadata.size.toString()}`,
+        }
       : undefined;
   } catch {
     return undefined;

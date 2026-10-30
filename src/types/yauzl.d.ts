@@ -4,6 +4,11 @@ declare module 'yauzl' {
   export interface Entry {
     readonly crc32: number;
     readonly fileName: string;
+    readonly fileNameRaw: Buffer;
+    readonly fileComment: string;
+    readonly fileCommentRaw: Buffer;
+    readonly extraFieldRaw: Buffer;
+    readonly extraFields: readonly { readonly id: number; readonly data: Buffer }[];
     readonly uncompressedSize: number;
   }
 

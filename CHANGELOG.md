@@ -1,5 +1,12 @@
 # 변경 기록
 
+## 0.1.1709 - 2026-10-30
+
+- Yarn ZIP의 디렉터리 목록을 제한된 캐시에서 공유해 같은 아카이브의 반복 탐색을 줄입니다. 읽기별 바이트 한도·핸들 종료를 유지하고, 크기·수정 시간이 같은 파일 교체와 캐시 포화 중의 늦은 요청도 정확히 처리합니다.
+- 여러 tsconfig 별칭 경로 중 뒤쪽에 실제 파일이 있으면 앞쪽 누락 경로의 생성 UI 대체물이 덮어쓰지 않게 합니다. 실제 파일·패키지 디렉터리와 구체적인 별칭을 우선하고, 존재하는 경로의 불필요한 상위 경로 탐색을 생략합니다.
+- 고정된 번들 탐색 범위에서도 렌더 데이터를 변환하는 원본 훅을 보존합니다. RTCC 컬럼 변환 함수가 빈 함수로 대체되어 발생하던 그리드 예외를 수정하며, 기존 소스 증명 한도와 데이터·부수효과 훅의 경계를 유지합니다.
+- [변경 근거와 검증 범위](docs/preview-zip-alias-hooks-1709.md)
+
 ## 0.1.1708 - 2026-10-27
 
 - 소스 캐시·의존성 해석·타입 합성을 최적화하고 경로 반복·모달 기본 크기·공유 래퍼 조건의 오선택을 수정한 0.1.1701–0.1.1707 변경을 공개 배포합니다. RTCC의 일부 대상 출력 실패는 [조사 기록](docs/preview-runtime-log-failures-1707.md)에 남아 있습니다.
@@ -990,11 +997,4 @@
 - 헤드리스 측정(재빌드 요청에 VS Code처럼 응답하고 실패한 빌드에는 실패 상태로 답하는 하네스, 0.1.1541 워커와 페이지별 교대 실행): tada-web·UDT-fe 페이지 16쌍이 좋아짐(partial-blocked→ready 13, 이전에 page-blocked 상태에서 크래시로 분류되던 3쌍→ready, 같은 window 오류는 두 쪽 모두 있음), 퇴행 0. 바뀐 16쌍 중 15쌍은 화면 텍스트가 같고, UDT 추천 페이지는 대상에 도달하지 못해 함께 열려 있던 서로 배타적인 빈 상태·재시도 문구가 사라짐. aristell 62쌍·spa 예제 30쌍 동일. payroll 페이지 대상은 소유자가 실제로 마운트되지 않아 그대로 `page-context-incomplete`
 - 대상에 도달하면서 이 페이지들에서도 행 채우기가 시작됨(UDT 탐색 페이지는 REST 목록을 채워 약 3초 뒤 유지로 판정됐지만 화면 목록은 다른 데이터 경로라 그대로). VS Code는 컴파일러 후보가 완전(`complete`)할 때만 문맥 보강(corridor) 빌드를 취소하는데, 이 Next 후보들은 경로 체크포인트에서 멈춘 후보라 보강 빌드가 그대로 진행되어 그 화면으로 바뀜(바뀐 16페이지를 corridor 빌드로 렌더해도 모두 도달·ready, 텍스트 동일). app router의 중첩 레이아웃은 프레임워크 표면으로 조합되어 이름 판정 대상이 아니며(가장 바깥 루트 레이아웃만 실행 루트로 확인), zuzu-roundup의 중첩 레이아웃 페이지 2개도 재빌드 없이 바로 도달. 성공 경로 기록이 이 페이지들에서도 일어나 neural 학습 라벨이 늘어날 수 있음. 전체 테스트 실패는 기준선과 같고, 새로 보인 2건(대문자 `.TSX` 번들 시간 초과, Chromium 네트워크 서비스 크래시)은 단독 실행에서 통과
 
-## 0.1.1541 - 2026-10-03
-
-- Page Inspector가 페이지 문맥을 복구하려고 다시 빌드할 때, 대상이 페이지 파일 자체인 경우(Next.js app router의 `page.tsx`, pages router의 페이지, 라우트의 페이지 컴포넌트) 고르는 page-sliced·route-page-sliced 실행 후보가 항상 빌드에 실패하던 문제(`Selected-context React preview compilation produced authored inputs outside its verified module frontier`, 증거 `missing-execution-surface` / `selected-export-slice`). 이 변형은 페이지 export를 같은 파일의 virtual slice로 바꾸는데, 페이지가 곧 대상이면 그 slice가 런타임 대상 역할을 맡고, 런타임 대상은 항상 target facade로 실제 모듈을 불러오므로 slice가 graph에 들어가지 않아 frontier 검증이 빌드를 버렸음. 이제 런타임 대상 역할이 slice인 실행 후보는 만들지 않음(대상이 페이지 안 컴포넌트인 경우의 sliced 변형은 그대로)
-- VS Code에서는 이런 페이지를 열 때마다 실패하는 corridor 빌드 1회와 출력 로그의 "React preview build failed; retaining the last good preview"가 생겼고, 이 재빌드 요청이 진행 중이던 문맥 보강(corridor) 빌드를 취소해 첫 화면(fast)이 그대로 남았음. 이제 실패하는 빌드와 로그가 없고, 남은 전체 페이지 실행 후보가 없다는 판단("전체 페이지 문맥을 복구하지 못함" 경고와 대상 도달 blocker)이 로딩 중에 바로 드러남. 이전에도 같은 판단(후보 소진)에 이르렀지만 그 상태가 드러나려면 다음 커밋이 필요했음. 재빌드 요청이 없으므로 문맥 보강 빌드가 끝까지 진행되어 이 페이지들은 corridor 빌드 화면으로 바뀜
-- 헤드리스 측정(재빌드 요청에 VS Code처럼 응답하고 실패한 빌드에는 실패 상태로 답하는 하네스, 0.1.1540 워커와 페이지별 교대 실행): aristell 62쌍·spa 예제 30쌍 동일(aristell의 복구 페이지는 대상이 페이지 안 컴포넌트라 sliced 후보가 그대로). payroll·tada-web·UDT-fe·hospitalrun 40쌍 중 대상이 페이지 자체인 19페이지에서 재빌드 요청이 사라졌고, 그중 9쌍이 ready에서 partial-blocked로 바뀜. 화면 텍스트는 같고 후보 소진 판단이 캡처 전에 드러난 것으로, 0.1.1540 쪽도 같은 시점에 복구 기록이 이미 `exhausted`였음을 확인. 개선 1(UDT survey)은 이전 쪽의 부하 중 45초 컴파일 정지. 이 19페이지를 문맥 보강(corridor) 빌드로 렌더해도 결과와 텍스트가 fast 빌드와 모두 같음
-- 남은 문제(미수정): 이 복구는 Next.js 페이지에서 페이지 소유자를 파일 이름(`layout`, `_app`)으로 기대하는데 실제 컴포넌트 이름이 `RootLayout`·`MyApp`이라 "소유자 없음"으로 잘못 판정해 시작됨. payroll 페이지 대상의 소유자(`InvestmentAssociationIdApp`)는 실제로 마운트되지 않는 다른 경우
-
-[0.1.1540–0.1.1507 변경 기록](docs/changelog-archive-3.md)
+[0.1.1541–0.1.1507 변경 기록](docs/changelog-archive-3.md)

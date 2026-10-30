@@ -1,7 +1,8 @@
-/** Bounds source-only local UI-controller proof before the bundle frontier is frozen. */
+/** Bounds source-only UI-controller and authored render-transform proof before freezing imports. */
 import { Buffer } from 'node:buffer';
 import ts from 'typescript';
-import { hasPreviewInspectorLocalUiStateHookInSourceFile } from './previewInspectorLocalUiStateHook';
+import { readPreviewAnalysisSourceFile } from '../previewAnalysisSourceFile';
+import { hasPreviewInspectorAuthoredHookLogicInSourceFile } from './previewInspectorAuthoredHookLogic';
 import { hasPreviewInspectorQueryUiStateHookInSourceFile } from './previewInspectorQueryUiStateHook';
 import { hasPreviewInspectorThemeUiHookInSourceFile } from './previewInspectorThemeUiHook';
 import type { PreviewInspectorBundleResolvedStaticEdge } from './previewInspectorBundleSourceInventoryMemo';
@@ -36,11 +37,9 @@ export function createPreviewInspectorLocalUiHookAdmission(
       const bytes = Buffer.byteLength(source, 'utf8');
       if (bytes > 32 * 1024 || textBytes + bytes > 1024 * 1024) return false;
       textBytes += bytes;
-      const sourceFile = ts.createSourceFile(
+      const sourceFile = readPreviewAnalysisSourceFile(
         sourcePath,
         source,
-        ts.ScriptTarget.Latest,
-        true,
         /\.[cm]?ts$/iu.test(sourcePath) ? ts.ScriptKind.TS : ts.ScriptKind.TSX,
       );
       const diagnostics = (
@@ -50,9 +49,9 @@ export function createPreviewInspectorLocalUiHookAdmission(
       ).parseDiagnostics;
       if ((diagnostics?.length ?? 0) > 0) return false;
       return (
-        hasPreviewInspectorLocalUiStateHookInSourceFile(sourceFile, names) ||
         hasPreviewInspectorQueryUiStateHookInSourceFile(sourceFile, names) ||
-        hasPreviewInspectorThemeUiHookInSourceFile(sourceFile, names)
+        hasPreviewInspectorThemeUiHookInSourceFile(sourceFile, names) ||
+        hasPreviewInspectorAuthoredHookLogicInSourceFile(sourceFile, names)
       );
     });
     pending.set(key, proof);

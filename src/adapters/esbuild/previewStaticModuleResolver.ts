@@ -52,11 +52,11 @@ export interface PreviewStaticModuleResolver {
     targetPath: string,
   ) => boolean;
   /**
-   * Resolves only the lexical filesystem candidate selected by an explicit tsconfig `paths` alias.
+   * Resolves a confined missing filesystem candidate selected by an explicit tsconfig `paths` alias.
    *
    * Unlike {@link resolve}, this operation may return a path that does not exist yet. Consumers use
-   * it only after normal module resolution fails, for evidence-backed generated-source recovery.
-   * Relative, package-only, and workspace-escaping requests always return `undefined`.
+   * it for evidence-backed generated-source recovery. Existing candidates in any target of the
+   * best matching alias, relative requests, and workspace escapes always return `undefined`.
    */
   readonly resolveMissingPathAliasCandidate: (
     moduleSpecifier: string,
@@ -402,18 +402,18 @@ export function createPreviewStaticModuleResolver(
             candidate.match !== undefined,
         )
         .sort(comparePathAliasMatches);
-      for (const { match, pattern } of matchingPatterns) {
-        for (const target of pathTargets[pattern] ?? []) {
-          const substitutedTarget = target.replaceAll('*', match);
-          const candidatePath = path.resolve(context.baseDirectory, substitutedTarget);
-          const canonicalCandidate = canonicalizePathThroughExistingAncestor(candidatePath);
-          if (
-            isPathInside(workspaceRoot, canonicalCandidate) &&
-            !sourceCandidateExists(canonicalCandidate)
-          ) {
-            return canonicalCandidate;
-          }
-        }
+      const selected = matchingPatterns[0];
+      if (selected === undefined) return undefined;
+      const candidates = (pathTargets[selected.pattern] ?? []).map((target) =>
+        path.resolve(context.baseDirectory, target.replaceAll('*', selected.match)),
+      );
+      // Existing imports need no ancestor walk. Check every fallback target before admitting a
+      // missing first target, and do not fall through to a less-specific alias pattern.
+      if (candidates.some(sourceCandidateExists)) return undefined;
+      for (const candidatePath of candidates) {
+        const canonicalCandidate = canonicalizePathThroughExistingAncestor(candidatePath);
+        if (sourceCandidateExists(canonicalCandidate)) return undefined;
+        if (isPathInside(workspaceRoot, canonicalCandidate)) return canonicalCandidate;
       }
     } catch {
       // Malformed path mappings remain an ordinary esbuild resolution failure.
@@ -607,14 +607,16 @@ function comparePathAliasMatches(
   return rightWildcardOffset - leftWildcardOffset || left.pattern.localeCompare(right.pattern);
 }
 
-/** Checks normal JS/TS file and directory-index candidates without traversing the workspace. */
+/** Defers existing JS/TS files, indexes, and package directories to ordinary module resolution. */
 function sourceCandidateExists(candidatePath: string): boolean {
   if (ts.sys.fileExists(candidatePath)) return true;
   const extensions = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.json'];
-  return extensions.some(
-    (extension) =>
-      ts.sys.fileExists(`${candidatePath}${extension}`) ||
-      ts.sys.fileExists(path.join(candidatePath, `index${extension}`)),
+  return (
+    extensions.some(
+      (extension) =>
+        ts.sys.fileExists(`${candidatePath}${extension}`) ||
+        ts.sys.fileExists(path.join(candidatePath, `index${extension}`)),
+    ) || ts.sys.fileExists(path.join(candidatePath, 'package.json'))
   );
 }
 

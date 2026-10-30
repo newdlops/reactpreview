@@ -1,6 +1,13 @@
 # 변경 기록 보관 3
 
-0.1.1540부터 0.1.1507까지의 기록입니다. [최근 변경 기록](../CHANGELOG.md)으로 돌아갑니다.
+0.1.1541부터 0.1.1507까지의 기록입니다. [최근 변경 기록](../CHANGELOG.md)으로 돌아갑니다.
+
+## 0.1.1541 - 2026-10-03
+
+- Page Inspector가 페이지 문맥을 복구하려고 다시 빌드할 때, 대상이 페이지 파일 자체인 경우(Next.js app router의 `page.tsx`, pages router의 페이지, 라우트의 페이지 컴포넌트) 고르는 page-sliced·route-page-sliced 실행 후보가 항상 빌드에 실패하던 문제(`Selected-context React preview compilation produced authored inputs outside its verified module frontier`, 증거 `missing-execution-surface` / `selected-export-slice`). 이 변형은 페이지 export를 같은 파일의 virtual slice로 바꾸는데, 페이지가 곧 대상이면 그 slice가 런타임 대상 역할을 맡고, 런타임 대상은 항상 target facade로 실제 모듈을 불러오므로 slice가 graph에 들어가지 않아 frontier 검증이 빌드를 버렸음. 이제 런타임 대상 역할이 slice인 실행 후보는 만들지 않음(대상이 페이지 안 컴포넌트인 경우의 sliced 변형은 그대로)
+- VS Code에서는 이런 페이지를 열 때마다 실패하는 corridor 빌드 1회와 출력 로그의 "React preview build failed; retaining the last good preview"가 생겼고, 이 재빌드 요청이 진행 중이던 문맥 보강(corridor) 빌드를 취소해 첫 화면(fast)이 그대로 남았음. 이제 실패하는 빌드와 로그가 없고, 남은 전체 페이지 실행 후보가 없다는 판단("전체 페이지 문맥을 복구하지 못함" 경고와 대상 도달 blocker)이 로딩 중에 바로 드러남. 이전에도 같은 판단(후보 소진)에 이르렀지만 그 상태가 드러나려면 다음 커밋이 필요했음. 재빌드 요청이 없으므로 문맥 보강 빌드가 끝까지 진행되어 이 페이지들은 corridor 빌드 화면으로 바뀜
+- 헤드리스 측정(재빌드 요청에 VS Code처럼 응답하고 실패한 빌드에는 실패 상태로 답하는 하네스, 0.1.1540 워커와 페이지별 교대 실행): aristell 62쌍·spa 예제 30쌍 동일(aristell의 복구 페이지는 대상이 페이지 안 컴포넌트라 sliced 후보가 그대로). payroll·tada-web·UDT-fe·hospitalrun 40쌍 중 대상이 페이지 자체인 19페이지에서 재빌드 요청이 사라졌고, 그중 9쌍이 ready에서 partial-blocked로 바뀜. 화면 텍스트는 같고 후보 소진 판단이 캡처 전에 드러난 것으로, 0.1.1540 쪽도 같은 시점에 복구 기록이 이미 `exhausted`였음을 확인. 개선 1(UDT survey)은 이전 쪽의 부하 중 45초 컴파일 정지. 이 19페이지를 문맥 보강(corridor) 빌드로 렌더해도 결과와 텍스트가 fast 빌드와 모두 같음
+- 남은 문제(미수정): 이 복구는 Next.js 페이지에서 페이지 소유자를 파일 이름(`layout`, `_app`)으로 기대하는데 실제 컴포넌트 이름이 `RootLayout`·`MyApp`이라 "소유자 없음"으로 잘못 판정해 시작됨. payroll 페이지 대상의 소유자(`InvestmentAssociationIdApp`)는 실제로 마운트되지 않는 다른 경우
 
 ## 0.1.1540 - 2026-10-03
 

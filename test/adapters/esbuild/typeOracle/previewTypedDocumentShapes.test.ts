@@ -40,6 +40,52 @@ const CODEGEN_PRELUDE = [
 ].join('\n');
 
 describe('collectPreviewTypedDocumentShapes', () => {
+  it('avoids inferred component types while preserving declared documents and unknown tags', () => {
+    const questioned: string[] = [];
+    const shapes = collectFromSource(
+      [
+        'import styled from "styled-components";',
+        'import { styled as makeStyle } from "styled-components";',
+        'import emotion from "@emotion/styled";',
+        CODEGEN_PRELUDE,
+        'const Page = styled.div`color: red;`;',
+        'const Wrapped = styled(Page).attrs({ role: "main" })`color: blue;`;',
+        'const Aliased = makeStyle.span`color: red;`;',
+        'const Emotion = emotion.div`color: red;`;',
+        'const DECLARED_QUERY: typeof INVESTMENT_DOCUMENT = styled.div`color: red;`;',
+        'declare function ownTag(strings: TemplateStringsArray): typeof INVESTMENT_DOCUMENT;',
+        'const CUSTOM_QUERY = ownTag`query Investment { id }`;',
+        'createQueryRenderer(DECLARED_QUERY);',
+        'createQueryRenderer(CUSTOM_QUERY);',
+      ].join('\n'),
+      undefined,
+      (checker) => {
+        const readType = checker.getTypeAtLocation.bind(checker);
+        checker.getTypeAtLocation = (node) => {
+          if (ts.isIdentifier(node)) questioned.push(node.text);
+          return readType(node);
+        };
+      },
+    );
+
+    expect(shapes.map(({ identifier }) => identifier)).toEqual(['DECLARED_QUERY', 'CUSTOM_QUERY']);
+    expect(questioned).not.toEqual(expect.arrayContaining(['Page']));
+    expect(questioned).not.toEqual(expect.arrayContaining(['Wrapped']));
+    expect(questioned).not.toEqual(expect.arrayContaining(['Aliased']));
+    expect(questioned).not.toEqual(expect.arrayContaining(['Emotion']));
+  });
+
+  it('retains a locally declared factory whose name happens to be styled', () => {
+    const shapes = collectFromSource(
+      [
+        CODEGEN_PRELUDE,
+        'declare function styled(strings: TemplateStringsArray): typeof INVESTMENT_DOCUMENT;',
+        'const CUSTOM_QUERY = styled`query Investment { id }`;',
+      ].join('\n'),
+    );
+    expect(shapes.map(({ identifier }) => identifier)).toEqual(['CUSTOM_QUERY']);
+  });
+
   it.each(['object', 'intersection'])(
     'avoids leaf consumer analysis for an oversized %s document module',
     (kind) => {

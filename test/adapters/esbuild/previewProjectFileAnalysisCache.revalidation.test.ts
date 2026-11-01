@@ -203,8 +203,22 @@ function gate<T>(): Gate<T> {
 }
 
 /** Models equal-length disk revisions with an explicit metadata generation. */
-function metadata(mtimeMs = 1): { isFile: () => boolean; mtimeMs: number; size: number } {
-  return { isFile: () => true, mtimeMs, size: Buffer.byteLength(oldText) };
+function metadata(mtimeMs = 1): {
+  isFile: () => boolean;
+  dev: number;
+  ino: number;
+  ctimeMs: number;
+  mtimeMs: number;
+  size: number;
+} {
+  return {
+    isFile: () => true,
+    dev: 1,
+    ino: 1,
+    ctimeMs: mtimeMs,
+    mtimeMs,
+    size: Buffer.byteLength(oldText),
+  };
 }
 
 /** Supplies an inert archive identity; actual zip parsing remains covered by the real-archive suite. */

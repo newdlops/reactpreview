@@ -1,12 +1,13 @@
 /**
  * Retains bounded file snapshots and syntax-only React render facts across preview rebuilds.
- * Disk entries are identified by normalized path, modification time, and size; unsaved editor
+ * Disk entries are identified by path, device, inode, change/modification times and size; editor
  * entries hash exact UTF-16 text. Pending checks and reads share work only for equal byte ceilings.
  * Superseded reads cannot restore cleared facts or overwrite newer editor snapshots.
  * Only the changed file loses its module/import facts, allowing a
  * target edit to reuse the rest of a large monorepo's static analysis safely.
  */
 import { createHash } from 'node:crypto';
+import type { Stats } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { PreviewYarnZipEntryCache } from './previewYarnZipEntryCache';
@@ -252,7 +253,7 @@ export class PreviewProjectFileAnalysisCache {
         const metadata = await stat(sourcePath);
         if (!metadata.isFile() || metadata.size > maximumBytes) return undefined;
         if (
-          cached.record.fingerprint === createDiskFingerprint(metadata.mtimeMs, metadata.size) &&
+          cached.record.fingerprint === createDiskFingerprint(metadata) &&
           cached.record.byteLength <= maximumBytes
         ) {
           return cached;
@@ -282,7 +283,7 @@ export class PreviewProjectFileAnalysisCache {
           ? Object.freeze({
               byteLength,
               filePath: sourcePath,
-              fingerprint: createDiskFingerprint(metadata.mtimeMs, metadata.size),
+              fingerprint: createDiskFingerprint(metadata),
               sourceText,
             })
           : undefined;
@@ -358,8 +359,8 @@ export class PreviewProjectFileAnalysisCache {
 }
 
 /** Encodes stable disk metadata without reading or hashing unchanged source text. */
-function createDiskFingerprint(modifiedAt: number, size: number): string {
-  return `disk:${modifiedAt.toString()}:${size.toString()}`;
+function createDiskFingerprint(metadata: Stats): string {
+  return `disk:${metadata.dev.toString()}:${metadata.ino.toString()}:${metadata.ctimeMs.toString()}:${metadata.mtimeMs.toString()}:${metadata.size.toString()}`;
 }
 
 /** Hashes exact UTF-16 editor text so distinct unpaired characters cannot share source facts. */

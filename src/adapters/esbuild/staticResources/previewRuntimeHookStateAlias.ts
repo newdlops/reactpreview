@@ -22,6 +22,11 @@ const stateBindingsByOwner = new WeakMap<
   PreviewRuntimeFunction,
   readonly PreviewRuntimeHookStateBinding[]
 >();
+/** Each retained tuple owns at most 32 syntax references; callback-derived origins stay uncached. */
+const setterArgumentsByBinding = new WeakMap<
+  PreviewRuntimeHookStateBinding,
+  readonly ts.Expression[]
+>();
 
 export interface CollectPreviewRuntimeHookStateAliasesOptions {
   /** Hook-relative identities already proven by ordinary immutable alias propagation. */
@@ -180,21 +185,29 @@ function collectSetterOriginPaths(
   options: CollectPreviewRuntimeHookStateAliasesOptions,
 ): PreviewRuntimeHookOriginPaths {
   const origins: (readonly string[])[] = [];
-  let setterArguments = 0;
-  const appendOrigins = (expression: ts.Expression): void => {
+  for (const expression of collectSetterArguments(binding, options.owner)) {
     for (const path of readStateValueOriginPaths(expression, options.readOriginPaths)) {
       if (!origins.some((candidate) => haveEqualPaths(candidate, path))) {
         origins.push(Object.freeze([...path]));
       }
-      if (origins.length >= MAXIMUM_STATE_ORIGINS) return;
+      if (origins.length >= MAXIMUM_STATE_ORIGINS) return Object.freeze(origins);
     }
-  };
+  }
+  return Object.freeze(origins);
+}
+
+/** Shares the exact unshadowed argument sequence without retaining inference-specific callbacks. */
+function collectSetterArguments(
+  binding: PreviewRuntimeHookStateBinding,
+  owner: PreviewRuntimeFunction,
+): readonly ts.Expression[] {
+  const retained = setterArgumentsByBinding.get(binding);
+  if (retained !== undefined) return retained;
+  const arguments_: ts.Expression[] = [];
   const visit = (node: ts.Node): void => {
-    if (setterArguments >= MAXIMUM_SETTER_ARGUMENTS || origins.length >= MAXIMUM_STATE_ORIGINS) {
-      return;
-    }
+    if (arguments_.length >= MAXIMUM_SETTER_ARGUMENTS) return;
     if (
-      node !== options.owner &&
+      node !== owner &&
       isPreviewRuntimeFunction(node) &&
       functionBindsName(node, binding.setterName)
     ) {
@@ -205,15 +218,16 @@ function collectSetterOriginPaths(
       if (ts.isIdentifier(callee) && callee.text === binding.setterName) {
         const argument = node.arguments[0];
         if (argument !== undefined && !ts.isSpreadElement(argument)) {
-          setterArguments += 1;
-          appendOrigins(argument);
+          arguments_.push(argument);
         }
       }
     }
     ts.forEachChild(node, visit);
   };
-  visit(options.owner);
-  return Object.freeze(origins);
+  visit(owner);
+  const result = Object.freeze(arguments_);
+  setterArgumentsByBinding.set(binding, result);
+  return result;
 }
 
 /** Accepts direct state replacement or a plain object that spreads the hook-owned carrier. */

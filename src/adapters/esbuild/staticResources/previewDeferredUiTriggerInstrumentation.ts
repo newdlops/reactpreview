@@ -11,6 +11,11 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
+import {
+  canReplayPreviewDeferredUiStateTransition,
+  readPreviewDeferredUiHandler,
+  readPreviewDeferredUiStateSetter,
+} from './previewDeferredUiHandlerScope';
 import { createPreviewDeferredUiPropFlowAnalyzer } from './previewDeferredUiPropFlow';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
 import {
@@ -84,17 +89,6 @@ interface ImperativeVisibilityEvidence {
 /** Traversal context distinguishes a direct function reference from a call inside a safe wrapper. */
 type ImperativeHandlerPosition = 'called-alias' | 'event' | 'handler-body';
 
-/** Local declarations used only to follow short, side-effect-free handler alias chains. */
-type LocalHandlerDeclaration =
-  | ts.ArrowFunction
-  | ts.FunctionDeclaration
-  | ts.FunctionExpression
-  | ts.Identifier
-  | ts.PropertyAccessExpression;
-
-/** Expression-only subset accepted directly from one variable initializer. */
-type LocalHandlerExpression = Exclude<LocalHandlerDeclaration, ts.FunctionDeclaration>;
-
 /**
  * Adds Page-Inspector-only deferred UI registrations to one JavaScript-like source module.
  *
@@ -138,16 +132,6 @@ export function instrumentPreviewDeferredUiTriggers(
   };
 }
 
-/** Restricts aliases to syntax whose eventual call target can be inspected without evaluation. */
-function isSupportedLocalHandlerDeclaration(node: ts.Expression): node is LocalHandlerExpression {
-  return (
-    ts.isArrowFunction(node) ||
-    ts.isFunctionExpression(node) ||
-    ts.isIdentifier(node) ||
-    ts.isPropertyAccessExpression(node)
-  );
-}
-
 /** Finds JSX `onX` props whose handler reaches one supported zero-argument imperative method. */
 function collectDeferredUiTriggerCandidates(
   sourceFile: ts.SourceFile,
@@ -163,27 +147,15 @@ function collectDeferredUiTriggerCandidates(
         initializer !== undefined && ts.isJsxExpression(initializer)
           ? initializer.expression
           : undefined;
+      const usePosition = node.getStart(sourceFile);
       const directEvidence =
         expression === undefined
           ? undefined
-          : findImperativeVisibilityEvidence(
-              expression,
-              collectVisibleLocalHandlerDeclarations(node, sourceFile),
-              new Set(),
-              0,
-              'event',
-            );
+          : findImperativeVisibilityEvidence(expression, usePosition, new Set(), 0, 'event');
       const stateTransitionEvidence =
         directEvidence !== undefined || expression === undefined
           ? undefined
-          : findLocalStateTransitionEvidence(
-              expression,
-              collectVisibleLocalHandlerDeclarations(node, sourceFile),
-              collectVisibleLocalStateSetters(node),
-              new Set(),
-              0,
-              'event',
-            );
+          : findLocalStateTransitionEvidence(expression, usePosition, new Set(), 0, 'event');
       const evidence =
         directEvidence ??
         stateTransitionEvidence ??
@@ -191,217 +163,27 @@ function collectDeferredUiTriggerCandidates(
       if (expression !== undefined && evidence !== undefined) {
         const activationExpression =
           'activationExpression' in evidence ? evidence.activationExpression : undefined;
-        candidates.push({
-          ...(activationExpression === undefined ? {} : { activationExpression }),
-          expression,
-          metadata: createTriggerMetadata(
-            sourceFile,
-            sourcePath,
-            node.name.getText(sourceFile),
+        if (
+          activationExpression === undefined ||
+          canReplayPreviewDeferredUiStateTransition(activationExpression, node)
+        )
+          candidates.push({
+            ...(activationExpression === undefined ? {} : { activationExpression }),
             expression,
-            evidence,
-          ),
-        });
+            metadata: createTriggerMetadata(
+              sourceFile,
+              sourcePath,
+              node.name.getText(sourceFile),
+              expression,
+              evidence,
+            ),
+          });
       }
     }
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
   return candidates;
-}
-
-/**
- * Collects aliases only from lexical statement scopes enclosing the JSX attribute.
- *
- * Module scope is applied first and inner blocks replace outer names. Sibling blocks are never
- * searched, and variable aliases declared after the JSX expression are excluded. This intentionally
- * sacrifices uncommon control-flow aliases to prevent similarly named handlers in another component
- * from being registered against the wrong event.
- */
-function collectVisibleLocalHandlerDeclarations(
-  node: ts.Node,
-  sourceFile: ts.SourceFile,
-): ReadonlyMap<string, LocalHandlerDeclaration> {
-  const scopes: readonly ts.NodeArray<ts.Statement>[] = [sourceFile.statements];
-  const nestedScopes: ts.NodeArray<ts.Statement>[] = [];
-  let current = node.parent;
-  while (current !== sourceFile) {
-    if (ts.isBlock(current)) nestedScopes.push(current.statements);
-    current = current.parent;
-  }
-  const aliases = new Map<string, LocalHandlerDeclaration>();
-  for (const statements of [...scopes, ...nestedScopes.reverse()]) {
-    const localAliases = collectDirectStatementAliases(statements, node.getStart(sourceFile));
-    for (const [name, declaration] of localAliases) aliases.set(name, declaration);
-  }
-  return aliases;
-}
-
-/** Reads lexically visible React useState tuples without crossing into sibling callbacks. */
-function collectVisibleLocalStateSetters(node: ts.Node): ReadonlyMap<string, string> {
-  const setters = new Map<string, string>();
-  let ancestor: ts.Node = node.parent;
-  while (!ts.isSourceFile(ancestor)) {
-    if (ts.isFunctionLike(ancestor)) {
-      const owner = ancestor as ts.FunctionLikeDeclaration & {
-        readonly body?: ts.ConciseBody;
-      };
-      if (owner.body === undefined) {
-        ancestor = ancestor.parent;
-        continue;
-      }
-      const visit = (current: ts.Node): void => {
-        if (current !== owner.body && ts.isFunctionLike(current)) return;
-        if (ts.isVariableDeclaration(current) && ts.isArrayBindingPattern(current.name)) {
-          const [stateElement, setterElement] = current.name.elements;
-          const initializer = current.initializer;
-          const callee =
-            initializer !== undefined && ts.isCallExpression(initializer)
-              ? unwrapExpression(initializer.expression)
-              : undefined;
-          const useStateCall =
-            callee !== undefined &&
-            ((ts.isIdentifier(callee) && callee.text === 'useState') ||
-              (ts.isPropertyAccessExpression(callee) && callee.name.text === 'useState'));
-          if (
-            useStateCall &&
-            stateElement !== undefined &&
-            setterElement !== undefined &&
-            ts.isBindingElement(stateElement) &&
-            ts.isIdentifier(stateElement.name) &&
-            ts.isBindingElement(setterElement) &&
-            ts.isIdentifier(setterElement.name) &&
-            !setters.has(setterElement.name.text)
-          )
-            setters.set(setterElement.name.text, stateElement.name.text);
-        }
-        ts.forEachChild(current, visit);
-      };
-      visit(owner.body);
-    }
-    ancestor = ancestor.parent;
-  }
-  return setters;
-}
-
-/** Collects unique direct declarations from one lexical block without descending into siblings. */
-function collectDirectStatementAliases(
-  statements: readonly ts.Statement[],
-  usePosition: number,
-): ReadonlyMap<string, LocalHandlerDeclaration> {
-  const aliases = new Map<string, LocalHandlerDeclaration>();
-  const ambiguousNames = new Set<string>();
-  const reassignedNames = collectPotentiallyReassignedNames(statements);
-  const admit = (name: string, declaration: LocalHandlerDeclaration): void => {
-    if (aliases.has(name)) {
-      aliases.delete(name);
-      ambiguousNames.add(name);
-    } else if (!ambiguousNames.has(name)) {
-      aliases.set(name, declaration);
-    }
-  };
-  for (const statement of statements) {
-    if (
-      ts.isFunctionDeclaration(statement) &&
-      statement.name !== undefined &&
-      !reassignedNames.has(statement.name.text)
-    ) {
-      admit(statement.name.text, statement);
-      continue;
-    }
-    if (
-      !ts.isVariableStatement(statement) ||
-      statement.getStart() >= usePosition ||
-      (statement.declarationList.flags & ts.NodeFlags.Const) === 0
-    ) {
-      continue;
-    }
-    for (const declaration of statement.declarationList.declarations) {
-      if (
-        ts.isIdentifier(declaration.name) &&
-        declaration.initializer !== undefined &&
-        isSupportedLocalHandlerDeclaration(declaration.initializer)
-      ) {
-        admit(declaration.name.text, declaration.initializer);
-      }
-    }
-  }
-  return aliases;
-}
-
-/**
- * Finds writes that can replace a function declaration before or after JSX is evaluated.
- *
- * Function declarations are mutable JavaScript bindings, so a source-shaped body alone does not
- * prove which closure an event prop will receive. This deliberately scans the complete lexical
- * statement list and treats nested writes conservatively. False negatives only leave a dormant UI
- * path undiscovered; a false positive could authorize the wrong project function.
- */
-function collectPotentiallyReassignedNames(
-  statements: readonly ts.Statement[],
-): ReadonlySet<string> {
-  const names = new Set<string>();
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-    ) {
-      collectAssignedIdentifierNames(node.left, names);
-    } else if (
-      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
-      (node.operator === ts.SyntaxKind.PlusPlusToken ||
-        node.operator === ts.SyntaxKind.MinusMinusToken)
-    ) {
-      collectAssignedIdentifierNames(node.operand, names);
-    } else if (
-      (ts.isForInStatement(node) || ts.isForOfStatement(node)) &&
-      !ts.isVariableDeclarationList(node.initializer)
-    ) {
-      collectAssignedIdentifierNames(node.initializer, names);
-    }
-    ts.forEachChild(node, visit);
-  };
-  for (const statement of statements) visit(statement);
-  return names;
-}
-
-/** Collects local binding names written by one assignment or destructuring target. */
-function collectAssignedIdentifierNames(node: ts.Expression, names: Set<string>): void {
-  const target = unwrapExpression(node);
-  if (ts.isFunctionDeclaration(target)) return;
-  if (ts.isIdentifier(target)) {
-    names.add(target.text);
-    return;
-  }
-  if (
-    ts.isBinaryExpression(target) &&
-    target.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-    target.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-  ) {
-    collectAssignedIdentifierNames(target.left, names);
-    return;
-  }
-  if (ts.isArrayLiteralExpression(target)) {
-    for (const element of target.elements) {
-      if (ts.isOmittedExpression(element)) continue;
-      collectAssignedIdentifierNames(
-        ts.isSpreadElement(element) ? element.expression : element,
-        names,
-      );
-    }
-    return;
-  }
-  if (!ts.isObjectLiteralExpression(target)) return;
-  for (const property of target.properties) {
-    if (ts.isShorthandPropertyAssignment(property)) {
-      names.add(property.name.text);
-    } else if (ts.isPropertyAssignment(property)) {
-      collectAssignedIdentifierNames(property.initializer, names);
-    } else if (ts.isSpreadAssignment(property)) {
-      collectAssignedIdentifierNames(property.expression, names);
-    }
-  }
 }
 
 /** React event props are case-sensitive and conventionally begin with `on` plus an uppercase name. */
@@ -418,7 +200,7 @@ function isReactEventAttribute(node: ts.JsxAttribute): boolean {
  */
 function findImperativeVisibilityEvidence(
   expression: ts.Expression | ts.FunctionDeclaration,
-  aliases: ReadonlyMap<string, LocalHandlerDeclaration>,
+  usePosition: number,
   visitedAliases: ReadonlySet<string>,
   depth: number,
   position: ImperativeHandlerPosition,
@@ -444,7 +226,7 @@ function findImperativeVisibilityEvidence(
     if (ts.isIdentifier(callee)) {
       return findImperativeVisibilityEvidence(
         callee,
-        aliases,
+        usePosition,
         visitedAliases,
         depth + 1,
         'called-alias',
@@ -458,11 +240,11 @@ function findImperativeVisibilityEvidence(
   }
   if (ts.isIdentifier(unwrapped)) {
     if (visitedAliases.has(unwrapped.text)) return undefined;
-    const alias = aliases.get(unwrapped.text);
+    const alias = readPreviewDeferredUiHandler(unwrapped, usePosition);
     if (alias === undefined) return undefined;
     const nextVisited = new Set(visitedAliases);
     nextVisited.add(unwrapped.text);
-    return findImperativeVisibilityEvidence(alias, aliases, nextVisited, depth + 1, position);
+    return findImperativeVisibilityEvidence(alias, usePosition, nextVisited, depth + 1, position);
   }
   if (
     (ts.isArrowFunction(unwrapped) ||
@@ -476,7 +258,7 @@ function findImperativeVisibilityEvidence(
       ? undefined
       : findImperativeVisibilityEvidence(
           bodyExpression,
-          aliases,
+          usePosition,
           visitedAliases,
           depth + 1,
           'handler-body',
@@ -539,14 +321,16 @@ function isSafeLocalStateTransitionGuard(expression: ts.Expression, depth = 0): 
 /** Finds one positive useState setter call behind optional Boolean event guards. */
 function findLocalStateTransitionCall(
   expression: ts.Expression,
-  setters: ReadonlyMap<string, string>,
+  usePosition: number,
   depth = 0,
 ): ImperativeVisibilityEvidence | undefined {
   if (depth > 8) return undefined;
   const value = unwrapExpression(expression);
   if (ts.isCallExpression(value)) {
     const callee = unwrapExpression(value.expression);
-    const stateName = ts.isIdentifier(callee) ? setters.get(callee.text) : undefined;
+    const stateName = ts.isIdentifier(callee)
+      ? readPreviewDeferredUiStateSetter(callee, usePosition)
+      : undefined;
     const argument = value.arguments[0];
     return stateName !== undefined &&
       value.arguments.length === 1 &&
@@ -567,14 +351,13 @@ function findLocalStateTransitionCall(
     !isSafeLocalStateTransitionGuard(value.left)
   )
     return undefined;
-  return findLocalStateTransitionCall(value.right, setters, depth + 1);
+  return findLocalStateTransitionCall(value.right, usePosition, depth + 1);
 }
 
 /** Follows the same immutable handler aliases while retaining the exact setter call for replay. */
 function findLocalStateTransitionEvidence(
   expression: ts.Expression | ts.FunctionDeclaration,
-  aliases: ReadonlyMap<string, LocalHandlerDeclaration>,
-  setters: ReadonlyMap<string, string>,
+  usePosition: number,
   visitedAliases: ReadonlySet<string>,
   depth: number,
   position: ImperativeHandlerPosition,
@@ -583,18 +366,11 @@ function findLocalStateTransitionEvidence(
   const value = unwrapExpression(expression);
   if (ts.isIdentifier(value)) {
     if (visitedAliases.has(value.text)) return undefined;
-    const alias = aliases.get(value.text);
+    const alias = readPreviewDeferredUiHandler(value, usePosition);
     if (alias === undefined) return undefined;
     const nextVisited = new Set(visitedAliases);
     nextVisited.add(value.text);
-    return findLocalStateTransitionEvidence(
-      alias,
-      aliases,
-      setters,
-      nextVisited,
-      depth + 1,
-      position,
-    );
+    return findLocalStateTransitionEvidence(alias, usePosition, nextVisited, depth + 1, position);
   }
   if (
     (ts.isArrowFunction(value) ||
@@ -606,10 +382,10 @@ function findLocalStateTransitionEvidence(
     const bodyExpression = readSingleFunctionBodyExpression(value.body);
     return bodyExpression === undefined
       ? undefined
-      : findLocalStateTransitionCall(bodyExpression, setters);
+      : findLocalStateTransitionCall(bodyExpression, usePosition);
   }
   if (position === 'called-alias' && ts.isCallExpression(value)) {
-    return findLocalStateTransitionCall(value, setters);
+    return findLocalStateTransitionCall(value, usePosition);
   }
   return undefined;
 }

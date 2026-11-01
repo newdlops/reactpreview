@@ -57,6 +57,10 @@ export function collectPreviewTypedDocumentShapes(
       continue;
     }
     seen.add(symbol);
+    // Resolving a styled template's inferred type can instantiate its entire polymorphic React
+    // signature. These known CSS factories produce components, not GraphQL documents. Explicit
+    // document annotations and unknown factories still follow the normal structural type path.
+    if (isUnannotatedStyledTemplate(checker, symbol)) continue;
     const resultType = readPreviewTypedDocumentResultType(
       checker,
       checker.getTypeAtLocation(identifier),
@@ -83,6 +87,46 @@ export function collectPreviewTypedDocumentShapes(
     documents.push({ identifier: identifier.text, shape });
   }
   return documents;
+}
+
+/** Avoids type inference only for unannotated templates rooted in a proven styling import. */
+function isUnannotatedStyledTemplate(checker: ts.TypeChecker, symbol: ts.Symbol): boolean {
+  const declaration = symbol.valueDeclaration;
+  if (
+    declaration === undefined ||
+    !ts.isVariableDeclaration(declaration) ||
+    declaration.type !== undefined ||
+    declaration.initializer === undefined ||
+    !ts.isTaggedTemplateExpression(declaration.initializer)
+  )
+    return false;
+  let root: ts.Expression = declaration.initializer.tag;
+  for (let depth = 0; depth < 16; depth += 1) {
+    if (ts.isIdentifier(root)) {
+      const [binding] = checker.getSymbolAtLocation(root)?.declarations ?? [];
+      if (binding === undefined) return false;
+      const clause = ts.isImportClause(binding)
+        ? binding
+        : ts.isImportSpecifier(binding) && (binding.propertyName ?? binding.name).text === 'styled'
+          ? binding.parent.parent
+          : undefined;
+      if (clause === undefined || isTypeOnlyClause(clause)) return false;
+      const source = clause.parent.moduleSpecifier;
+      return (
+        ts.isStringLiteral(source) &&
+        (source.text === 'styled-components' ||
+          (source.text === '@emotion/styled' && ts.isImportClause(binding)))
+      );
+    }
+    if (ts.isPropertyAccessExpression(root)) {
+      root = root.expression;
+    } else if (ts.isCallExpression(root)) {
+      root = root.expression;
+    } else {
+      return false;
+    }
+  }
+  return false;
 }
 
 /**

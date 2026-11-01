@@ -195,8 +195,22 @@ function deferred<T>(): CompletionGate<T> {
 }
 
 /** Returns the unchanged byte and modification stamp used by the simulated disk handles. */
-function metadata(sourceText: string): { isFile: () => boolean; mtimeMs: number; size: number } {
-  return { isFile: () => true, mtimeMs: 1, size: Buffer.byteLength(sourceText, 'utf8') };
+function metadata(sourceText: string): {
+  isFile: () => boolean;
+  dev: number;
+  ino: number;
+  ctimeMs: number;
+  mtimeMs: number;
+  size: number;
+} {
+  return {
+    isFile: () => true,
+    dev: 1,
+    ino: 1,
+    ctimeMs: 1,
+    mtimeMs: 1,
+    size: Buffer.byteLength(sourceText, 'utf8'),
+  };
 }
 
 /** Models a readable handle whose contents can finish after cache invalidation or a newer read. */

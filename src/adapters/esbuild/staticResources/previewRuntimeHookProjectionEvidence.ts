@@ -30,7 +30,7 @@ interface ProjectionProof {
 const proofsByPath = new Map<string, ProjectionProof>();
 const MAX_PROOFS = 512;
 const MAX_PROOF_BYTES = 4 * 1024 * 1024;
-const MAX_SOURCE_CHARACTERS = 64 * 1024;
+const MAX_SOURCE_CHARACTERS = 128 * 1024;
 let retainedBytes = 0;
 
 /**
@@ -38,7 +38,7 @@ let retainedBytes = 0;
  *
  * @param sourcePath Exact authored path used to select TS/JS/JSX grammar.
  * @param sourceText Current source, including dirty editor contents.
- * @returns Frozen spelling/offset proofs; empty or oversized results are never retained.
+ * @returns Frozen spelling/offset proofs, including exact empty results; oversized inputs are not retained.
  */
 export function collectPreviewRuntimeHookProjectionEvidence(
   sourcePath: string,
@@ -59,8 +59,7 @@ export function collectPreviewRuntimeHookProjectionEvidence(
   const bytes =
     (sourcePath.length + sourceText.length) * 2 +
     evidence.reduce((total, proof) => total + proof.localName.length * 2 + 8, 0);
-  if (evidence.length === 0 || sourceText.length > MAX_SOURCE_CHARACTERS || bytes > MAX_PROOF_BYTES)
-    return evidence;
+  if (sourceText.length > MAX_SOURCE_CHARACTERS || bytes > MAX_PROOF_BYTES) return evidence;
   while (proofsByPath.size >= MAX_PROOFS || retainedBytes + bytes > MAX_PROOF_BYTES) {
     const oldest = proofsByPath.entries().next().value;
     if (oldest === undefined) break;

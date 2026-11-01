@@ -6,6 +6,7 @@
  * is a collection only from its local consumer or a uniquely declared same-file helper parameter.
  */
 import ts from 'typescript';
+import { isPreviewRuntimeHookKeyAvailable } from './previewRuntimeHookKeyAvailability';
 import { isPreviewRuntimeHookArrayUsageProperty } from './previewRuntimeHookPropertyUsage';
 import { createPreviewRuntimeHookReferenceTraversal } from './previewRuntimeHookReferenceTraversal';
 import {
@@ -49,13 +50,11 @@ export function inferPreviewRuntimeHookDynamicElementFallback(
       return;
     if (ts.isElementAccessExpression(node)) {
       const receiver = unwrapPreviewRuntimeExpression(node.expression);
-      const key = readSafeDynamicKey(node.argumentExpression, sourceFile, owner);
-      if (
-        ts.isIdentifier(receiver) &&
-        receiver.text === identifier.text &&
-        key !== undefined &&
-        ignoredKeyTexts?.has(key.text) !== true
-      ) {
+      const key =
+        ts.isIdentifier(receiver) && receiver.text === identifier.text
+          ? readSafeDynamicKey(node.argumentExpression, sourceFile, owner, identifier)
+          : undefined;
+      if (key !== undefined && ignoredKeyTexts?.has(key.text) !== true) {
         const collection = hasCollectionDemand(node, owner, sourceFile);
         const prior = entries.get(key.text);
         if (prior === undefined || (!prior.collection && collection)) {
@@ -86,6 +85,7 @@ function readSafeDynamicKey(
   argument: ts.Expression | undefined,
   sourceFile: ts.SourceFile,
   owner: PreviewRuntimeFunction,
+  hookBinding: ts.Identifier,
 ): { readonly expression: string; readonly text: string } | undefined {
   if (argument === undefined) return undefined;
   const value = unwrapPreviewRuntimeExpression(argument);
@@ -103,7 +103,9 @@ function readSafeDynamicKey(
         ? { expression: '0', text: '0' }
         : undefined;
     }
-    return { expression: value.text, text: value.text };
+    return isPreviewRuntimeHookKeyAvailable(value, hookBinding, owner)
+      ? { expression: value.text, text: value.text }
+      : undefined;
   }
   if (ts.isStringLiteralLike(value) || ts.isNumericLiteral(value)) {
     if (BLOCKED_PROPERTY_NAMES.has(value.text) || value.text.length > 128) return undefined;

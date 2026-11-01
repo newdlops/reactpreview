@@ -145,6 +145,81 @@ describe('runtime hook owner syntax reuse', () => {
     }
   });
 
+  it('reuses setter call syntax while reevaluating the current origin callback', () => {
+    const { owner } = parse(`import { useState } from "react"; function Page() {
+      const [draft, setDraft] = useState(null); setDraft(origin); return draft; }`);
+    let bodyReads = 0;
+    const observed = new Proxy(owner, {
+      get(target, property, receiver): unknown {
+        if (property === 'body') bodyReads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const read = (name: string): ReadonlyMap<string, readonly (readonly string[])[]> =>
+      collectPreviewRuntimeHookStateAliases({
+        aliases: new Map(),
+        owner: observed,
+        readOriginPaths: (node) =>
+          ts.isIdentifier(node) && node.text === 'origin' ? [[name]] : [],
+      });
+    expect(read('first').get('draft')).toEqual([['first']]);
+    const firstReads = bodyReads;
+    expect(firstReads).toBeGreaterThan(0);
+    expect(read('second').get('draft')).toEqual([['second']]);
+    expect(bodyReads).toBe(firstReads);
+  });
+
+  it('keeps shadowed, optional and spread setter calls out of reused syntax', () => {
+    const { owner } = parse(`import { useState } from "react"; function Page() {
+      const [draft, setDraft] = useState(null);
+      const parameterShadow = (setDraft) => setDraft(hidden);
+      const localShadow = () => { const setDraft = custom; setDraft(hidden); };
+      setDraft?.(hidden); setDraft(...hidden); setDraft(visible); return draft;
+    }`);
+    for (const name of ['first', 'second']) {
+      const aliases = collectPreviewRuntimeHookStateAliases({
+        aliases: new Map(),
+        owner,
+        readOriginPaths: (node) =>
+          ts.isIdentifier(node) ? [[node.text === 'visible' ? name : 'wrong-origin']] : [],
+      });
+      expect(aliases.get('draft')).toEqual([[name]]);
+    }
+  });
+
+  it('retains the setter argument ceiling and does not evaluate origins after the fourth match', () => {
+    const skipped = parse(`import { useState } from "react"; function Page() {
+      const [draft, setDraft] = useState(null);
+      ${'setDraft(unrelated);'.repeat(32)} setDraft(visible); return draft;
+    }`);
+    const limited = parse(`import { useState } from "react"; function Page() {
+      const [draft, setDraft] = useState(null);
+      setDraft(one); setDraft(two); setDraft(three); setDraft(four); setDraft(five); return draft;
+    }`);
+    for (let index = 0; index < 2; index += 1) {
+      expect(
+        collectPreviewRuntimeHookStateAliases({
+          aliases: new Map(),
+          owner: skipped.owner,
+          readOriginPaths: (node) =>
+            ts.isIdentifier(node) && node.text === 'visible' ? [['wrong-origin']] : [],
+        }).has('draft'),
+      ).toBe(false);
+      const seen: string[] = [];
+      const aliases = collectPreviewRuntimeHookStateAliases({
+        aliases: new Map(),
+        owner: limited.owner,
+        readOriginPaths: (node) => {
+          if (!ts.isIdentifier(node)) return [];
+          seen.push(node.text);
+          return [[node.text]];
+        },
+      });
+      expect(aliases.get('draft')).toEqual([['one'], ['two'], ['three'], ['four']]);
+      expect(seen).toEqual(['one', 'two', 'three', 'four']);
+    }
+  });
+
   it('rechecks React state import identity after editing and restoring the same source path', () => {
     const source = `import { useState } from "react"; function Page() {
       const root = useData(); const [draft, setDraft] = useState(null);

@@ -42,13 +42,17 @@ describe('hook projection evidence memo', () => {
     );
   });
 
-  it('does not retain empty proof results', () => {
+  it('reuses an unchanged empty proof and invalidates it when a hook becomes eligible', () => {
     const inspect = vi.spyOn(inventory, 'collectRuntimeHookInventory');
     const source = SOURCE.replaceAll('useData', 'useLazyQuery');
     for (let index = 0; index < 2; index += 1)
       expect(collectPreviewRuntimeHookProjectionEvidence('/projection/lazy.tsx', source)).toEqual(
         [],
       );
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(collectPreviewRuntimeHookProjectionEvidence('/projection/lazy.tsx', SOURCE)).toEqual(
+      EXPECTED,
+    );
     expect(inspect).toHaveBeenCalledTimes(2);
   });
 
@@ -112,11 +116,21 @@ describe('hook projection evidence memo', () => {
 
   it('does not retain a single source over the per-module limit', () => {
     const inspect = vi.spyOn(inventory, 'collectRuntimeHookInventory');
-    const source = SOURCE + '/*' + 'x'.repeat(64 * 1024) + '*/';
+    const source = SOURCE + '/*' + 'x'.repeat(128 * 1024) + '*/';
     for (let index = 0; index < 2; index += 1)
       expect(
         collectPreviewRuntimeHookProjectionEvidence('/projection/oversized.tsx', source),
       ).toEqual(EXPECTED);
     expect(inspect).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares a large common module within the unchanged total byte budget', () => {
+    const inspect = vi.spyOn(inventory, 'collectRuntimeHookInventory');
+    const source = SOURCE + '/*' + 'x'.repeat(80 * 1024) + '*/';
+    for (let index = 0; index < 3; index += 1)
+      expect(
+        collectPreviewRuntimeHookProjectionEvidence('/projection/common-menu.tsx', source),
+      ).toEqual(EXPECTED);
+    expect(inspect).toHaveBeenCalledTimes(1);
   });
 });

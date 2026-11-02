@@ -83,8 +83,14 @@ export function verifyPreviewInspectorBundleFrontierMetafile(
     ),
   ].sort();
   const unexpectedInputSet = new Set(unexpectedInputs);
+  const incomingEdges = collectIncomingAuthoredEdges(
+    options,
+    workspaceRoot,
+    unexpectedInputSet,
+    normalizeInput,
+  );
   const unexpectedWithEdges = unexpectedInputs.map((sourcePath) => ({
-    incomingEdge: findIncomingAuthoredEdge(options, workspaceRoot, sourcePath),
+    incomingEdge: incomingEdges.get(sourcePath),
     sourcePath,
   }));
   const boundaryEscape =
@@ -98,9 +104,7 @@ export function verifyPreviewInspectorBundleFrontierMetafile(
     );
   const unexpectedInput = boundaryEscape?.sourcePath ?? unexpectedInputs[0];
   if (unexpectedInput !== undefined) {
-    const incomingEdge =
-      boundaryEscape?.incomingEdge ??
-      findIncomingAuthoredEdge(options, workspaceRoot, unexpectedInput);
+    const incomingEdge = boundaryEscape?.incomingEdge ?? incomingEdges.get(unexpectedInput);
     throwFrontierMismatch(
       options,
       createPreviewInspectorFrontierMismatchEvidence({
@@ -127,29 +131,45 @@ export function verifyPreviewInspectorBundleFrontierMetafile(
     );
 }
 
-/** Retains the authored edge that materialized an unplanned input when esbuild exposes it. */
-function findIncomingAuthoredEdge(
+/** First authored importer/specifier pair in the existing deterministic traversal order. */
+interface AuthoredIncomingEdge {
+  /** Canonical workspace source selected first in the importer's stable sort order. */
+  readonly importerPath: string;
+  /** Authored specifier when available; otherwise esbuild's exact imported identity. */
+  readonly moduleSpecifier: string;
+}
+
+/**
+ * Reads the first incoming edge for each unplanned input in one source-ordered graph pass.
+ * Only this synchronous verification owns the index. Reusing its bounded normalizer avoids a
+ * physical lookup per target/edge pair, while saturation and later builds keep ordinary checks.
+ */
+function collectIncomingAuthoredEdges(
   options: VerifyPreviewInspectorBundleFrontierMetafileOptions,
   workspaceRoot: string,
-  targetPath: string,
-): { readonly importerPath: string; readonly moduleSpecifier: string } | undefined {
+  targetPaths: ReadonlySet<string>,
+  normalizeInput: typeof normalizeAuthoredMetafileInput,
+): ReadonlyMap<string, AuthoredIncomingEdge> {
+  const edges = new Map<string, AuthoredIncomingEdge>();
+  if (targetPaths.size === 0) return edges;
   for (const [inputPath, input] of Object.entries(options.metafile.inputs).sort(([left], [right]) =>
     left.localeCompare(right),
   )) {
     if (!isAuthoredMetafileInputPath(inputPath)) continue;
-    const importerPath = normalizeAuthoredMetafileInput(workspaceRoot, inputPath).sourcePath;
+    const importerPath = normalizeInput(workspaceRoot, inputPath).sourcePath;
     if (!isAuthoredWorkspaceSource(workspaceRoot, importerPath)) continue;
     for (const imported of input.imports) {
       if (imported.external === true || !isAuthoredMetafileInputPath(imported.path)) continue;
-      const importedPath = normalizeAuthoredMetafileInput(workspaceRoot, imported.path).sourcePath;
-      if (importedPath !== targetPath) continue;
-      return {
+      const importedPath = normalizeInput(workspaceRoot, imported.path).sourcePath;
+      if (!targetPaths.has(importedPath) || edges.has(importedPath)) continue;
+      edges.set(importedPath, {
         importerPath,
         moduleSpecifier: imported.original ?? imported.path,
-      };
+      });
+      if (edges.size === targetPaths.size) return edges;
     }
   }
-  return undefined;
+  return edges;
 }
 
 /** Requires every generated execution surface to survive output tree-shaking and composition. */

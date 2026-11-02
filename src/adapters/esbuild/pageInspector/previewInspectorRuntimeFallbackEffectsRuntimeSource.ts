@@ -155,6 +155,16 @@ function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata) {
   return true;
 }
 
+/** Restores only a caller that still belongs to the same activation and hot revision. */
+function readPreviewInspectorCurrentRuntimeEffectCaller(previous) {
+  const revision = typeof previewEntryRevision === 'number' ? previewEntryRevision : 0;
+  return previous?.revision === revision &&
+    previous.scopeKey === previewInspectorSession.runtimeFallbackScopeKey &&
+    previous.scopeToken === previewInspectorSession.runtimeFallbackScopeToken
+      ? previous
+      : undefined;
+}
+
 /**
  * Runs one compiler-proven React effect while Auto values controls render-only failure isolation.
  * Successful cleanup functions remain intact. Promise-returning effects are made non-blocking and
@@ -165,22 +175,32 @@ function resolvePreviewInspectorRuntimeEffect(readEffect, rawMetadata, ownership
   initializePreviewInspectorRuntimeFallbackState();
   const effectScopeKey = previewInspectorSession.runtimeFallbackScopeKey;
   const chainEffect = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
-  previewInspectorSession.activeTargetRenderChainEffect = { id: chainEffect.id, ownershipToken, sourcePath: chainEffect.sourcePath };
   if (shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata)) return undefined;
+  // Only a callback that actually executes may own synchronous chain evidence. Nested effects
+  // restore their caller; skipped effects never replace it with a stale source-site attribution.
+  const previousChainEffect = previewInspectorSession.activeTargetRenderChainEffect;
+  previewInspectorSession.activeTargetRenderChainEffect = {
+    id: chainEffect.id,
+    ownershipToken,
+    revision: typeof previewEntryRevision === 'number' ? previewEntryRevision : 0,
+    scopeKey: effectScopeKey,
+    scopeToken: previewInspectorSession.runtimeFallbackScopeToken,
+    sourcePath: chainEffect.sourcePath,
+  };
   let result;
   try {
     result = readEffect();
   } catch (error) {
-    previewInspectorSession.activeTargetRenderChainEffect = undefined;
+    previewInspectorSession.activeTargetRenderChainEffect = readPreviewInspectorCurrentRuntimeEffectCaller(previousChainEffect);
     if (!readPreviewInspectorFallbackValuesEnabled()) throw error;
     recordPreviewInspectorRuntimeEffectIsolation(rawMetadata, error, 'effect', effectScopeKey);
     return undefined;
+  } finally {
+    previewInspectorSession.activeTargetRenderChainEffect = readPreviewInspectorCurrentRuntimeEffectCaller(previousChainEffect);
   }
   const chain = previewInspectorSession.targetRenderCommitChainsByToken?.get?.(ownershipToken);
   if (chain?.markedCallEffectId === chainEffect.id && chainEffect.id.length > 0) chain.effectCompletedAfterMarkedCall = true;
-  previewInspectorSession.activeTargetRenderChainEffect = undefined;
   if (isPreviewInspectorRuntimeThenable(result)) {
-    previewInspectorSession.activeTargetRenderChainEffect = undefined;
     if (!readPreviewInspectorFallbackValuesEnabled()) return result;
     Promise.resolve(result).catch((error) => {
       recordPreviewInspectorRuntimeEffectIsolation(

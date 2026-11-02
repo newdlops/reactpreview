@@ -1,5 +1,15 @@
 /** Real programs must reuse package metadata within a build and observe current inputs next build. */
-import { mkdir, mkdtemp, realpath, rm, unlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rename,
+  rm,
+  stat,
+  unlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
@@ -31,6 +41,71 @@ const EXPECTED_PROPS = {
 };
 
 describe('analysis program package metadata', () => {
+  it('revalidates unchanged saved metadata without reopening it in the next program', async () => {
+    const fixture = await createFixture('NodeNext');
+    const cache = new PreviewTypeSourceFileCache();
+    const reads = observePackageReads(fixture.manifestPath);
+    const first = createPreviewTypeProgram(fixture.input, cache);
+    const second = createPreviewTypeProgram(fixture.input, cache);
+    expect(readProps(first, fixture.pagePath)).toEqual(EXPECTED_PROPS);
+    expect(readProps(second, fixture.pagePath)).toEqual(EXPECTED_PROPS);
+    expect(second.status).toMatchObject({ projectFiles: 1, refusedModules: 0 });
+    expect(reads).toEqual([fixture.manifestPath]);
+    cache.clear();
+    expect(readProps(createPreviewTypeProgram(fixture.input, cache), fixture.pagePath)).toEqual(
+      EXPECTED_PROPS,
+    );
+    expect(reads).toEqual([fixture.manifestPath, fixture.manifestPath]);
+  });
+
+  it('observes a same-size manifest replacement with restored mtime and changes its type entry', async () => {
+    const fixture = await createFixture('NodeNext');
+    const cache = new PreviewTypeSourceFileCache();
+    const timestamp = new Date('2020-01-01T00:00:00Z');
+    await utimes(fixture.manifestPath, timestamp, timestamp);
+    const first = createPreviewTypeProgram(fixture.input, cache);
+    expect(readProps(first, fixture.pagePath)).toEqual(EXPECTED_PROPS);
+    const before = await stat(fixture.manifestPath);
+    const replacement = fixture.manifestPath + '.replacement';
+    await writeFile(
+      path.join(fixture.packageRoot, 'other.d.ts'),
+      "export interface Props { status: 'edited'; }",
+    );
+    await writeFile(
+      replacement,
+      JSON.stringify({ name: 'payload-kit', type: 'module', types: 'other.d.ts' }),
+    );
+    await utimes(replacement, before.atime, before.mtime);
+    await rename(replacement, fixture.manifestPath);
+    expect((await stat(fixture.manifestPath)).size).toBe(before.size);
+    expect((await stat(fixture.manifestPath)).mtimeMs).toBe(before.mtimeMs);
+    const second = createPreviewTypeProgram(fixture.input, cache);
+    expect(readProps(second, fixture.pagePath)).toEqual({ status: 'edited' });
+    expect(readProps(first, fixture.pagePath)).toEqual(EXPECTED_PROPS);
+  });
+
+  it('resolves an oversized manifest normally without retaining its saved text', async () => {
+    const fixture = await createFixture('Bundler');
+    const cache = new PreviewTypeSourceFileCache();
+    await writeFile(
+      fixture.manifestPath,
+      JSON.stringify({
+        name: 'payload-kit',
+        type: 'module',
+        types: 'index.d.ts',
+        padding: 'x'.repeat(600_000),
+      }),
+    );
+    const reads = observePackageReads(fixture.manifestPath);
+    for (let index = 0; index < 2; index += 1) {
+      expect(readProps(createPreviewTypeProgram(fixture.input, cache), fixture.pagePath)).toEqual(
+        EXPECTED_PROPS,
+      );
+    }
+    // Both bounded metadata layers decline storage; resolution still has the full live manifest.
+    expect(reads.length).toBeGreaterThanOrEqual(2);
+  });
+
   it.each(['Node16', 'NodeNext', 'Bundler'] as const)(
     'reads one package manifest once while preserving %s declared props',
     async (resolution) => {
@@ -93,7 +168,82 @@ describe('analysis program package metadata', () => {
     expect(readProps(next, fixture.pagePath)).toEqual({ ...EXPECTED_PROPS, item0: 9 });
     expect(next.status.projectFiles).toBe(first.status.projectFiles);
     expect(next.status.refusedModules).toBe(0);
-    expect(reads).toEqual([fixture.manifestPath]);
+    expect(reads).toEqual([]);
+  });
+
+  it('prefers a manifest snapshot over warm disk metadata and restores saved resolution after discard', async () => {
+    const fixture = await createFixture('NodeNext');
+    const cache = new PreviewTypeSourceFileCache();
+    const original = createPreviewTypeProgram(fixture.input, cache);
+    await writeFile(
+      path.join(fixture.packageRoot, 'other.d.ts'),
+      "export interface Props { status: 'edited'; }",
+    );
+    const dirty = createPreviewTypeProgram(
+      {
+        ...fixture.input,
+        readSnapshot: (name) =>
+          name === fixture.manifestPath
+            ? JSON.stringify({ name: 'payload-kit', type: 'commonjs', types: 'other.d.ts' })
+            : undefined,
+      },
+      cache,
+    );
+    expect(readProps(dirty, fixture.pagePath)).toEqual({ status: 'edited' });
+    expect(
+      dirty.program.getSourceFile(path.join(fixture.packageRoot, 'other.d.ts'))?.impliedNodeFormat,
+    ).toBe(ts.ModuleKind.CommonJS);
+    const restored = createPreviewTypeProgram(fixture.input, cache);
+    expect(readProps(restored, fixture.pagePath)).toEqual(EXPECTED_PROPS);
+    expect(
+      restored.program.getSourceFile(path.join(fixture.packageRoot, 'index.d.ts'))
+        ?.impliedNodeFormat,
+    ).toBe(ts.ModuleKind.ESNext);
+    expect(readProps(original, fixture.pagePath)).toEqual(EXPECTED_PROPS);
+  });
+
+  it('does not let deleted metadata retain a previous types entry', async () => {
+    const fixture = await createFixture('NodeNext');
+    const cache = new PreviewTypeSourceFileCache();
+    await writeFile(
+      path.join(fixture.packageRoot, 'other.d.ts'),
+      "export interface Props { status: 'edited'; }",
+    );
+    await writeFile(
+      fixture.manifestPath,
+      JSON.stringify({ name: 'payload-kit', type: 'module', types: 'other.d.ts' }),
+    );
+    expect(readProps(createPreviewTypeProgram(fixture.input, cache), fixture.pagePath)).toEqual({
+      status: 'edited',
+    });
+    await unlink(fixture.manifestPath);
+    expect(readProps(createPreviewTypeProgram(fixture.input, cache), fixture.pagePath)).toEqual(
+      EXPECTED_PROPS,
+    );
+  });
+
+  it('drops saved metadata when a later program no longer reaches the package', async () => {
+    const fixture = await createFixture('Bundler');
+    const cache = new PreviewTypeSourceFileCache();
+    const reads = observePackageReads(fixture.manifestPath);
+    expect(readProps(createPreviewTypeProgram(fixture.input, cache), fixture.pagePath)).toEqual(
+      EXPECTED_PROPS,
+    );
+    const unrelated = createPreviewTypeProgram(
+      {
+        ...fixture.input,
+        readSnapshot: (name) =>
+          name === fixture.pagePath
+            ? "export function Page(props: {status: 'other'}) { return null; }"
+            : undefined,
+      },
+      cache,
+    );
+    expect(readProps(unrelated, fixture.pagePath)).toEqual({ status: 'other' });
+    expect(readProps(createPreviewTypeProgram(fixture.input, cache), fixture.pagePath)).toEqual(
+      EXPECTED_PROPS,
+    );
+    expect(reads).toEqual([fixture.manifestPath, fixture.manifestPath]);
   });
 
   it('uses an unsaved package type on the first program without reading its saved manifest', async () => {

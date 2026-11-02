@@ -21,6 +21,37 @@ afterEach(async () => {
 });
 
 describe('validated type source text reuse', () => {
+  it('serves saved text without retaining it when its storage budget is zero', async () => {
+    const fixture = await createFixture();
+    const reads = observeReads(fixture.props);
+    const cache = new PreviewTypeSourceTextCache(0);
+    expect(cache.read(fixture.props, Infinity)).toBe("export interface Props { status: 'first'; }");
+    expect(cache.read(fixture.props, Infinity)).toBe("export interface Props { status: 'first'; }");
+    expect(reads).toEqual([fixture.props, fixture.props]);
+  });
+
+  it('reclaims a removed entry storage allowance before retaining another path', async () => {
+    const fixture = await createFixture();
+    const other = path.join(path.dirname(fixture.props), 'other.ts');
+    const text = "export interface Props { status: 'first'; }" + ' '.repeat(500);
+    await writeFile(fixture.props, text);
+    await writeFile(other, text);
+    const reads = observeReads(other);
+    const cache = new PreviewTypeSourceTextCache(2048);
+    expect(cache.read(fixture.props, Infinity)).toBe(text);
+    expect(cache.read(other, Infinity)).toBe(text);
+    expect(cache.read(other, Infinity)).toBe(text);
+    expect(reads).toEqual([other, other]);
+    cache.retainOnly(new Set());
+    expect(cache.read(other, Infinity)).toBe(text);
+    expect(cache.read(other, Infinity)).toBe(text);
+    expect(reads).toEqual([other, other, other]);
+    cache.clear();
+    expect(cache.read(other, Infinity)).toBe(text);
+    expect(cache.read(other, Infinity)).toBe(text);
+    expect(reads).toEqual([other, other, other, other]);
+  });
+
   it('does not retain decoded candidates that cannot fit the admission limit', async () => {
     const fixture = await createFixture();
     const reads = observeReads(fixture.props);

@@ -94,6 +94,9 @@ function activatePreviewInspectorRuntimeFallbackScope(candidate, directTarget) {
   const previousScopeKey = previewInspectorSession.runtimeFallbackScopeKey;
   if (previousScopeKey === scopeKey) return false;
   previewInspectorSession.runtimeFallbackScopeKey = scopeKey;
+  // Activation identity must distinguish A -> B -> A from the still-running retired A callback.
+  previewInspectorSession.runtimeFallbackScopeToken = Symbol('runtime-fallback-scope');
+  previewInspectorSession.activeTargetRenderChainEffect = undefined;
   if (previousScopeKey === undefined) return false;
 
   let clearedCount = 0;

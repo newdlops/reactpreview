@@ -79,6 +79,7 @@ export const PREVIEW_TYPE_PROGRAM_DEFAULT_BUDGET: PreviewTypeProgramBudget = Obj
 const DECLARATION_PATTERN = /\.d\.[cm]?ts$/u;
 const NODE_MODULES_SEGMENT = /[\\/]node_modules[\\/]/u;
 const PROBE_FILE_NAME = '__react_preview_types__.ts';
+const MAX_SAVED_PACKAGE_TEXT_BYTES = 1024 * 1024;
 
 /** Analysis program plus the admission facts needed to explain partial coverage. */
 export interface PreviewTypeProgram {
@@ -116,6 +117,9 @@ export class PreviewTypeSourceFileCache {
   >();
   private readonly resolutions = new PreviewTypeResolutionCache();
   private readonly sourceTexts = new PreviewTypeSourceTextCache();
+  /** Saved metadata is revalidated each program; resolution answers and snapshots are never retained. */
+  private readonly packageTexts = new PreviewTypeSourceTextCache(MAX_SAVED_PACKAGE_TEXT_BYTES);
+  private currentPackagePaths = new Set<string>();
   private readonly imports = new Map<
     string,
     { readonly text: string; readonly specifiers: readonly string[] }
@@ -144,6 +148,7 @@ export class PreviewTypeSourceFileCache {
   /** Drops parses of files outside `fileKeys`, so the cache never outgrows one program. */
   public retainOnly(fileKeys: ReadonlySet<string>): void {
     this.sourceTexts.retainOnly(fileKeys);
+    this.packageTexts.retainOnly(this.currentPackagePaths);
     for (const key of this.entries.keys()) {
       if (!fileKeys.has(key)) this.entries.delete(key);
     }
@@ -177,6 +182,8 @@ export class PreviewTypeSourceFileCache {
     this.resolutions.clear();
     this.imports.clear();
     this.sourceTexts.clear();
+    this.packageTexts.clear();
+    this.currentPackagePaths.clear();
   }
 
   /** Reuses admitted disk text only after checking its current complete filesystem identity. */
@@ -184,9 +191,30 @@ export class PreviewTypeSourceFileCache {
     return this.sourceTexts.read(path.normalize(fileName), limit);
   }
 
-  /** Starts fresh import answers and metadata while retaining reusable source syntax separately. */
-  public createResolutionHost(host: ts.ModuleResolutionHost): ts.ModuleResolutionHost {
-    return this.resolutions.createHost(host);
+  /** Starts fresh import answers and checks saved metadata identity before reusing decoded bytes. */
+  public createResolutionHost(
+    host: ts.ModuleResolutionHost,
+    readSnapshot: PreviewTypeProgramInput['readSnapshot'],
+  ): ts.ModuleResolutionHost {
+    const packagePaths = new Set<string>();
+    this.currentPackagePaths = packagePaths;
+    return this.resolutions.createHost({
+      ...host,
+      readFile: (fileName) => {
+        if (path.basename(fileName) !== 'package.json') return host.readFile(fileName);
+        const key = path.normalize(fileName);
+        packagePaths.add(key);
+        const snapshot = readSnapshot(key);
+        if (snapshot !== undefined) return snapshot;
+        try {
+          const saved = this.packageTexts.read(key, Infinity);
+          return typeof saved === 'string' ? saved : undefined;
+        } catch {
+          // Metadata stat failures keep the original host's ordinary unreadable-file behavior.
+          return host.readFile(fileName);
+        }
+      },
+    });
   }
 
   /** Returns a remembered resolution: a path, `null` for a remembered miss, `undefined` if unknown. */
@@ -249,7 +277,7 @@ export function createPreviewTypeProgram(
   );
   // Reuse admission's package metadata for per-file format detection in this same program.
   host.getModuleResolutionCache = () => resolutionCache;
-  const resolutionHost = cache.createResolutionHost({ ...host });
+  const resolutionHost = cache.createResolutionHost({ ...host }, input.readSnapshot);
   host.fileExists = (fileName) => resolutionHost.fileExists(fileName);
   host.readFile = (fileName) => resolutionHost.readFile(fileName);
   if (resolutionHost.directoryExists !== undefined)

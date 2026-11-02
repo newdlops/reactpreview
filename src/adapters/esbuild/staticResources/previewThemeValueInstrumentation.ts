@@ -5,6 +5,7 @@
  * templates, so application data named `theme` and computed business expressions are untouched.
  */
 import ts from 'typescript';
+import type { PreviewRuntimeSourceSyntax } from './previewRuntimeSourceSyntax';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
 import {
   collectPreviewStyledTemplateBindings,
@@ -50,14 +51,16 @@ interface PreviewThemeValueRead {
  * @param sourcePath Absolute authored source identity embedded in bounded runtime diagnostics.
  * @param sourceText Unmodified workspace source loaded by the preview compiler.
  * @param allocateBinding Collision-safe generated binding allocator.
+ * @param sourceSyntax Optional private syntax scope; token demand and edits stay per call.
  * @returns One optional resolver import and bounded, non-overlapping source replacements.
  */
 export function createPreviewThemeValueTransform(
   sourcePath: string,
   sourceText: string,
   allocateBinding: PreviewThemeValueBindingAllocator,
+  sourceSyntax?: PreviewRuntimeSourceSyntax,
 ): PreviewThemeValueTransform {
-  const sourceFile = createPreviewStyledTemplateSourceFile(sourcePath, sourceText);
+  const sourceFile = createPreviewStyledTemplateSourceFile(sourcePath, sourceText, sourceSyntax);
   if (hasPreviewStyledTemplateParseDiagnostics(sourceFile)) {
     return { imports: [], replacements: [] };
   }

@@ -1,5 +1,6 @@
 /** Coordinates bounded authored-source analysis for reactContextHookFallback. */
 import ts from 'typescript';
+import type { PreviewRuntimeSourceSyntax } from './previewRuntimeSourceSyntax';
 import type {
   ResolvePreviewRuntimeHookImportedHelperItemFallback,
   ResolvePreviewRuntimeHookImportedHelperParameterFallback,
@@ -63,6 +64,7 @@ import {
  *
  * @param sourcePath Project JavaScript or TypeScript path used to choose parser grammar.
  * @param sourceText Original source contents used for offsets and unchanged hook-call text.
+ * @param sourceSyntax Optional exact-input syntax owned by the current compatibility transform.
  * @returns Frozen declaration and replacement arrays, or empty arrays when evidence is unsafe.
  */
 export function createReactContextHookFallbackTransform(
@@ -73,17 +75,20 @@ export function createReactContextHookFallbackTransform(
   resolveImportedHelperProperty?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
   resolveTypedCall?: PreviewRuntimeHookTypedCallResolver,
   selectedTargetNames?: ReadonlySet<string>,
+  sourceSyntax?: PreviewRuntimeSourceSyntax,
 ): ReactContextHookFallbackTransform {
   if (!isProjectRuntimeSource(sourcePath) || !sourceText.includes('Context')) {
     return EMPTY_TRANSFORM;
   }
-  const sourceFile = ts.createSourceFile(
-    sourcePath,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    selectScriptKind(sourcePath),
-  );
+  const sourceFile =
+    sourceSyntax?.readSourceFile(sourcePath, sourceText, selectScriptKind(sourcePath)) ??
+    ts.createSourceFile(
+      sourcePath,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      selectScriptKind(sourcePath),
+    );
   if (hasParseDiagnostics(sourceFile)) {
     return EMPTY_TRANSFORM;
   }

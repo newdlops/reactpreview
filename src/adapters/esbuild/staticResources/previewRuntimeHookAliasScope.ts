@@ -30,18 +30,26 @@ export interface PreviewRuntimeHookAliasScope {
   readonly isShadowedCarrier: (expression: ts.Expression) => boolean;
 }
 
+/** Distinguishes parameter origins from aliases discovered in the owner's body. */
+export interface PreviewRuntimeHookAliasScopeOptions {
+  /** Masks body declarations even when their nearest function is the owner. */
+  readonly ownerParameterOrigins?: true;
+}
+
 /**
  * Creates current-query visibility using exact lexical binding-name facts, without a type binder.
  *
  * @param owner Function that declared the original hook binding and immutable carriers.
  * @param aliases Current query's complete hook-relative origins before nested binding masking.
  * @param trackedNames Alias and carrier names whose replacement matters to this query.
+ * @param options Optional visibility rule for origins declared in the owner's parameter list.
  * @returns Query-owned reader; inferred values and callback results are never stored here.
  */
 export function createPreviewRuntimeHookAliasScope(
   owner: PreviewRuntimeFunction,
   aliases: PreviewRuntimeHookAliasPathCatalog,
   trackedNames: ReadonlySet<string>,
+  options?: PreviewRuntimeHookAliasScopeOptions,
 ): PreviewRuntimeHookAliasScope {
   const tracked = new Set(trackedNames);
   const root: AliasScopeRecord = { aliases, shadowed: new Set() };
@@ -54,6 +62,7 @@ export function createPreviewRuntimeHookAliasScope(
     const shadowed = new Set(parent.shadowed);
     // Preserve owner-level alias discovery; only nested bindings can replace those proven names.
     if (
+      options?.ownerParameterOrigins === true ||
       isPreviewRuntimeFunction(scope) ||
       ts.isClassExpression(scope) ||
       ts.isClassStaticBlockDeclaration(scope) ||

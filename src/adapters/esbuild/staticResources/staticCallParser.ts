@@ -5,6 +5,7 @@
  * dynamic-import expansion before a plugin has a chance to enforce workspace boundaries.
  */
 import ts from 'typescript';
+import type { PreviewRuntimeSourceSyntax } from './previewRuntimeSourceSyntax';
 
 /** Exact call shapes understood by the preview compatibility transformer. */
 export type StaticCallName =
@@ -49,23 +50,27 @@ export class StaticSourceAnalysis {
    *
    * @param sourcePath Absolute path used to select the correct TS, TSX, JS, or JSX grammar.
    * @param sourceText Current editor or filesystem contents to analyze.
+   * @param sourceSyntax Optional private transform scope; exact bytes and grammar govern reuse.
    * @throws StaticSourceParseError when the module has a syntax error and cannot be classified safely.
    */
   public constructor(
     private readonly sourcePath: string,
     private readonly sourceText: string,
+    sourceSyntax?: PreviewRuntimeSourceSyntax,
   ) {
     for (const name of STATIC_CALL_NAMES) {
       this.calls.set(name, []);
     }
 
-    this.sourceFile = ts.createSourceFile(
-      sourcePath,
-      sourceText,
-      ts.ScriptTarget.Latest,
-      true,
-      getScriptKind(sourcePath),
-    );
+    this.sourceFile =
+      sourceSyntax?.readSourceFile(sourcePath, sourceText, getScriptKind(sourcePath)) ??
+      ts.createSourceFile(
+        sourcePath,
+        sourceText,
+        ts.ScriptTarget.Latest,
+        true,
+        getScriptKind(sourcePath),
+      );
     this.assertSyntacticallyValid();
     this.visit(this.sourceFile);
     for (const calls of this.calls.values()) {

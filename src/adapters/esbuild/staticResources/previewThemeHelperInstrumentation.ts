@@ -5,6 +5,7 @@
  * while preserving the project's arguments, provider hierarchy, and every non-style expression.
  */
 import ts from 'typescript';
+import type { PreviewRuntimeSourceSyntax } from './previewRuntimeSourceSyntax';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
 import {
   collectPreviewStyledTemplateBindings,
@@ -50,14 +51,16 @@ interface ThemeHelperCall {
  * @param sourcePath Source identity used to select the matching TypeScript grammar.
  * @param sourceText Unmodified workspace source loaded by the preview compiler.
  * @param allocateBinding Collision-safe binding allocator owned by the source transformer.
+ * @param sourceSyntax Optional private syntax scope; helper demand and imports stay per call.
  * @returns One optional import plus bounded, non-overlapping callee replacements.
  */
 export function createPreviewThemeHelperTransform(
   sourcePath: string,
   sourceText: string,
   allocateBinding: PreviewThemeHelperBindingAllocator,
+  sourceSyntax?: PreviewRuntimeSourceSyntax,
 ): PreviewThemeHelperTransform {
-  const sourceFile = createPreviewStyledTemplateSourceFile(sourcePath, sourceText);
+  const sourceFile = createPreviewStyledTemplateSourceFile(sourcePath, sourceText, sourceSyntax);
   if (hasPreviewStyledTemplateParseDiagnostics(sourceFile)) {
     return { imports: [], replacements: [] };
   }

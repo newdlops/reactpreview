@@ -1,5 +1,6 @@
 /** Coordinates bounded authored-source analysis for previewSourceTransformer. */
 import path from 'node:path';
+import { createPreviewRuntimeSourceSyntax } from './previewRuntimeSourceSyntax';
 import { collectPreviewDragDropRequirement } from '../previewDragDropRequirement';
 import { collectPreviewFormikRequirement } from '../previewFormikRequirement';
 import {
@@ -248,7 +249,9 @@ export class PreviewSourceTransformer {
     }
     const replacements: PreviewSourceReplacement[] = [];
     const generatedImports: string[] = [];
-    const analysis = new StaticSourceAnalysis(sourcePath, sourceText);
+    // One private scope for unchanged compatibility input; runtime rewrites own a separate scope.
+    const sourceSyntax = createPreviewRuntimeSourceSyntax();
+    const analysis = new StaticSourceAnalysis(sourcePath, sourceText, sourceSyntax);
     const bindings = new PreviewSourceBindingAllocator(analysis);
     const allocate = (kind: string): string => bindings.next(kind);
     const staticRenderAssets = await createPreviewStaticRenderAssetTransform({
@@ -298,7 +301,11 @@ export class PreviewSourceTransformer {
         }
       }
       if (sourceText.includes('react-router')) {
-        const routerRequirement = collectPreviewRouterRequirement(sourcePath, sourceText);
+        const routerRequirement = collectPreviewRouterRequirement(
+          sourcePath,
+          sourceText,
+          sourceSyntax,
+        );
         this.routerConsumerDetected ||= routerRequirement.consumesRouter;
         this.routerProviderDetected ||= routerRequirement.ownsRouter;
       }
@@ -376,6 +383,7 @@ export class PreviewSourceTransformer {
           ),
           createPreviewRuntimeHookTypedCallResolver(this.options.typeOracle, sourcePath),
           selectedTargetNames,
+          sourceSyntax,
         );
         replacements.push(...contextHookFallback.replacements);
         const contextRegistrations = createContextRegistrationStatements(
@@ -468,6 +476,7 @@ export class PreviewSourceTransformer {
           sourcePath,
           sourceText,
           allocate,
+          sourceSyntax,
         );
         replacements.push(...themeInstrumentation.replacements);
         generatedImports.push(...themeInstrumentation.imports);

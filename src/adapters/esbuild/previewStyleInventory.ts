@@ -5,6 +5,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import type { PreviewRuntimeSourceSyntax } from './staticResources/previewRuntimeSourceSyntax';
 import { readPreviewAnalysisSourceFile } from './previewAnalysisSourceFile';
 import type { PreviewThemeImportSelection } from './previewTargetExports';
 
@@ -52,17 +53,17 @@ interface ThemeCandidateScore {
  *
  * @param sourcePath File identity used for grammar selection and relative-request normalization.
  * @param sourceText Current source snapshot, including unsaved editor contents.
+ * @param sourceSyntax Optional private transform scope; signal collection is always fresh.
  * @returns Bounded theme signals suitable for later target-rooted graph aggregation.
  */
 export function collectPreviewStyleSignals(
   sourcePath: string,
   sourceText: string,
+  sourceSyntax?: PreviewRuntimeSourceSyntax,
 ): readonly PreviewStyleSignal[] {
-  const sourceFile = readPreviewAnalysisSourceFile(
-    sourcePath,
-    sourceText,
-    getScriptKind(sourcePath),
-  );
+  const sourceFile =
+    sourceSyntax?.readSourceFile(sourcePath, sourceText, getScriptKind(sourcePath)) ??
+    readPreviewAnalysisSourceFile(sourcePath, sourceText, getScriptKind(sourcePath));
   if (hasParseDiagnostics(sourceFile)) {
     return [];
   }

@@ -4,6 +4,7 @@
  * adapter owns callable helper repair, non-callable token repair, and theme-candidate registration.
  */
 import { createPreviewThemeRegistrationStatements } from '../previewThemeRegistration';
+import type { PreviewRuntimeSourceSyntax } from './previewRuntimeSourceSyntax';
 import { createPreviewThemeHelperTransform } from './previewThemeHelperInstrumentation';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
 import { createPreviewThemeValueTransform } from './previewThemeValueInstrumentation';
@@ -28,18 +29,30 @@ export function createPreviewThemeSourceInstrumentation(
   sourcePath: string,
   sourceText: string,
   allocateBinding: PreviewThemeSourceBindingAllocator,
+  sourceSyntax?: PreviewRuntimeSourceSyntax,
 ): PreviewThemeSourceInstrumentation {
   const helperTransform = createPreviewThemeHelperTransform(
     sourcePath,
     sourceText,
     allocateBinding,
+    sourceSyntax,
   );
-  const valueTransform = createPreviewThemeValueTransform(sourcePath, sourceText, allocateBinding);
+  const valueTransform = createPreviewThemeValueTransform(
+    sourcePath,
+    sourceText,
+    allocateBinding,
+    sourceSyntax,
+  );
   return {
     imports: [
       ...helperTransform.imports,
       ...valueTransform.imports,
-      ...createPreviewThemeRegistrationStatements(sourcePath, sourceText, allocateBinding),
+      ...createPreviewThemeRegistrationStatements(
+        sourcePath,
+        sourceText,
+        allocateBinding,
+        sourceSyntax,
+      ),
     ],
     replacements: [...helperTransform.replacements, ...valueTransform.replacements],
   };

@@ -1,7 +1,12 @@
 /** Registers static render-prop collection demand against the exact GraphQL DocumentNode. */
 import ts from 'typescript';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
+import { createPreviewGraphqlMappedItemScope } from './previewGraphqlMappedItemScope';
 import type { PreviewRuntimeHookChildPropDemandCatalog } from './previewRuntimeHookChildPropDemand';
+import {
+  createPreviewRuntimeHookAliasScope,
+  type PreviewRuntimeHookAliasScope,
+} from './previewRuntimeHookAliasScope';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
 import type { PreviewInferredPropShape } from './reactExportPropInference';
 import { isPreviewInferredCandidateValue } from './reactPropInferenceModel';
@@ -229,8 +234,15 @@ function collectDemandPaths(
   if (bindings.size === 0) return { literalDemands: [], paths: [] };
   const paths = new Set<string>();
   const literalDemands = new Map<string, PreviewGraphqlLiteralDemand>();
-  const items = new Map<string, readonly string[]>();
+  const bindingScope = createPreviewRuntimeHookAliasScope(
+    render,
+    new Map([...bindings].map(([name, prefix]) => [name, [prefix]])),
+    new Set(bindings.keys()),
+    { ownerParameterOrigins: true },
+  );
+  const items = createPreviewGraphqlMappedItemScope(readPath);
   const visit = (node: ts.Node): void => {
+    let restoreMappedItem: (() => void) | undefined;
     const mapCallback = ts.isCallExpression(node) ? node.arguments[0] : undefined;
     if (
       ts.isCallExpression(node) &&
@@ -240,11 +252,13 @@ function collectDemandPaths(
       mapCallback !== undefined &&
       ts.isArrowFunction(mapCallback)
     ) {
-      const collection = readPath(node.expression.expression, bindings);
-      const parameter = mapCallback.parameters[0];
-      if (collection !== undefined && parameter !== undefined && ts.isIdentifier(parameter.name)) {
+      const collection = readPath(
+        node.expression.expression,
+        readVisibleBindings(node, bindings, bindingScope),
+      );
+      if (collection !== undefined) {
         paths.add([...collection, '[]'].join('.'));
-        items.set(parameter.name.text, [...collection, '[]']);
+        restoreMappedItem = items.enter(mapCallback, [...collection, '[]']);
       }
     }
     if (
@@ -252,7 +266,10 @@ function collectDemandPaths(
       ts.isPropertyAccessExpression(node.expression) &&
       COLLECTION_METHOD_NAMES.has(node.expression.name.text)
     ) {
-      const collection = readPath(node.expression.expression, bindings);
+      const collection = readPath(
+        node.expression.expression,
+        readVisibleBindings(node, bindings, bindingScope),
+      );
       if (collection !== undefined) paths.add([...collection, '[]'].join('.'));
       if (node.expression.name.text === 'find' && collection !== undefined) {
         const literalDemand = readFindLiteralDemand(node.arguments[0], [...collection, '[]']);
@@ -273,27 +290,30 @@ function collectDemandPaths(
       const shape = ts.isIdentifier(component)
         ? catalog?.get(component.text)?.get(node.name.text)
         : undefined;
-      const directPath = readPath(attributeExpression, bindings);
+      const visibleBindings = readVisibleBindings(node, bindings, bindingScope);
+      const itemPath = items.readPath(attributeExpression);
+      const directPath =
+        itemPath === undefined ? readPath(attributeExpression, visibleBindings) : undefined;
       if (directPath !== undefined && shape !== undefined)
         appendShape(paths, directPath, shape, 0, literalDemands);
-      if (shape !== undefined) {
-        appendMappedPropShape(paths, attributeExpression, bindings, shape);
+      if (shape !== undefined && itemPath === undefined) {
+        appendMappedPropShape(paths, attributeExpression, visibleBindings, shape);
       }
-      const itemPath = [...items.entries()]
-        .map(
-          ([name, prefix]) =>
-            [name, readPath(attributeExpression, new Map([[name, prefix]])), prefix] as const,
-        )
-        .find((entry) => entry[1] !== undefined);
       if (itemPath !== undefined && ts.isIdentifier(component)) {
-        if (shape !== undefined)
-          appendShape(paths, [...itemPath[2], ...(itemPath[1] ?? [])], shape, 0, literalDemands);
+        if (shape !== undefined) appendShape(paths, itemPath, shape, 0, literalDemands);
       }
     }
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
-      appendSiblingCollectionRendererDemands(node, bindings, catalog, paths, literalDemands);
+      appendSiblingCollectionRendererDemands(
+        node,
+        readVisibleBindings(node, bindings, bindingScope),
+        catalog,
+        paths,
+        literalDemands,
+      );
     }
     ts.forEachChild(node, visit);
+    restoreMappedItem?.();
   };
   visit(render.body);
   const normalizedPaths = [...paths]
@@ -307,6 +327,18 @@ function collectDemandPaths(
       .slice(0, MAX_DEMANDS),
     paths: normalizedPaths,
   };
+}
+
+/** Preserves query parameter origins only where their exact binding remains visible. */
+function readVisibleBindings(
+  node: ts.Node,
+  bindings: ReadonlyMap<string, readonly string[]>,
+  scope: PreviewRuntimeHookAliasScope,
+): ReadonlyMap<string, readonly string[]> {
+  const visible = scope.readAliases(node);
+  return visible.size === bindings.size
+    ? bindings
+    : new Map([...bindings].filter(([name]) => visible.has(name)));
 }
 
 /** Traces a collection JSX prop through sibling columns/fields renderer callbacks. */

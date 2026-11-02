@@ -5,6 +5,7 @@
  * outside the preview compatibility boundary.
  */
 import ts from 'typescript';
+import type { PreviewRuntimeSourceSyntax } from './previewRuntimeSourceSyntax';
 
 const STYLED_COMPONENTS_SPECIFIER = 'styled-components';
 
@@ -16,17 +17,25 @@ export interface PreviewStyledTemplateBindings {
   readonly namespaces: ReadonlySet<string>;
 }
 
-/** Creates one parent-linked source tree using the grammar implied by the authored file suffix. */
+/** Reads private transform syntax, or parses anew with the authored suffix's exact grammar. */
 export function createPreviewStyledTemplateSourceFile(
   sourcePath: string,
   sourceText: string,
+  sourceSyntax?: PreviewRuntimeSourceSyntax,
 ): ts.SourceFile {
-  return ts.createSourceFile(
-    sourcePath,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    selectPreviewStyledTemplateScriptKind(sourcePath),
+  return (
+    sourceSyntax?.readSourceFile(
+      sourcePath,
+      sourceText,
+      selectPreviewStyledTemplateScriptKind(sourcePath),
+    ) ??
+    ts.createSourceFile(
+      sourcePath,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      selectPreviewStyledTemplateScriptKind(sourcePath),
+    )
   );
 }
 

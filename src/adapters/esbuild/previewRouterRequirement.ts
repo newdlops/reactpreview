@@ -4,6 +4,7 @@
  * automatic routing generic while avoiding a second outer router around files that own one.
  */
 import ts from 'typescript';
+import type { PreviewRuntimeSourceSyntax } from './staticResources/previewRuntimeSourceSyntax';
 
 /** Package entry points that expose the same project-owned React Router context identity. */
 const REACT_ROUTER_MODULES = new Set(['react-router', 'react-router-dom']);
@@ -85,19 +86,23 @@ export function requiresPreviewRouter(documentPath: string, sourceText: string):
  *
  * @param documentPath Reached source path used to select TSX-aware parser behavior.
  * @param sourceText Source snapshot or filesystem content already loaded for bundling.
+ * @param sourceSyntax Optional private transform syntax; provider evidence is always recomputed.
  * @returns Independent context-consumer and provider-ownership evidence.
  */
 export function collectPreviewRouterRequirement(
   documentPath: string,
   sourceText: string,
+  sourceSyntax?: PreviewRuntimeSourceSyntax,
 ): PreviewRouterRequirement {
-  const sourceFile = ts.createSourceFile(
-    documentPath,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    readScriptKind(documentPath),
-  );
+  const sourceFile =
+    sourceSyntax?.readSourceFile(documentPath, sourceText, readScriptKind(documentPath)) ??
+    ts.createSourceFile(
+      documentPath,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      readScriptKind(documentPath),
+    );
   const inventory = collectRouterImports(sourceFile);
   const namespaceUsage = collectNamespaceUsage(sourceFile, inventory.namespaces);
   return {

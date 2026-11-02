@@ -5,6 +5,7 @@
  */
 import { collectPreviewStyleSignals, type PreviewStyleSignal } from './previewStyleInventory';
 import { createPreviewThemeCandidateSpecifier } from './previewThemeCandidatePlugin';
+import type { PreviewRuntimeSourceSyntax } from './staticResources/previewRuntimeSourceSyntax';
 
 /** Private virtual module shared by transformed sources and the generated preview entry. */
 const PREVIEW_THEME_SPECIFIER = 'react-preview:theme';
@@ -20,14 +21,18 @@ export type PreviewThemeBindingAllocator = (kind: string) => string;
  * @param sourcePath Absolute reached module path used as graph evidence identity.
  * @param sourceText Current editor or filesystem source inspected without execution.
  * @param allocateBinding Collision-safe identifier allocator owned by the source transformer.
+ * @param sourceSyntax Optional private transform syntax, never inserted into the global syntax cache.
  * @returns Hoist-safe import followed by bounded registration calls, or an empty list.
  */
 export function createPreviewThemeRegistrationStatements(
   sourcePath: string,
   sourceText: string,
   allocateBinding: PreviewThemeBindingAllocator,
+  sourceSyntax?: PreviewRuntimeSourceSyntax,
 ): readonly string[] {
-  const signals = deduplicateSignals(collectPreviewStyleSignals(sourcePath, sourceText));
+  const signals = deduplicateSignals(
+    collectPreviewStyleSignals(sourcePath, sourceText, sourceSyntax),
+  );
   if (signals.length === 0) {
     return [];
   }

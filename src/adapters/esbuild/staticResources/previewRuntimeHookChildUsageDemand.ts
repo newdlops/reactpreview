@@ -18,8 +18,13 @@ import {
   type PreviewRuntimeHookChildPropDemandSource,
   type PreviewRuntimeHookChildPropUsage,
 } from './previewRuntimeHookChildDemandModel';
-import { functionShadowsName, isPascalCase } from './previewRuntimeHookChildDemandSyntax';
+import { isPascalCase } from './previewRuntimeHookChildDemandSyntax';
 import { mergePreviewRuntimeHookChildPropShapes } from './previewRuntimeHookChildTypeDemand';
+import {
+  createPreviewRuntimeHookAliasScope,
+  isPreviewRuntimeHookAliasScopeNode,
+} from './previewRuntimeHookAliasScope';
+import { reusePreviewRuntimeHookReferenceTraversal } from './previewRuntimeHookReferenceTraversal';
 import type { PreviewRuntimeFunction } from './previewRuntimeHookSyntax';
 import {
   findNearestPreviewRuntimeFunction,
@@ -28,6 +33,12 @@ import {
 } from './previewRuntimeHookSyntax';
 import { mergePreviewRuntimeHookCollectionItemExpressions } from './previewRuntimeHookUsageTree';
 import { type PreviewInferredPropShape } from './reactExportPropInference';
+
+/** Exact object syntax is reusable; catalog-dependent inferred child contracts stay per query. */
+const spreadObjectsByOwner = new WeakMap<
+  PreviewRuntimeFunction,
+  ReadonlyMap<string, ts.ObjectLiteralExpression>
+>();
 
 /** Prioritizes JSX children that directly receive one inline render callback's data binding. */
 export function collectInlineRenderPropConsumerBindings(
@@ -113,16 +124,16 @@ export function readPreviewRuntimeHookChildPropUsages(
   if (owner === undefined) return [];
   const aliases = collectPreviewRuntimeHookAliasPaths(identifier, owner);
   const spreadObjects = collectPreviewRuntimeHookChildSpreadObjects(owner);
+  const queryNames = new Set([...aliases.keys(), ...spreadObjects.keys()]);
+  const visitReferencedChildren = reusePreviewRuntimeHookReferenceTraversal(owner, queryNames);
+  const aliasScope = createPreviewRuntimeHookAliasScope(owner, aliases, queryNames);
+  let activeAliases = aliases;
   const usages: PreviewRuntimeHookChildPropUsage[] = [];
   const visit = (node: ts.Node): void => {
     if (usages.length >= MAX_PROP_DEMANDS) return;
-    if (
-      node !== owner &&
-      isPreviewRuntimeFunction(node) &&
-      functionShadowsName(node, identifier.text)
-    ) {
-      return;
-    }
+    const previousAliases = activeAliases;
+    if (node !== owner && isPreviewRuntimeHookAliasScopeNode(node))
+      activeAliases = aliasScope.readAliases(node);
     if (
       ts.isJsxAttribute(node) &&
       node.initializer !== undefined &&
@@ -130,7 +141,7 @@ export function readPreviewRuntimeHookChildPropUsages(
     ) {
       const expression = node.initializer.expression;
       const sourcePaths =
-        expression === undefined ? [] : readRequiredAliasPaths(expression, aliases);
+        expression === undefined ? [] : readRequiredAliasPaths(expression, activeAliases);
       const propName = ts.isIdentifier(node.name) ? node.name.text : undefined;
       const componentName = readJsxAttributeComponentName(node);
       const shape =
@@ -145,17 +156,18 @@ export function readPreviewRuntimeHookChildPropUsages(
     }
     if (ts.isJsxSpreadAttribute(node)) {
       const componentName = readJsxAttributesComponentName(node.parent);
-      const object = readPreviewRuntimeHookChildSpreadObject(
-        node.expression,
-        spreadObjects,
-        node.getStart(),
-      );
+      const object = aliasScope.isShadowedCarrier(node.expression)
+        ? undefined
+        : readPreviewRuntimeHookChildSpreadObject(node.expression, spreadObjects, node.getStart());
       if (componentName !== undefined && object !== undefined) {
         for (const property of object.properties) {
           if (usages.length >= MAX_PROP_DEMANDS) break;
           const forwarded = readPreviewRuntimeHookChildSpreadProperty(property);
           if (forwarded === undefined) continue;
-          const sourcePaths = readRequiredAliasPaths(forwarded.expression, aliases);
+          const sourcePaths = readRequiredAliasPaths(
+            forwarded.expression,
+            aliasScope.readAliases(forwarded.expression),
+          );
           if (sourcePaths.length === 0) continue;
           const shape = readChildPropShape(catalog, componentName, forwarded.propName);
           if (shape === undefined) continue;
@@ -165,7 +177,8 @@ export function readPreviewRuntimeHookChildPropUsages(
         }
       }
     }
-    ts.forEachChild(node, visit);
+    visitReferencedChildren(node, visit);
+    activeAliases = previousAliases;
   };
   visit(owner);
   return deduplicateUsages(usages);
@@ -341,6 +354,8 @@ export function readJsxAttributesComponentName(attributes: ts.JsxAttributes): st
 export function collectPreviewRuntimeHookChildSpreadObjects(
   owner: PreviewRuntimeFunction,
 ): ReadonlyMap<string, ts.ObjectLiteralExpression> {
+  const retained = spreadObjectsByOwner.get(owner);
+  if (retained !== undefined) return retained;
   const objects = new Map<string, ts.ObjectLiteralExpression>();
   const ambiguous = new Set<string>();
   const visit = (node: ts.Node): void => {
@@ -366,6 +381,7 @@ export function collectPreviewRuntimeHookChildSpreadObjects(
     ts.forEachChild(node, visit);
   };
   visit(owner);
+  spreadObjectsByOwner.set(owner, objects);
   return objects;
 }
 

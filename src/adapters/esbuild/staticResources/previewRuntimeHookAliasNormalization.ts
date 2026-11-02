@@ -20,10 +20,7 @@ import {
   isPreviewRuntimeHookStringUsageProperty,
 } from './previewRuntimeHookPropertyUsage';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
-import {
-  unwrapPreviewRuntimeExpression,
-  type PreviewRuntimeFunction,
-} from './previewRuntimeHookSyntax';
+import { unwrapPreviewRuntimeExpression } from './previewRuntimeHookSyntax';
 
 /** Converts one reached terminal into the collection/string/call shape used by serialization. */
 export function normalizeAliasUsage(
@@ -184,14 +181,4 @@ export function findDirectCollectionFilterCallback(
   const utilityFilter =
     ts.isIdentifier(callee) && callee.text === 'filter' && filterCall.arguments[1] === callbackNode;
   return methodFilter || utilityFilter ? callback : undefined;
-}
-
-/** Rejects nested functions whose parameter shadows any alias tracked in the outer component. */
-export function functionShadowsTrackedAlias(
-  scope: PreviewRuntimeFunction,
-  aliasNames: ReadonlySet<string>,
-): boolean {
-  return scope.parameters.some(
-    (parameter) => ts.isIdentifier(parameter.name) && aliasNames.has(parameter.name.text),
-  );
 }

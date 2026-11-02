@@ -13,6 +13,7 @@ import {
   type ReactMemoBindings,
 } from './previewRuntimeHookAliasModel';
 import { collectPreviewRuntimeHookStateAliases } from './previewRuntimeHookStateAlias';
+import { reusePreviewRuntimeHookReferenceTraversal } from './previewRuntimeHookReferenceTraversal';
 import {
   isPreviewRuntimeFunction,
   unwrapPreviewRuntimeExpression,
@@ -403,6 +404,10 @@ export function collectAliasCollectionReceiverPaths(
   externalPaths: ReadonlySet<string> | undefined,
 ): ReadonlySet<string> {
   const paths = new Set(externalPaths ?? []);
+  const visitReferencedChildren = reusePreviewRuntimeHookReferenceTraversal(
+    owner,
+    new Set(aliases.keys()),
+  );
   const visit = (node: ts.Node): void => {
     if (node !== owner && isPreviewRuntimeFunction(node)) return;
     if (ts.isPropertyAccessExpression(node) && !ts.isPropertyAccessExpression(node.parent)) {
@@ -414,7 +419,7 @@ export function collectAliasCollectionReceiverPaths(
         }
       }
     }
-    ts.forEachChild(node, visit);
+    visitReferencedChildren(node, visit);
   };
   visit(owner);
   return paths;

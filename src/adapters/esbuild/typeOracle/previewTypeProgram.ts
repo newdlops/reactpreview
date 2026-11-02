@@ -11,12 +11,12 @@
  * esbuild graph already uses, and dirty editor snapshots override saved files. Parsed source files
  * are reused across builds when their text is unchanged.
  */
-import { statSync } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 import { createPreviewResolutionFileSystem } from '../previewResolutionFileSystem';
 import { createPreviewTypeAnalysisSourceFile } from './previewTypedJsonAnalysis';
 import { PreviewTypeResolutionCache } from './previewTypeResolutionCache';
+import { PreviewTypeSourceTextCache } from './previewTypeSourceTextCache';
 
 /** Inputs that define one analysis program. */
 export interface PreviewTypeProgramInput {
@@ -115,6 +115,7 @@ export class PreviewTypeSourceFileCache {
     { readonly file: ts.SourceFile; readonly settings: string; readonly text: string }
   >();
   private readonly resolutions = new PreviewTypeResolutionCache();
+  private readonly sourceTexts = new PreviewTypeSourceTextCache();
   private readonly imports = new Map<
     string,
     { readonly text: string; readonly specifiers: readonly string[] }
@@ -142,6 +143,7 @@ export class PreviewTypeSourceFileCache {
 
   /** Drops parses of files outside `fileKeys`, so the cache never outgrows one program. */
   public retainOnly(fileKeys: ReadonlySet<string>): void {
+    this.sourceTexts.retainOnly(fileKeys);
     for (const key of this.entries.keys()) {
       if (!fileKeys.has(key)) this.entries.delete(key);
     }
@@ -174,6 +176,12 @@ export class PreviewTypeSourceFileCache {
     this.entries.clear();
     this.resolutions.clear();
     this.imports.clear();
+    this.sourceTexts.clear();
+  }
+
+  /** Reuses admitted disk text only after checking its current complete filesystem identity. */
+  public readSavedSource(fileName: string, limit: number): string | number | undefined {
+    return this.sourceTexts.read(path.normalize(fileName), limit);
   }
 
   /** Starts fresh import answers and metadata while retaining reusable source syntax separately. */
@@ -232,9 +240,7 @@ export function createPreviewTypeProgram(
   const readCandidate = (fileName: string, limit: number): string | number | undefined => {
     const snapshot = input.readSnapshot(path.normalize(fileName));
     if (snapshot !== undefined) return snapshot;
-    const size = statSync(fileName, { throwIfNoEntry: false })?.size;
-    // UTF-8 spends at most three bytes per UTF-16 code unit, so a larger file cannot fit.
-    return size === undefined || size <= limit * 3 ? ts.sys.readFile(fileName) : size;
+    return cache.readSavedSource(fileName, limit);
   };
   const resolutionCache = ts.createModuleResolutionCache(
     rootPaths[0] === undefined ? process.cwd() : path.dirname(rootPaths[0]),

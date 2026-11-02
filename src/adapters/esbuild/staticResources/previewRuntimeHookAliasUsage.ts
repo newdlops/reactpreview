@@ -23,13 +23,15 @@ import {
   type ResolvePreviewRuntimeHookImportedHelperItemFallback,
   type ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
 } from './previewRuntimeHookAliasModel';
+import { normalizeAliasUsage } from './previewRuntimeHookAliasNormalization';
 import {
-  functionShadowsTrackedAlias,
-  normalizeAliasUsage,
-} from './previewRuntimeHookAliasNormalization';
+  createPreviewRuntimeHookAliasScope,
+  isPreviewRuntimeHookAliasScopeNode,
+  type PreviewRuntimeHookAliasScope,
+} from './previewRuntimeHookAliasScope';
 import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHookLocalScalarDemand';
+import { reusePreviewRuntimeHookReferenceTraversal } from './previewRuntimeHookReferenceTraversal';
 import {
-  isPreviewRuntimeFunction,
   unwrapPreviewRuntimeExpression,
   type PreviewRuntimeFunction,
 } from './previewRuntimeHookSyntax';
@@ -75,22 +77,26 @@ export function readPreviewRuntimeHookAliasUsagePaths(
   const usages = new Map<string, PreviewRuntimeHookAliasUsagePath>();
   appendClosedScalarAliasUsages(identifier, aliases, declarations, bindingCounts, usages);
   const aliasNames = new Set(aliases.keys());
+  // A typed object helper may receive a const carrier rather than the alias spelling itself.
+  const queryNames = new Set([
+    ...aliasNames,
+    ...(resolveImportedHelperProperty === undefined ? [] : bindingCounts.keys()),
+  ]);
+  const visitReferencedChildren = reusePreviewRuntimeHookReferenceTraversal(owner, queryNames);
+  const aliasScope = createPreviewRuntimeHookAliasScope(owner, aliases, queryNames);
+  let activeAliases = aliases;
   const visit = (node: ts.Node): void => {
     if (usages.size >= MAXIMUM_USAGE_PATHS) return;
-    if (
-      node !== owner &&
-      isPreviewRuntimeFunction(node) &&
-      functionShadowsTrackedAlias(node, aliasNames)
-    ) {
-      return;
-    }
+    const previousAliases = activeAliases;
+    if (node !== owner && isPreviewRuntimeHookAliasScopeNode(node))
+      activeAliases = aliasScope.readAliases(node);
     if (
       ts.isIdentifier(node) &&
       (includeRootUsages || node.text !== identifier.text) &&
       ts.isCallExpression(node.parent) &&
       node.parent.expression === node
     ) {
-      const aliasPaths = aliases.get(node.text);
+      const aliasPaths = activeAliases.get(node.text);
       if (aliasPaths !== undefined) {
         for (const names of aliasPaths) {
           if (names.length > MAXIMUM_ALIAS_DEPTH) continue;
@@ -103,7 +109,7 @@ export function readPreviewRuntimeHookAliasUsagePaths(
       }
     }
     if (ts.isPropertyAccessExpression(node) && !ts.isPropertyAccessExpression(node.parent)) {
-      const access = readAliasAccess(node, aliases);
+      const access = readAliasAccess(node, activeAliases);
       if (access !== undefined && (includeRootUsages || access.aliasName !== identifier.text)) {
         for (const names of access.names) {
           const usage = normalizeAliasUsage(
@@ -125,12 +131,12 @@ export function readPreviewRuntimeHookAliasUsagePaths(
       }
     }
     if (ts.isCallExpression(node) && resolveImportedHelperItem !== undefined) {
-      appendImportedHelperAliasUsages(node, aliases, resolveImportedHelperItem, usages);
+      appendImportedHelperAliasUsages(node, activeAliases, resolveImportedHelperItem, usages);
     }
     if (ts.isCallExpression(node) && resolveImportedCollectionCallbackItem !== undefined) {
       appendImportedCollectionCallbackAliasUsage(
         node,
-        aliases,
+        activeAliases,
         resolveImportedCollectionCallbackItem,
         usages,
       );
@@ -138,15 +144,16 @@ export function readPreviewRuntimeHookAliasUsagePaths(
     if (ts.isCallExpression(node) && resolveImportedHelperProperty !== undefined) {
       appendImportedHelperPropertyUsages(
         node,
-        aliases,
         resolveImportedHelperProperty,
         usages,
         declarations,
         bindingCounts,
         memoBindings,
+        aliasScope,
       );
     }
-    ts.forEachChild(node, visit);
+    visitReferencedChildren(node, visit);
+    activeAliases = previousAliases;
   };
   visit(owner);
   return Object.freeze([...usages.values()]);
@@ -302,21 +309,26 @@ export function collectPreviewRuntimeHookAliasPaths(
  */
 function appendImportedHelperPropertyUsages(
   call: ts.CallExpression,
-  aliases: PreviewRuntimeHookAliasPathCatalog,
   resolveProperty: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
   usages: Map<string, PreviewRuntimeHookAliasUsagePath>,
   declarations: readonly ts.VariableDeclaration[],
   bindingCounts: ReadonlyMap<string, number>,
   memoBindings: ReactMemoBindings,
+  aliasScope: PreviewRuntimeHookAliasScope,
 ): void {
   const callee = unwrapPreviewRuntimeExpression(call.expression);
   if (!ts.isIdentifier(callee)) return;
   for (const [parameterIndex, argument] of call.arguments.entries()) {
+    if (aliasScope.isShadowedCarrier(argument)) continue;
     const object = readForwardedObjectLiteral(argument, declarations, bindingCounts, memoBindings);
     if (object === undefined) continue;
     for (const property of object.properties) {
       if (usages.size >= MAXIMUM_USAGE_PATHS) return;
-      const propertyBinding = readForwardedObjectProperty(property, aliases, memoBindings);
+      const propertyBinding = readForwardedObjectProperty(
+        property,
+        aliasScope.readAliases(property),
+        memoBindings,
+      );
       if (propertyBinding === undefined) continue;
       const fallback = resolveProperty(callee.text, parameterIndex, propertyBinding.propertyName);
       if (fallback === undefined) continue;

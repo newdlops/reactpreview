@@ -244,9 +244,13 @@ export class PreviewTypeOracle {
             ? input
             : { ...input, libDirectory: this.libDirectory },
           this.cache,
-          budget,
+          (retainedTextBytes) => selectPreviewTypeProgramBudget(heap, retainedTextBytes),
         );
-        status = current.status;
+        status = current?.status ?? {
+          heapLimitBytes: heap.heap_size_limit,
+          heapUsedBytes: heap.used_heap_size,
+          skippedForHeap: true,
+        };
       } catch {
         current = undefined;
       }

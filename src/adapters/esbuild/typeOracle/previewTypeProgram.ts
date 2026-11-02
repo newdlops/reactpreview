@@ -9,7 +9,7 @@
  * compiler host serves only admitted files, so triple-slash references cannot bypass the budget.
  * Bare specifiers that the project cannot resolve fall back to the managed dependency layers the
  * esbuild graph already uses, and dirty editor snapshots override saved files. Parsed source files
- * are reused across builds when their text is unchanged.
+ * are reused across builds when their text and compiler-option context are unchanged.
  */
 import path from 'node:path';
 import ts from 'typescript';
@@ -111,6 +111,8 @@ export function resolvePreviewTypeLibDirectory(
 
 /** Keeps parsed source files between builds so unchanged files are not parsed again. */
 export class PreviewTypeSourceFileCache {
+  /** Bound trees contain option-dependent module classification, flow and diagnostics. */
+  private compilerOptionsKey: string | undefined;
   private readonly entries = new Map<
     string,
     { readonly file: ts.SourceFile; readonly settings: string; readonly text: string }
@@ -124,6 +126,21 @@ export class PreviewTypeSourceFileCache {
     string,
     { readonly text: string; readonly specifiers: readonly string[] }
   >();
+
+  /**
+   * Starts a program's parse/bind context without retaining its configuration AST.
+   * All effective option values participate: TypeScript's module-indicator callbacks capture
+   * options, and an already bound SourceFile cannot safely be rebound after those options change.
+   * Validated disk text and lexical import scans remain usable independently of binding options.
+   */
+  public prepareForProgram(options: ts.CompilerOptions): void {
+    const values = { ...options };
+    delete values.configFile;
+    const key = JSON.stringify(values);
+    if (key === this.compilerOptionsKey) return;
+    this.entries.clear();
+    this.compilerOptionsKey = key;
+  }
 
   /** Returns a cached parse when text and parse settings match, otherwise parses and caches it. */
   public get(
@@ -178,6 +195,7 @@ export class PreviewTypeSourceFileCache {
 
   /** Drops every retained parse, returning its memory to the worker. */
   public clear(): void {
+    this.compilerOptionsKey = undefined;
     this.entries.clear();
     this.resolutions.clear();
     this.imports.clear();
@@ -238,17 +256,40 @@ function readPreviewTypeFileKey(fileName: string): string {
  *
  * @param input Roots, snapshots, managed dependency layers, and optional tsconfig.
  * @param cache Parse cache shared with the previous build of the same project.
- * @param budget Admission limits.
- * @returns Program, checker, and coverage status. Never throws for unreadable project files.
+ * @param requestedBudget Admission limits, or a selector called after option-dependent parses are invalidated.
+ * @returns Program, checker, and coverage status; undefined if the selector declines analysis.
+ * Never throws for unreadable project files.
+ * @throws Propagates a failure from the trusted budget selector.
  */
 export function createPreviewTypeProgram(
   input: PreviewTypeProgramInput,
   cache: PreviewTypeSourceFileCache,
-  budget: PreviewTypeProgramBudget = PREVIEW_TYPE_PROGRAM_DEFAULT_BUDGET,
-): PreviewTypeProgram {
+  requestedBudget?: PreviewTypeProgramBudget,
+): PreviewTypeProgram;
+export function createPreviewTypeProgram(
+  input: PreviewTypeProgramInput,
+  cache: PreviewTypeSourceFileCache,
+  requestedBudget: (retainedTextBytes: number) => PreviewTypeProgramBudget | undefined,
+): PreviewTypeProgram | undefined;
+export function createPreviewTypeProgram(
+  input: PreviewTypeProgramInput,
+  cache: PreviewTypeSourceFileCache,
+  requestedBudget:
+    | PreviewTypeProgramBudget
+    | ((
+        retainedTextBytes: number,
+      ) => PreviewTypeProgramBudget | undefined) = PREVIEW_TYPE_PROGRAM_DEFAULT_BUDGET,
+): PreviewTypeProgram | undefined {
   const started = Date.now();
   const rootPaths = [...new Set(input.rootPaths.map((rootPath) => path.normalize(rootPath)))];
   const options = readAnalysisOptions(input.tsconfigPath, rootPaths[0]);
+  cache.prepareForProgram(options);
+  const budget =
+    typeof requestedBudget === 'function' ? requestedBudget(cache.textBytes()) : requestedBudget;
+  if (budget === undefined) {
+    cache.clear();
+    return undefined;
+  }
   const host = ts.createCompilerHost(options, true);
   const resolutionFileSystem = createPreviewResolutionFileSystem();
   host.directoryExists = resolutionFileSystem.directoryExists;

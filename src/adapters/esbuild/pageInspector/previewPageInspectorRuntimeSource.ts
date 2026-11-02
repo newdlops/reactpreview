@@ -890,6 +890,7 @@ const previewInspectorApi = {
   resolveRuntimeHook: resolvePreviewInspectorScopedRuntimeHook,
   wrapLocalTarget: wrapPreviewInspectorLocalTarget,
   useTargetOwnershipToken: usePreviewInspectorTargetOwnershipToken,
+  useRuntimeEffectCommitToken: usePreviewInspectorRuntimeEffectCommitToken,
   unregisterLocalUiEventListener: unregisterPreviewInspectorLocalUiEventListener,
   readJsxOwnershipContext: readPreviewInspectorJsxOwnershipContext,
   remount: remountPreviewInspectorExport,

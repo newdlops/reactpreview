@@ -12,6 +12,7 @@ import { createPreviewInspectorRuntimeFallbackSharingRuntimeSource } from './pre
 import { createPreviewInspectorRuntimeFallbackRecommendationsRuntimeSource } from './previewInspectorRuntimeFallbackRecommendationsRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackResolutionRuntimeSource } from './previewInspectorRuntimeFallbackResolutionRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackEffectsRuntimeSource } from './previewInspectorRuntimeFallbackEffectsRuntimeSource';
+import { createPreviewInspectorRuntimeEffectCommitRuntimeSource } from './previewInspectorRuntimeEffectCommitRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackOverridesRuntimeSource } from './previewInspectorRuntimeFallbackOverridesRuntimeSource';
 import { createPreviewInspectorGeneratedValueRuntimeSource } from './previewInspectorGeneratedValueRuntimeSource';
 import { createPreviewInspectorBlockerValueRuntimeSource } from './previewInspectorBlockerValueRuntimeSource';
@@ -22,7 +23,7 @@ import { createPreviewInspectorOverlayActivationRuntimeSource } from './previewI
 /** Maximum distinct hook fallback sites retained by one pinned Inspector session. */
 export const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = 256;
 
-/** Repeated executions admitted for one authored effect site before render-only isolation. */
+/** Commit groups per frame; nested and unknown-root callbacks count individually. */
 export const PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT = 24;
 
 /**
@@ -387,6 +388,7 @@ ${hookGraphqlRuntimeSource}
     createPreviewInspectorRuntimeFallbackSharingRuntimeSource() +
     createPreviewInspectorRuntimeFallbackRecommendationsRuntimeSource() +
     createPreviewInspectorRuntimeFallbackResolutionRuntimeSource() +
+    createPreviewInspectorRuntimeEffectCommitRuntimeSource() +
     createPreviewInspectorRuntimeFallbackEffectsRuntimeSource() +
     String.raw`
 /**

@@ -169,10 +169,10 @@ function createPreviewReactEffectCallbackReplacement(
     replacement: [
       '(() => {',
       `const ${apiBinding} = ${PREVIEW_INSPECTOR_API};`,
-      `const ${ownershipBinding} = typeof ${apiBinding}?.useTargetOwnershipToken === 'function' ? ${apiBinding}.useTargetOwnershipToken() : undefined;`,
+      `const ${ownershipBinding} = [typeof ${apiBinding}?.useTargetOwnershipToken === 'function' ? ${apiBinding}.useTargetOwnershipToken() : undefined, typeof ${apiBinding}?.useRuntimeEffectCommitToken === 'function' ? ${apiBinding}.useRuntimeEffectCommitToken() : undefined];`,
       `return (...${argumentBinding}) => {`,
       `return typeof ${apiBinding}?.resolveRuntimeEffect === 'function'`,
-      `? ${apiBinding}.resolveRuntimeEffect(() => (${originalCallback})(...${argumentBinding}), ${JSON.stringify(metadata)}, ${ownershipBinding})`,
+      `? ${apiBinding}.resolveRuntimeEffect(() => (${originalCallback})(...${argumentBinding}), ${JSON.stringify(metadata)}, ${ownershipBinding}[0], ${ownershipBinding}[1])`,
       `: (${originalCallback})(...${argumentBinding});`,
       '};',
       '})()',

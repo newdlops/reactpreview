@@ -36,7 +36,12 @@ export interface TestRuntimeFallbackApi {
   activateScope(candidateId: string, directTarget: boolean): boolean;
   auto(fallbackId: string): void;
   draft(fallbackId: string): unknown;
-  effect(readEffect: () => unknown, metadata: object): unknown;
+  effect(
+    readEffect: () => unknown,
+    metadata: object,
+    ownershipToken?: unknown,
+    commitToken?: unknown,
+  ): unknown;
   pathSignature(requiredPaths: readonly string[]): string;
   neuralModel(): {
     readonly heads: Readonly<Record<string, { readonly updates: number }>>;

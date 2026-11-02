@@ -863,7 +863,7 @@ async function activatePreparedPreview(preparedPreview) {
   });
   previewHotRuntime.root = previewRoot;
   previewHotRuntime.activeStyleSheetBoundary = preparedPreview.styleSheetBoundary;
-  const commitAwarePreviewElement = React.createElement(
+  let commitAwarePreviewElement = React.createElement(
     React.Fragment,
     undefined,
     preparedPreview.previewElement,
@@ -873,6 +873,7 @@ async function activatePreparedPreview(preparedPreview) {
     // A prepared hot revision may never be selected for activation. Commit shared Inspector state
     // only for the entry that is about to render, preserving the still-mounted revision otherwise.
     preparePreviewInspectorRuntimeFallbackScope(preparedPreviewInspectorTargets);
+    commitAwarePreviewElement = createPreviewInspectorRuntimeEffectCommitElement(commitAwarePreviewElement);
   }
   previewRoot.render(
     React.createElement(PreviewErrorBoundary, undefined, commitAwarePreviewElement),

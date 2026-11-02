@@ -111,7 +111,7 @@ function schedulePreviewInspectorRuntimeEffectBurstReset(metadataId, revision, f
  * which point the renderer can already be unresponsive. Ordinary repeated animation effects are
  * admitted because their counter is cleared at every browser frame boundary.
  */
-function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata) {
+function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata, commitToken) {
   if (!readPreviewInspectorFallbackValuesEnabled()) return false;
   initializePreviewInspectorRuntimeFallbackState();
   const metadata = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
@@ -127,9 +127,17 @@ function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata) {
     return false;
   }
   const withinFrame = previous?.revision === revision;
+  const commitClock = readPreviewInspectorRuntimeEffectCommitClock(commitToken);
+  // Only ordinary sibling callbacks share a group. Nested callbacks consume the budget even
+  // across different source ids, otherwise mutually recursive sites could evade protection.
+  const sameCommit = withinFrame && commitClock !== undefined &&
+    previous.commitClock === commitClock && previous.commitSerial === commitClock.serial &&
+    previewInspectorSession.activeTargetRenderChainEffect === undefined;
   const frameToken = withinFrame ? previous.frameToken : Symbol(metadata.id);
   const execution = {
-    count: withinFrame ? previous.count + 1 : 1,
+    commitClock,
+    commitSerial: commitClock?.serial,
+    count: withinFrame ? previous.count + (sameCommit ? 0 : 1) : 1,
     frameToken,
     isolated: false,
     revision,
@@ -146,8 +154,9 @@ function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata) {
   recordPreviewInspectorRuntimeEffectIsolation(
     metadata,
     new Error(
-      'Effect executed more than ' + String(PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT) +
-      ' times before the next browser frame; further executions were disabled for this preview session',
+      'Effect reached the repetition limit (' +
+      String(PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT) +
+      ') before the next browser frame; further executions were disabled for this preview session',
     ),
     'repeated effect execution',
     previewInspectorSession.runtimeFallbackScopeKey,
@@ -170,12 +179,12 @@ function readPreviewInspectorCurrentRuntimeEffectCaller(previous) {
  * Successful cleanup functions remain intact. Promise-returning effects are made non-blocking and
  * their rejection is logged because React cannot use a Promise as an effect cleanup value.
  */
-function resolvePreviewInspectorRuntimeEffect(readEffect, rawMetadata, ownershipToken) {
+function resolvePreviewInspectorRuntimeEffect(readEffect, rawMetadata, ownershipToken, commitToken) {
   if (typeof readEffect !== 'function') return undefined;
   initializePreviewInspectorRuntimeFallbackState();
   const effectScopeKey = previewInspectorSession.runtimeFallbackScopeKey;
   const chainEffect = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
-  if (shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata)) return undefined;
+  if (shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata, commitToken)) return undefined;
   // Only a callback that actually executes may own synchronous chain evidence. Nested effects
   // restore their caller; skipped effects never replace it with a stale source-site attribution.
   const previousChainEffect = previewInspectorSession.activeTargetRenderChainEffect;

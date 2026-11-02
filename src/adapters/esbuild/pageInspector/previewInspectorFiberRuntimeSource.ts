@@ -173,6 +173,8 @@ function createPreviewInspectorTreeNodeId(namespace, path, kind, name) {
 
 /** Reports preview-owned wrappers that should be transparent in the project component tree. */
 function isPreviewInspectorOwnedFiber(fiber, name, kind) {
+  if (typeof isPreviewInspectorRuntimeEffectCommitFiber === 'function' &&
+    isPreviewInspectorRuntimeEffectCommitFiber(fiber)) return true;
   if (kind === 'root' || kind === 'fragment') return true;
   if (previewInspectorOwnedComponentNames.has(name)) return true;
   return name.startsWith('ReactPreviewInspector(') || name.startsWith('ReactPreviewInspectorTarget(');

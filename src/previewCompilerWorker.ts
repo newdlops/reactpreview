@@ -6,6 +6,7 @@ import { stop } from 'esbuild';
 import path from 'node:path';
 import { parentPort, workerData } from 'node:worker_threads';
 import { EsbuildPreviewCompiler } from './adapters/esbuild/esbuildPreviewCompiler';
+import { withPreviewAnalysisSourceFileRetention } from './adapters/esbuild/previewAnalysisSourceFile';
 import { trustPreviewSystemCertificates } from './adapters/node/previewSystemCertificateTrust';
 import type { PreviewCompilerWorkerBootstrap } from './adapters/worker/previewCompilerWorkerClient';
 import { PreviewCompilerWorkerServer } from './adapters/worker/previewCompilerWorkerServer';
@@ -37,9 +38,12 @@ const server = new PreviewCompilerWorkerServer(
     },
   },
   {
-    compile: (request, context) => compiler.compile(request, context),
+    compile: (request, context) =>
+      withPreviewAnalysisSourceFileRetention(() => compiler.compile(request, context)),
     collectCompleteRouteInventory: (request, limits, signal, observer) =>
-      compiler.collectCompleteRouteInventory(request, limits, signal, observer),
+      withPreviewAnalysisSourceFileRetention(() =>
+        compiler.collectCompleteRouteInventory(request, limits, signal, observer),
+      ),
     shutdown: () => (shutdownPromise ??= compiler.shutdown().then(() => stop())),
   },
 );
